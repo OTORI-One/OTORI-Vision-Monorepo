@@ -218,13 +218,18 @@ export default function Dashboard() {
                 <a href="/trade" className="px-2 sm:px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
                   Trade
                 </a>
-                <a href="/portfolio" className="px-2 sm:px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
-                  Portfolio
+                <a href="/wallet" className="px-2 sm:px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
+                  Wallet
                 </a>
                 {isAdmin && (
-                  <a href="/admin" className="px-2 sm:px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
-                    Admin
-                  </a>
+                  <>
+                    <a href="/portfolio" className="px-2 sm:px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
+                      Portfolio
+                    </a>
+                    <a href="/admin" className="px-2 sm:px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
+                      Admin
+                    </a>
+                  </>
                 )}
               </nav>
               
@@ -243,6 +248,7 @@ export default function Dashboard() {
                 onConnect={handleConnectWallet}
                 onDisconnect={handleDisconnectWallet}
                 connectedAddress={connectedAddress || undefined}
+                showTokens={false}
               />
             </div>
           </div>

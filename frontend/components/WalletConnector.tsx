@@ -1,15 +1,18 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { UNISAT, XVERSE, useLaserEyes, ProviderType } from '@omnisat/lasereyes';
+import WalletTokenDisplay from '../src/components/WalletTokenDisplay';
 
 interface WalletConnectorProps {
   onConnect: (address: string) => void;
   onDisconnect: () => void;
   connectedAddress?: string;
+  showTokens?: boolean;
 }
 
-export default function WalletConnector({ onConnect, onDisconnect, connectedAddress }: WalletConnectorProps) {
+export default function WalletConnector({ onConnect, onDisconnect, connectedAddress, showTokens = false }: WalletConnectorProps) {
   const [walletMenuOpen, setWalletMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showBalances, setShowBalances] = useState(false);
   const { connect, disconnect, address, network } = useLaserEyes();
   // Add a ref to track connection state
   const previousConnectedRef = useRef<string | null>(null);
@@ -72,6 +75,9 @@ export default function WalletConnector({ onConnect, onDisconnect, connectedAddr
       if (onDisconnect) {
         onDisconnect();
       }
+      
+      // Hide balances when disconnecting
+      setShowBalances(false);
     } catch (err) {
       console.error('Failed to disconnect wallet', err);
       setError('Failed to disconnect wallet');
@@ -79,31 +85,50 @@ export default function WalletConnector({ onConnect, onDisconnect, connectedAddr
     setError(null);
   }, [disconnect, onDisconnect]);
   
+  const toggleBalances = useCallback(() => {
+    setShowBalances(prev => !prev);
+  }, []);
+  
   if (connectedAddress) {
     return (
-      <div className="flex items-center space-x-4">
-        <div className="flex items-center px-4 py-2 bg-white border border-primary rounded-md shadow-sm">
-          <div className="flex flex-col">
-            <div className="flex items-center">
-              <div className="w-2.5 h-2.5 bg-success rounded-full mr-2"></div>
-              <span className="text-xs text-primary font-medium">Connected Wallet</span>
-            </div>
-            <div className="flex items-center mt-1">
-              <span className="text-sm font-mono text-primary font-medium tracking-wide">
-                {connectedAddress.slice(0, 10)}...{connectedAddress.slice(-6)}
-              </span>
-              <span className={`ml-2 text-xs px-2 py-0.5 rounded ${getNetworkBadgeStyle(network)}`}>
-                {formatNetworkName(network || 'Testnet')}
-              </span>
-            </div>
-          </div>
-          <button
-            onClick={handleDisconnect}
-            className="ml-3 text-sm text-primary hover:text-primary-dark border border-primary border-opacity-50 rounded-md px-2 py-0.5 hover:bg-primary hover:bg-opacity-10 transition-colors"
+      <div className="flex flex-col">
+        <div className="flex items-center space-x-4">
+          <div 
+            className="flex items-center px-4 py-2 bg-white border border-primary rounded-md shadow-sm cursor-pointer"
+            onClick={toggleBalances}
           >
-            Disconnect
-          </button>
+            <div className="flex flex-col">
+              <div className="flex items-center">
+                <div className="w-2.5 h-2.5 bg-success rounded-full mr-2"></div>
+                <span className="text-xs text-primary font-medium">Connected Wallet</span>
+              </div>
+              <div className="flex items-center mt-1">
+                <span className="text-sm font-mono text-primary font-medium tracking-wide">
+                  {connectedAddress.slice(0, 10)}...{connectedAddress.slice(-6)}
+                </span>
+                <span className={`ml-2 text-xs px-2 py-0.5 rounded ${getNetworkBadgeStyle(network)}`}>
+                  {formatNetworkName(network || 'Testnet')}
+                </span>
+              </div>
+            </div>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDisconnect();
+              }}
+              className="ml-3 text-sm text-primary hover:text-primary-dark border border-primary border-opacity-50 rounded-md px-2 py-0.5 hover:bg-primary hover:bg-opacity-10 transition-colors"
+            >
+              Disconnect
+            </button>
+          </div>
         </div>
+        
+        {/* Token Balances Display */}
+        {(showBalances || showTokens) && (
+          <div className="mt-2 w-full">
+            <WalletTokenDisplay address={connectedAddress} />
+          </div>
+        )}
       </div>
     );
   }

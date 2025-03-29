@@ -111,6 +111,9 @@ export default function PortfolioPage() {
               <a href="/trade" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
                 Trade
               </a>
+              <a href="/wallet" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
+                Wallet
+              </a>
               <a href="/portfolio" className="px-3 py-2 rounded-md text-sm font-medium bg-primary text-white">
                 Portfolio
               </a>
@@ -163,6 +166,11 @@ export default function PortfolioPage() {
           <div className="bg-white border border-primary p-6 rounded-lg shadow-sm text-center">
             <p className="text-lg text-primary mb-4">Please connect your wallet to view your portfolio</p>
             <p className="text-sm text-primary opacity-75">You need to connect your wallet to access your portfolio information</p>
+          </div>
+        ) : !isAdmin ? (
+          <div className="bg-white border border-primary p-6 rounded-lg shadow-sm text-center">
+            <p className="text-lg text-primary mb-4">Admin Access Required</p>
+            <p className="text-sm text-primary opacity-75">The portfolio view is only available to fund administrators</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">

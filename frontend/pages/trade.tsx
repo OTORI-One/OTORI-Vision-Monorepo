@@ -98,6 +98,9 @@ export default function TradePage() {
               <a href="/trade" className="px-3 py-2 rounded-md text-sm font-medium bg-primary text-white">
                 Trade
               </a>
+              <a href="/wallet" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
+                Wallet
+              </a>
               {isAdmin && (
                 <>
                   <a href="/portfolio" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
