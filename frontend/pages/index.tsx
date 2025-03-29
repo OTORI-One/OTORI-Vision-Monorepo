@@ -107,7 +107,7 @@ export default function Dashboard() {
     // Set up interval for refreshing
     const intervalId = setInterval(() => {
       fetchNAV();
-    }, 60000); // Refresh every 60 seconds
+    }, 120000); // Reduce refresh frequency to 2 minutes to avoid rate limiting
     
     return () => {
       if (intervalId) {

@@ -34,6 +34,42 @@ interface BarShapeProps {
   payload?: any;
 }
 
+// Format currency values according to frontend-specific-dev-rules.mdc
+const formatCurrencyValue = (value: number, currency: Currency = 'usd'): string => {
+  if (!isFinite(value) || value === 0) return currency === 'usd' ? '$0.00' : '0 sats';
+  
+  if (currency === 'usd') {
+    // USD Value Standards:
+    // Values ≥ 1,000,000: Use '$' prefix, 'M' notation with two decimals (e.g., "$1.50M")
+    // Values ≥ 1,000: Use '$' prefix, 'k' notation with no decimals (e.g., "$500k")
+    // Values < 1,000: Use '$' prefix, show the full number with two decimal places (e.g., "$750.25")
+    if (value >= 1000000) {
+      return `$${(value / 1000000).toFixed(2)}M`;
+    } else if (value >= 1000) {
+      return `$${Math.floor(value / 1000)}k`;
+    } else {
+      return `$${value.toFixed(2)}`;
+    }
+  } else {
+    // BTC Value Standards:
+    // BTC ≥ 0.1: Show in BTC with 2 decimals (e.g., "₿0.15")
+    // Sats ≥ 1M: Use 'M' notation (e.g., "1.50M sats")
+    // Sats ≥ 1k: Use 'k' notation (e.g., "500k sats")
+    // Sats < 1k: Show full number (e.g., "750 sats")
+    const btcValue = value / SATS_PER_BTC;
+    
+    if (btcValue >= 0.1) {
+      return `₿${btcValue.toFixed(2)}`;
+    } else if (value >= 1000000) {
+      return `${(value / 1000000).toFixed(2)}M sats`;
+    } else if (value >= 1000) {
+      return `${Math.floor(value / 1000)}k sats`;
+    } else {
+      return `${Math.floor(value)} sats`;
+    }
+  }
+};
+
 // Updated component with a clearer name (PortfolioChart instead of NAVVisualization)
 // This visualizes the portfolio positions that make up the NAV
 function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBarClick }: PortfolioChartProps) {
@@ -74,6 +110,16 @@ function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBa
     // Debug the number of recalculations to detect excessive renders
     console.log(`Recalculating formatted data with ${portfolioData.length} positions`);
     
+    // Use a stable reference to the portfolio data to prevent unnecessary recalculations
+    const portfolioDataString = JSON.stringify(portfolioData);
+    const portfolioDataKey = portfolioDataString.length;
+    
+    // Generate a cache key that includes dependencies that should trigger recalculation
+    const cacheKey = `${displayCurrency}-${portfolioDataKey}-${nav?.navUsd || 0}-${nav?.navSats || 0}`;
+    
+    // Store the cache key for debugging and to check if it's changing unexpectedly
+    console.log('Portfolio data cache key:', cacheKey);
+    
     return portfolioData.map((item: PortfolioPosition) => {
       // Calculate the initial investment (value) and current value
       const initialInvestment = item.value;
@@ -105,12 +151,17 @@ function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBa
       // Calculate growth as a percentage
       const growthPercentage = ((currentValueConverted - initialInvestmentConverted) / initialInvestmentConverted) * 100;
       
-      // Format the values
+      // Format the values using the new formatter
       const formatted = {
-        initialInvestment: formatValue(initialInvestmentConverted),
-        currentValue: formatValue(currentValueConverted),
+        initialInvestment: formatCurrencyValue(initialInvestmentConverted, displayCurrency),
+        currentValue: formatCurrencyValue(currentValueConverted, displayCurrency),
         growth: `${growthPercentage.toFixed(2)}%`,
-        pricePerToken: formatValue(item.pricePerToken * item.tokenAmount / item.tokenAmount)
+        pricePerToken: formatCurrencyValue(
+          displayCurrency === 'usd' 
+            ? item.pricePerToken * (nav?.navUsd && nav?.navSats ? nav.navUsd / nav.navSats * SATS_PER_BTC : 50000) / SATS_PER_BTC 
+            : item.pricePerToken,
+          displayCurrency
+        )
       };
       
       return {
@@ -124,13 +175,13 @@ function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBa
         formatted
       };
     });
-  }, [portfolioData, displayCurrency, formatValue, nav]);
+  }, [portfolioData, displayCurrency, formatValue, nav?.navUsd, nav?.navSats]);
   
   // Format Y axis values - memoize to prevent unnecessary recalculations
   const formatYAxis = useCallback((value: number): string => {
-    // Use the centralized formatter
-    return formatValue(value);
-  }, [formatValue]);
+    // Use the custom formatter that follows the frontend-specific-dev-rules
+    return formatCurrencyValue(value, displayCurrency);
+  }, [displayCurrency]);
 
   // Handle bar click to show token details
   const handleClick = useCallback((data: any) => {
@@ -151,11 +202,16 @@ function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBa
     setSelectedToken(null);
   }, []);
   
-  // Cleanup effect to handle component unmounting
+  // Cleanup effect to handle component unmounting and prevent memory leaks
   React.useEffect(() => {
+    // Store references to values that will be used in interval cleanup
+    const mountTime = Date.now();
+    
     return () => {
       // Ensure proper cleanup to prevent memory leaks
-      console.log('PortfolioChart unmounting - cleaning up');
+      const unmountTime = Date.now();
+      const componentLifetime = unmountTime - mountTime;
+      console.log(`PortfolioChart unmounting after ${componentLifetime}ms - cleaning up`);
     };
   }, []);
 
@@ -231,7 +287,7 @@ function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBa
 // Export memoized component to prevent unnecessary re-renders
 export default memo(PortfolioChart);
 
-// Update CustomTooltip to use the centralized currency formatter
+// Update CustomTooltip to use the consistent currency formatter
 interface CustomTooltipProps {
   active?: boolean;
   payload?: any[];
@@ -241,8 +297,6 @@ interface CustomTooltipProps {
 
 // Create a memoized tooltip component to prevent unnecessary renders
 const CustomTooltip = ({ active, payload, label, baseCurrency }: CustomTooltipProps) => {
-  const { formatValue } = useCurrencyToggle();
-  
   if (active && payload && payload.length > 0) {
     const data = payload[0].payload as ChartDataItem;
     const initialInvestment = data.initialInvestment;
@@ -254,11 +308,11 @@ const CustomTooltip = ({ active, payload, label, baseCurrency }: CustomTooltipPr
       ? `${growth >= 0 ? '+' : ''}${growth.toFixed(2)}%` 
       : '+0.00%';
     
-    // Use our consistent formatter from the currency hook
-    const formattedInitial = formatValue(initialInvestment);
-    const formattedCurrent = formatValue(currentValue);
+    // Use our consistent formatter
+    const formattedInitial = data.formatted ? data.formatted.initialInvestment : formatCurrencyValue(initialInvestment, baseCurrency);
+    const formattedCurrent = data.formatted ? data.formatted.currentValue : formatCurrencyValue(currentValue, baseCurrency);
     const formattedTokens = data.tokenAmount.toLocaleString();
-    const formattedPrice = formatValue(data.pricePerToken);
+    const formattedPrice = data.formatted ? data.formatted.pricePerToken : formatCurrencyValue(data.pricePerToken, baseCurrency);
     
     return (
       <div className="bg-white p-4 shadow-lg rounded-lg border border-primary max-w-xs">

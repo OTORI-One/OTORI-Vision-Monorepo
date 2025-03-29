@@ -122,11 +122,25 @@ export const CurrencyProvider = ({
   
   // Format a value according to current currency
   const formatValue = useCallback((value: number, btcPriceOverride?: number): string => {
-    const effectiveBtcPrice = btcPriceOverride || bitcoinPrice;
+    // First validate inputs to prevent infinity issues
+    if (!isFinite(value)) {
+      console.warn('formatValue received non-finite value:', value);
+      value = 0;
+    }
+    
+    // Safely handle Bitcoin price
+    const effectiveBtcPrice = (btcPriceOverride && isFinite(btcPriceOverride)) 
+      ? btcPriceOverride 
+      : (isFinite(bitcoinPrice) ? bitcoinPrice : 50000);
     
     if (currency === 'usd') {
       // Convert sats to USD
       const usdValue = (value / SATS_PER_BTC) * effectiveBtcPrice;
+      
+      // Check for NaN or Infinity again after calculation
+      if (!isFinite(usdValue)) {
+        return '$0.00';
+      }
       
       // Format according to rules
       if (usdValue >= 1000000) {
@@ -145,6 +159,11 @@ export const CurrencyProvider = ({
         return `$0.00`;
       }
     } else {
+      // Check for NaN or Infinity
+      if (!isFinite(value)) {
+        return '0 sats';
+      }
+      
       // Format BTC/sats value
       if (value >= SATS_PER_BTC) { // 1 BTC or more
         return `₿${(value / SATS_PER_BTC).toFixed(4)}`;

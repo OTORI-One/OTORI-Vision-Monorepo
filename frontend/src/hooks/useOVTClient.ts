@@ -84,29 +84,68 @@ const archClient = new ArchClient({
 
 // Helper function to format values consistently
 const formatValue = (value: number, displayMode: 'btc' | 'usd' = 'btc', btcPrice?: number | null): string => {
-  // Reduce logging for better performance
-  if (process.env.NODE_ENV === 'development' && Math.random() < 0.01) { // Only log ~1% of calls
-    console.log(`formatValue called with value: ${value}, mode: ${displayMode}, btcPrice: ${btcPrice}`);
+  // Early validation to prevent infinity issues - before ANY calculations
+  if (!Number.isFinite(value)) {
+    console.error('formatValue received non-finite value - returning zero:', value, new Error().stack);
+    return displayMode === 'usd' ? '$0.00' : '0 sats';
+  }
+
+  if (displayMode === 'usd' && (btcPrice === undefined || btcPrice === null || !Number.isFinite(btcPrice))) {
+    console.warn('formatValue received invalid btcPrice, using default:', btcPrice);
+    btcPrice = 50000; // Default fallback
   }
   
   try {
-    if (!Number.isFinite(value) || value < 0) {
+    // Apply minimum value threshold
+    if (value < 0) {
       value = 0;
     }
     
-    // Ensure we're using the correct BTC price for USD conversion
-    const effectiveBtcPrice = btcPrice || 50000; // Default to 50k for tests
+    // Ensure we're using a valid BTC price for USD conversion
+    const effectiveBtcPrice = (btcPrice && Number.isFinite(btcPrice)) ? btcPrice : 50000;
     
     if (displayMode === 'usd') {
-      // Format USD value - calculate the USD value first
-      return formatCurrencyValue(value, 'usd');
+      // Format USD value
+      return formatCurrencyValueLocal(value, 'usd');
     } else {
       // Format BTC value
-      return formatCurrencyValue(value, 'btc');
+      return formatCurrencyValueLocal(value, 'btc');
     }
   } catch (error) {
     console.error('Error in formatValue:', error);
     return displayMode === 'usd' ? '$0.00' : '₿0.00';
+  }
+};
+
+// Add a specialized currency formatter that follows the frontend-specific-dev-rules
+const formatCurrencyValueLocal = (value: number, currency: 'btc' | 'usd' = 'usd'): string => {
+  // Validate input to prevent Infinity issues
+  if (!Number.isFinite(value) || value === 0) {
+    return currency === 'usd' ? '$0.00' : '0 sats';
+  }
+  
+  if (currency === 'usd') {
+    // USD Value Standards:
+    if (value >= 1000000) {
+      return `$${(value / 1000000).toFixed(2)}M`;
+    } else if (value >= 1000) {
+      return `$${Math.floor(value / 1000)}k`;
+    } else {
+      return `$${value.toFixed(2)}`;
+    }
+  } else {
+    // BTC Value Standards:
+    const btcValue = value / SATS_PER_BTC;
+    
+    if (btcValue >= 0.1) {
+      return `₿${btcValue.toFixed(2)}`;
+    } else if (value >= 1000000) {
+      return `${(value / 1000000).toFixed(2)}M sats`;
+    } else if (value >= 1000) {
+      return `${Math.floor(value / 1000)}k sats`;
+    } else {
+      return `${Math.floor(value)} sats`;
+    }
   }
 };
 
@@ -147,9 +186,18 @@ export const getGlobalOVTPrice = (): number => {
 };
 
 export function useOVTClient() {
-  const [isLoading, setIsLoading] = useState(false);
+  // State hooks - initialize properly to prevent React queue errors
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [baseCurrency, setBaseCurrency] = useState<'btc' | 'usd' | undefined>(globalBaseCurrency);
+  const [baseCurrency, setBaseCurrency] = useState<'btc' | 'usd'>('btc');
+  
+  // Access the central price store
+  const priceStore = useMemo(() => {
+    if (typeof window !== 'undefined') {
+      return priceService.getPriceStore();
+    }
+    return null;
+  }, []);
   
   // Add a fallback for Bitcoin price in case useBitcoinPrice returns undefined during testing
   const bitcoinPriceHook = useBitcoinPrice() || { price: 50000, isLoading: false, error: null };
@@ -169,8 +217,8 @@ export function useOVTClient() {
   const [portfolioPositions, setPortfolioPositions] = useState<Portfolio[]>([]);
   const [lastPriceUpdateTime, setLastPriceUpdateTime] = useState<number>(Date.now());
   
-  // Get the global OVT price
-  const initialOVTPrice = getGlobalOVTPrice();
+  // Get the global OVT price without triggering renders
+  const initialOVTPrice = useMemo(() => getGlobalOVTPrice(), []);
   
   // Add centralized OVT price state
   const [ovtPrice, setOvtPrice] = useState<number>(initialOVTPrice);

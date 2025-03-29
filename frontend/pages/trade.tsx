@@ -10,7 +10,15 @@ import NAVDisplay from '../components/NAVDisplay';
 import { isAdminWallet } from '../src/utils/adminUtils';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { usePortfolio } from '../src/hooks/usePortfolio';
+import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
+import priceService from '../src/services/priceService';
+
+// Ensure NAV data is loaded before rendering
+if (typeof window !== 'undefined') {
+  // Immediately trigger a fetch - don't wait for it to complete
+  priceService.getPriceStore().fetchNAVData();
+}
 
 // Import components that depend on client-side data with dynamic import and SSR disabled
 const DynamicTradingContent = dynamic(
@@ -22,6 +30,7 @@ export default function TradePage() {
   // Use hooks
   const { address: walletAddress, network } = useLaserEyes();
   const { currency } = useCurrencyToggle();
+  const { nav, refreshNAV } = useNAV(); // Get NAV data
   const isConnected = !!walletAddress;
   
   // Client-side state
@@ -41,7 +50,10 @@ export default function TradePage() {
     if (walletAddress) {
       setLaserEyesWallets([walletAddress]);
     }
-  }, [walletAddress]);
+    
+    // Make sure we have fresh NAV data
+    refreshNAV();
+  }, [walletAddress, refreshNAV]);
   
   // Update wallet connection status when address changes
   useEffect(() => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { 
   calculateNAV, 
   updateNAV,
@@ -9,7 +9,8 @@ import {
 } from '../lib/navCalculator';
 import { PortfolioPosition, getPortfolioFromLocalStorage } from '../utils/priceMovement';
 import { useCurrencyToggle, Currency } from './useCurrencyToggle';
-import { formatValue } from '@/src/lib/formatting';
+import { formatValue, SATS_PER_BTC } from '@/src/lib/formatting';
+import priceService from '@/src/services/priceService';
 
 interface NAVHookResult {
   nav: NAVResult;
@@ -31,169 +32,162 @@ const defaultNAV: NAVResult = {
   changePercentage: 0
 };
 
-// Add debounce helper at the top of the file
-const debounce = <F extends (...args: any[]) => any>(
-  func: F,
-  waitFor: number
-): ((...args: Parameters<F>) => void) => {
-  let timeout: ReturnType<typeof setTimeout> | null = null;
+// Add a global cache at the module level to store NAV data across component instances
+const navDataCache = {
+  data: null as NAVResult | null,
+  timestamp: 0,
+  subscribers: new Set<(data: NAVResult) => void>()
+};
+
+// Central update function that updates all subscribers
+const updateNavSubscribers = (data: NAVResult) => {
+  navDataCache.data = data;
+  navDataCache.timestamp = Date.now();
   
-  return (...args: Parameters<F>): void => {
-    if (timeout !== null) {
-      clearTimeout(timeout);
-      timeout = null;
+  // Notify all subscribers
+  navDataCache.subscribers.forEach(callback => {
+    try {
+      callback(data);
+    } catch (err) {
+      console.error('Error in NAV subscriber callback:', err);
     }
-    timeout = setTimeout(() => func(...args), waitFor);
-  };
+  });
+};
+
+// Helper function to determine if cache is still fresh
+const isCacheFresh = (maxAge: number = 5000): boolean => {
+  return (
+    navDataCache.data !== null && 
+    Date.now() - navDataCache.timestamp < maxAge
+  );
 };
 
 /**
  * Hook for accessing NAV data with automatic currency formatting
  */
 export function useNAV(): NAVHookResult {
-  const [positions, setPositions] = useState<PortfolioPosition[]>([]);
-  const [navData, setNavData] = useState<NAVResult>(defaultNAV);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [navData, setNavData] = useState<NAVResult>(() => 
+    navDataCache.data || defaultNAV
+  );
+  const [loading, setLoading] = useState<boolean>(!navDataCache.data);
   const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<number>(Date.now());
+  const [lastUpdateTime, setLastUpdateTime] = useState<number>(navDataCache.timestamp);
   
   // Get the currency context
   const { currency } = useCurrencyToggle();
   
-  // Prevent excessive refreshes
-  const updateThrottleRef = useRef<boolean>(false);
-  const calculateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  
-  // Debounced version of setNavData to prevent too frequent updates
-  const debouncedSetNavData = useCallback(
-    debounce((data: NAVResult) => {
-      setNavData(data);
-      updateThrottleRef.current = false;
-      setLastUpdated(Date.now());
-    }, 300),
-    []
-  );
+  // Access the centralized price store for consistency
+  const priceStore = useMemo(() => {
+    return typeof window !== 'undefined' ? priceService.getPriceStore() : null;
+  }, []);
   
   // Refresh portfolio data and recalculate NAV
   const refreshNAV = useCallback(() => {
-    // Don't allow refreshes more often than once every 5 seconds
-    if (updateThrottleRef.current) {
-      return;
-    }
-    
-    updateThrottleRef.current = true;
     setLoading(true);
     
-    // Clear any existing calculation timeout
-    if (calculateTimeoutRef.current !== null) {
-      clearTimeout(calculateTimeoutRef.current);
+    // Use the store method which has built-in rate limiting
+    priceStore?.fetchNAVData(true)
+      .then(data => {
+        // Map from API format to NAV format
+        const navResult: NAVResult = {
+          navSats: data.totalValueSats,
+          navUsd: data.totalValueUSD,
+          formattedNavSats: data.formattedTotalValueSats,
+          formattedNavUsd: data.formattedTotalValueUSD,
+          pricePerToken: data.ovtPrice,
+          pricePerTokenUsd: data.btcPrice ? (data.ovtPrice / SATS_PER_BTC) * data.btcPrice : 0,
+          totalTokenSupply: data.circulatingSupply || 2100000,
+          changePercentage: data.changePercentage || 0
+        };
+        
+        // Update module-level cache for all components
+        updateNavSubscribers(navResult);
+        
+        // Update local state
+        setNavData(navResult);
+        setError(null);
+        setLastUpdateTime(Date.now());
+      })
+      .catch(err => {
+        console.error('Error refreshing NAV:', err);
+        setError('Failed to refresh NAV data');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, [priceStore]);
+  
+  // Subscribe to global NAV updates
+  useEffect(() => {
+    // Skip in SSR context
+    if (typeof window === 'undefined') return;
+    
+    // Callback when NAV data is updated
+    const handleNavUpdate = (data: NAVResult) => {
+      setNavData(data);
+      setLoading(false);
+      setError(null);
+      setLastUpdateTime(Date.now());
+    };
+    
+    // Add subscription to global updates
+    navDataCache.subscribers.add(handleNavUpdate);
+    
+    // Initial data fetch if cache is stale or empty
+    if (!isCacheFresh(10000)) {
+      // Try to use price store API data first
+      if (priceStore) {
+        priceStore.fetchNAVData()
+          .then(data => {
+            // Map from API format to NAV format
+            const navResult: NAVResult = {
+              navSats: data.totalValueSats,
+              navUsd: data.totalValueUSD,
+              formattedNavSats: data.formattedTotalValueSats,
+              formattedNavUsd: data.formattedTotalValueUSD,
+              pricePerToken: data.ovtPrice,
+              pricePerTokenUsd: data.btcPrice ? (data.ovtPrice / SATS_PER_BTC) * data.btcPrice : 0,
+              totalTokenSupply: data.circulatingSupply || 2100000,
+              changePercentage: data.changePercentage || 0
+            };
+            
+            // Update module-level cache for all components
+            updateNavSubscribers(navResult);
+          })
+          .catch(err => {
+            console.warn('Could not fetch initial NAV data from API:', err);
+            // Use fallback local calculation if API fails
+            try {
+              const portfolioPositions = getPortfolioFromLocalStorage();
+              const initialNav = calculateNAV(portfolioPositions);
+              
+              // Update module-level cache
+              updateNavSubscribers(initialNav);
+            } catch (calcErr) {
+              console.error('Error with fallback NAV calculation:', calcErr);
+              setError('Failed to load NAV data');
+            }
+          });
+      } else {
+        // No price store available, use local calculation
+        try {
+          const portfolioPositions = getPortfolioFromLocalStorage();
+          const initialNav = calculateNAV(portfolioPositions);
+          
+          // Update module-level cache
+          updateNavSubscribers(initialNav);
+        } catch (err) {
+          console.error('Error calculating local NAV:', err);
+          setError('Failed to load NAV data');
+        }
+      }
     }
     
-    // Delay the calculation slightly to batch multiple rapid calls
-    calculateTimeoutRef.current = setTimeout(() => {
-      try {
-        // Reload portfolio positions
-        const updatedPositions = getPortfolioFromLocalStorage();
-        setPositions(updatedPositions);
-        
-        // Update NAV with fresh data
-        const updatedNav = updateNAV(updatedPositions);
-        
-        // Use the debounced setter to prevent UI thrashing
-        debouncedSetNavData(updatedNav);
-        setError(null); // Clear any previous errors
-        setLoading(false);
-        
-        // Only reset the throttle after 5 seconds (reduced update frequency)
-        setTimeout(() => {
-          updateThrottleRef.current = false;
-        }, 5000);
-      } catch (err) {
-        console.error('Error refreshing NAV data:', err);
-        setError('Failed to refresh NAV data');
-        setLoading(false);
-        updateThrottleRef.current = false;
-      }
-    }, 50);
-  }, [debouncedSetNavData]);
-  
-  // Initialize NAV data
-  useEffect(() => {
-    let isMounted = true;
-    
-    const initializeNAV = async () => {
-      try {
-        // Load portfolio positions
-        const portfolioPositions = getPortfolioFromLocalStorage();
-        
-        // Only update state if component is still mounted
-        if (isMounted) {
-          setPositions(portfolioPositions);
-          
-          // Calculate initial NAV
-          const initialNav = calculateNAV(portfolioPositions);
-          setNavData(initialNav);
-          setLoading(false);
-          setLastUpdated(Date.now());
-        }
-      } catch (err) {
-        console.error('Error initializing NAV data:', err);
-        if (isMounted) {
-          setError('Failed to initialize NAV data');
-          setLoading(false);
-        }
-      }
-    };
-    
-    initializeNAV();
-    
-    // No internal timer - we'll rely on external triggers only
-    // This reduces the number of timers and avoids memory issues
-    
-    // Cleanup function
+    // Clean up subscription on unmount
     return () => {
-      isMounted = false;
-      if (calculateTimeoutRef.current !== null) {
-        clearTimeout(calculateTimeoutRef.current);
-      }
+      navDataCache.subscribers.delete(handleNavUpdate);
     };
-  }, []);
-  
-  // Listen for NAV updates
-  useEffect(() => {
-    let isMounted = true;
-    
-    // Create a debounced handler for update events
-    const handleNavUpdate = debounce((updatedNav: NAVResult) => {
-      if (isMounted && !updateThrottleRef.current) {
-        setNavData(updatedNav);
-        setLastUpdated(Date.now());
-      }
-    }, 300);
-    
-    // Subscribe to NAV updates with a debounce to prevent too many refreshes
-    addNAVUpdateListener(handleNavUpdate);
-    
-    // Also listen for direct nav-update events for backward compatibility
-    const handleLegacyNavUpdate = (event: CustomEvent) => {
-      if (isMounted && event.detail && event.detail.nav) {
-        // Only refresh if it's been at least 5 seconds since the last update
-        const now = Date.now();
-        if (now - lastUpdated > 5000) {
-          refreshNAV();
-        }
-      }
-    };
-    
-    window.addEventListener('nav-update', handleLegacyNavUpdate as EventListener);
-    
-    // Cleanup all listeners on unmount to prevent memory leaks
-    return () => {
-      isMounted = false;
-      removeNAVUpdateListener(handleNavUpdate);
-      window.removeEventListener('nav-update', handleLegacyNavUpdate as EventListener);
-    };
-  }, [refreshNAV, lastUpdated]);
+  }, [priceStore]);
   
   // Get formatted NAV based on current currency - memoize to prevent unnecessary calculations
   const getFormattedNAV = useCallback((navResult: NAVResult, activeCurrency: Currency): string => {
