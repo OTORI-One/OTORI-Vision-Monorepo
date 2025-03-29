@@ -81,12 +81,22 @@ export function formatCurrencyValue(value: number, currency: 'btc' | 'usd' = 'bt
  */
 export function formatValue(value: number, displayMode: 'btc' | 'usd' = 'btc', btcPrice?: number | null): string {
   try {
-    if (!Number.isFinite(value) || value < 0) {
+    // Check for invalid values without logging by default
+    if (!Number.isFinite(value) || value === Infinity || value === -Infinity) {
+      // Only log if debug is explicitly enabled via window.__DEBUG_FORMATTING = true
+      // This completely disables logging unless intentionally enabled
+      if (typeof window !== 'undefined' && (window as any).__DEBUG_FORMATTING === true) {
+        console.log(`formatValue called with value: ${value}, mode: ${displayMode}, btcPrice: ${btcPrice}`);
+      }
+      value = 0;
+    }
+    
+    if (value < 0) {
       value = 0;
     }
     
     // Use default BTC price of 50000 if not provided for consistent test behavior
-    const effectiveBtcPrice = btcPrice || 50000;
+    const effectiveBtcPrice = (btcPrice && Number.isFinite(btcPrice)) ? btcPrice : 50000;
     
     if (displayMode === 'usd') {
       const usdValue = (value / SATS_PER_BTC) * effectiveBtcPrice;

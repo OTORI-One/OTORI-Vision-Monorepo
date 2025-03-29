@@ -12,6 +12,26 @@ const priceService = require('../services/priceService');
 // Initialize price service when routes are loaded
 priceService.initialize();
 
+// Add rate limiting middleware
+const rateLimitMiddleware = (endpoint) => (req, res, next) => {
+  // Get client IP
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+  
+  // Check if this request is allowed
+  if (priceService.requestTracker.isAllowed(ip, endpoint)) {
+    // Track the request
+    priceService.requestTracker.trackRequest(ip, endpoint);
+    next();
+  } else {
+    // Too many requests - send 429 response
+    console.warn(`Rate limit exceeded for ${ip} on ${endpoint}`);
+    res.status(429).json({
+      success: false,
+      error: 'Rate limit exceeded. Please try again later.'
+    });
+  }
+};
+
 /**
  * @route GET /api/price/portfolio
  * @description Get all portfolio positions with current prices
@@ -39,7 +59,7 @@ router.get('/portfolio', (req, res) => {
  * @description Get current OVT price data
  * @access Public
  */
-router.get('/ovt', (req, res) => {
+router.get('/ovt', rateLimitMiddleware('ovt'), (req, res) => {
   try {
     const ovtPrice = priceService.getOVTPrice();
     res.json({
@@ -49,9 +69,14 @@ router.get('/ovt', (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching OVT price:', error);
+    
+    // Track the error for exponential backoff
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    priceService.requestTracker.trackError(ip, 'ovt');
+    
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch OVT price'
+      error: 'Failed to fetch OVT price data'
     });
   }
 });
@@ -61,7 +86,7 @@ router.get('/ovt', (req, res) => {
  * @description Get current Bitcoin price
  * @access Public
  */
-router.get('/bitcoin', (req, res) => {
+router.get('/bitcoin', rateLimitMiddleware('bitcoin'), (req, res) => {
   try {
     const bitcoinPrice = priceService.getBitcoinPrice();
     res.json({
@@ -71,9 +96,14 @@ router.get('/bitcoin', (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching Bitcoin price:', error);
+    
+    // Track the error for exponential backoff
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    priceService.requestTracker.trackError(ip, 'bitcoin');
+    
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch Bitcoin price'
+      error: 'Failed to fetch Bitcoin price data'
     });
   }
 });
@@ -118,7 +148,7 @@ router.get('/history/:positionName', (req, res) => {
  * @description Get NAV data including total value and changes
  * @access Public
  */
-router.get('/nav', (req, res) => {
+router.get('/nav', rateLimitMiddleware('nav'), (req, res) => {
   try {
     const navData = priceService.getNAVData();
     res.json({
@@ -128,6 +158,11 @@ router.get('/nav', (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching NAV data:', error);
+    
+    // Track the error for exponential backoff
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+    priceService.requestTracker.trackError(ip, 'nav');
+    
     res.status(500).json({
       success: false,
       error: 'Failed to fetch NAV data'

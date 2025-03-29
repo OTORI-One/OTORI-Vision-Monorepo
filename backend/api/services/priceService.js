@@ -51,6 +51,121 @@ let priceState = {
   }
 };
 
+// Track request frequency with rate limiting
+const requestTracker = {
+  // Store last request timestamps by IP
+  lastRequests: {},
+  // Store request counts by IP for the current minute
+  requestCounts: {},
+  // Rate limit settings
+  rateLimit: {
+    standard: 60, // 60 requests per minute for standard endpoints
+    high: 10,     // 10 requests per minute for high-load endpoints
+    backoff: {}   // Store last error timestamp by IP for exponential backoff
+  },
+  // Track an API request
+  trackRequest: function(ip, endpoint) {
+    const now = Date.now();
+    const minute = Math.floor(now / 60000);
+    
+    // Initialize tracking for this IP if needed
+    if (!this.lastRequests[ip]) {
+      this.lastRequests[ip] = {};
+      this.requestCounts[ip] = {};
+      this.rateLimit.backoff[ip] = {};
+    }
+    
+    // Track this request
+    this.lastRequests[ip][endpoint] = now;
+    
+    // Track request count for this minute
+    const key = `${minute}:${endpoint}`;
+    this.requestCounts[ip][key] = (this.requestCounts[ip][key] || 0) + 1;
+    
+    return now;
+  },
+  // Check if a request is allowed based on rate limits
+  isAllowed: function(ip, endpoint) {
+    const now = Date.now();
+    const minute = Math.floor(now / 60000);
+    
+    // If no previous requests from this IP, allow
+    if (!this.lastRequests[ip]) {
+      return true;
+    }
+    
+    // If this IP had errors recently, apply exponential backoff
+    const lastErrorTime = this.rateLimit.backoff[ip][endpoint] || 0;
+    const errorCount = this.rateLimit.backoff[ip][`${endpoint}:count`] || 0;
+    
+    if (lastErrorTime > 0 && errorCount > 0) {
+      // Calculate backoff time: 2^errorCount seconds, capped at 5 minutes
+      const backoffTime = Math.min(Math.pow(2, errorCount) * 1000, 300000);
+      const timeElapsed = now - lastErrorTime;
+      
+      if (timeElapsed < backoffTime) {
+        return false; // Still in backoff period
+      }
+    }
+    
+    // Check request count for this minute
+    const key = `${minute}:${endpoint}`;
+    const count = this.requestCounts[ip][key] || 0;
+    
+    // Different rate limits for different endpoint types
+    let limit = this.rateLimit.standard;
+    if (endpoint === 'nav' || endpoint === 'ovt') {
+      limit = this.rateLimit.high;
+    }
+    
+    return count < limit;
+  },
+  // Track an error for exponential backoff
+  trackError: function(ip, endpoint) {
+    if (!this.rateLimit.backoff[ip]) {
+      this.rateLimit.backoff[ip] = {};
+    }
+    
+    this.rateLimit.backoff[ip][endpoint] = Date.now();
+    this.rateLimit.backoff[ip][`${endpoint}:count`] = 
+      (this.rateLimit.backoff[ip][`${endpoint}:count`] || 0) + 1;
+    
+    // Reset error count after 10 minutes to avoid permanent throttling
+    setTimeout(() => {
+      if (this.rateLimit.backoff[ip]) {
+        this.rateLimit.backoff[ip][`${endpoint}:count`] = 0;
+      }
+    }, 600000);
+  },
+  // Reset tracking for cleanup
+  resetTracking: function() {
+    const now = Date.now();
+    const currentMinute = Math.floor(now / 60000);
+    
+    // Clear old request counts (older than 5 minutes)
+    Object.keys(this.requestCounts).forEach(ip => {
+      Object.keys(this.requestCounts[ip]).forEach(key => {
+        const [minute] = key.split(':');
+        if (currentMinute - parseInt(minute) > 5) {
+          delete this.requestCounts[ip][key];
+        }
+      });
+      
+      // Clean up empty IPs
+      if (Object.keys(this.requestCounts[ip]).length === 0) {
+        delete this.requestCounts[ip];
+        delete this.lastRequests[ip];
+        delete this.rateLimit.backoff[ip];
+      }
+    });
+  }
+};
+
+// Run cleanup every 5 minutes
+setInterval(() => {
+  requestTracker.resetTracking();
+}, 300000);
+
 // Helper functions for the advanced algorithm
 
 /**
@@ -690,8 +805,11 @@ function calculate24HourChange(positionName) {
       return 0;
     }
     
+    // Ensure positionName is a string to avoid errors with toLowerCase()
+    const positionNameStr = String(positionName);
+    
     // Special case for OVT which isn't a portfolio position
-    if (positionName.toLowerCase() === 'ovt') {
+    if (positionNameStr.toLowerCase() === 'ovt') {
       const now = new Date();
       const yesterday = new Date(now);
       yesterday.setDate(yesterday.getDate() - 1);
@@ -700,26 +818,33 @@ function calculate24HourChange(positionName) {
       const yesterdayKey = getDayKey(yesterday);
       
       // Check if we have history for 'ovt' specifically
-      if (priceState.priceHistory.daily['ovt'] && 
+      if (priceState.priceHistory && 
+          priceState.priceHistory.daily && 
+          priceState.priceHistory.daily['ovt'] && 
           priceState.priceHistory.daily['ovt'][yesterdayKey]) {
         const todayValue = priceState.ovtPrice;
         const yesterdayValue = priceState.priceHistory.daily['ovt'][yesterdayKey];
         
-        return ((todayValue - yesterdayValue) / yesterdayValue) * 100;
+        // Ensure both values are valid numbers
+        if (isFinite(todayValue) && isFinite(yesterdayValue) && yesterdayValue > 0) {
+          return ((todayValue - yesterdayValue) / yesterdayValue) * 100;
+        }
       }
       
       // If no direct OVT history, generate a realistic daily change
       // Use a weighted average of all portfolio positions
       const totalValue = Object.values(priceState.positions)
-        .reduce((sum, pos) => sum + pos.current, 0);
+        .reduce((sum, pos) => sum + (isFinite(pos.current) ? pos.current : 0), 0);
         
       if (totalValue > 0) {
         let weightedChange = 0;
         
-        Object.values(priceState.positions).forEach(pos => {
-          const posChange = calculate24HourChange(pos.name);
-          const weight = pos.current / totalValue;
-          weightedChange += posChange * weight;
+        Object.entries(priceState.positions).forEach(([name, pos]) => {
+          if (name && pos) {
+            const posChange = calculate24HourChange(name);
+            const weight = isFinite(pos.current) ? pos.current / totalValue : 0;
+            weightedChange += posChange * weight;
+          }
         });
         
         // Add a slight positive bias (0-2%) for OVT as a fund token
@@ -732,7 +857,7 @@ function calculate24HourChange(positionName) {
     }
     
     // Normal case for portfolio positions
-    const position = priceState.positions[positionName];
+    const position = priceState.positions[positionNameStr];
     if (!position) return 0;
     
     const now = new Date();
@@ -743,9 +868,12 @@ function calculate24HourChange(positionName) {
     const yesterdayKey = getDayKey(yesterday);
     
     const todayValue = position.current;
-    const yesterdayValue = priceState.priceHistory.daily[positionName]?.[yesterdayKey];
+    const yesterdayValue = priceState.priceHistory?.daily?.[positionNameStr]?.[yesterdayKey];
     
-    if (!yesterdayValue) return 0;
+    // Ensure we have valid values
+    if (!yesterdayValue || !isFinite(todayValue) || !isFinite(yesterdayValue) || yesterdayValue === 0) {
+      return 0;
+    }
     
     return ((todayValue - yesterdayValue) / yesterdayValue) * 100;
   } catch (error) {
@@ -1032,5 +1160,6 @@ module.exports = {
   updateOVTCirculatingSupply,
   calculateOVTPrice,
   updatePriceHistory,
-  savePriceData
+  savePriceData,
+  requestTracker
 }; 

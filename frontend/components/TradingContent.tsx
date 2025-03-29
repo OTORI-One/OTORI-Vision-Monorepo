@@ -1,9 +1,12 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import TradingInterface from './TradingInterface';
 import { useOVTPrice } from '../src/hooks/useOVTPrice';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
-import { useNAV } from '../src/hooks/useNAV';
 import priceService from '../src/services/priceService';
+import dynamic from 'next/dynamic';
+
+// Dynamic import of NAVDisplay with disabled SSR
+const DynamicNAVDisplay = dynamic(() => import('./NAVDisplay'), { ssr: false });
 
 interface TradingContentProps {
   isConnected: boolean;
@@ -28,15 +31,51 @@ const TradingContent: React.FC<TradingContentProps> = ({
   const { dailyChange, btcPriceFormatted, usdPriceFormatted } = useOVTPrice();
   const { currency } = useCurrencyToggle();
   
-  // Use NAV data with the dailyChange from OVT price for consistency
-  const { nav, formattedNAV: formattedTotalValue } = useNAV();
+  // State for NAV data from the backend
+  const [navData, setNavData] = useState({
+    totalValueSats: 0,
+    totalValueUSD: 0,
+    formattedTotalValueSats: '0 sats',
+    formattedTotalValueUSD: '$0.00',
+    changePercentage: 0
+  });
   
-  // Override change percentage with the one from OVT price hook for consistency
-  const changePercentage = dailyChange || nav.changePercentage;
-  const isPositive = changePercentage >= 0;
+  // Fetch NAV data from the backend
+  useEffect(() => {
+    // Only run this effect on the client side
+    if (typeof window === 'undefined') return;
+    
+    const fetchNAV = async () => {
+      try {
+        const data = await priceService.getNAVData();
+        setNavData({
+          ...data,
+          // Override the change percentage with the OVT price for consistency
+          changePercentage: dailyChange || data.changePercentage
+        });
+      } catch (error) {
+        console.error('Error fetching NAV:', error);
+      }
+    };
+    
+    // Initial fetch
+    fetchNAV();
+    
+    // Refresh every 30 seconds to reduce API load
+    const interval = setInterval(fetchNAV, 30000);
+    
+    return () => clearInterval(interval);
+  }, [dailyChange]);
+  
+  // Get formatted total value based on current currency
+  const formattedTotalValue = currency === 'usd' 
+    ? navData.formattedTotalValueUSD
+    : navData.formattedTotalValueSats;
   
   // Format percentage for display
-  const formattedChangePercentage = changePercentage.toFixed(2);
+  const changePercentage = navData.changePercentage;
+  const isPositive = changePercentage >= 0;
+  const formattedChangePercentage = (changePercentage || 0).toFixed(2);
   
   return (
     <>

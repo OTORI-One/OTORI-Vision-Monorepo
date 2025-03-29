@@ -1,9 +1,12 @@
 import React, { ReactNode } from 'react';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
-import NAVDisplay from './NAVDisplay';
 import CurrencyToggle from './CurrencyToggle';
 import WalletConnector from './WalletConnector';
+import dynamic from 'next/dynamic';
+
+// Import NAVDisplay with client-side only rendering
+const NAVDisplay = dynamic(() => import('./NAVDisplay'), { ssr: false });
 
 type LayoutProps = {
   children: ReactNode;

@@ -3,7 +3,6 @@ import Head from 'next/head';
 import { ArrowUpIcon, CurrencyDollarIcon, CircleStackIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 import WalletConnector from '../components/WalletConnector';
 import PortfolioChart from '../components/PortfolioChart';
-import PriceChart from '../components/PriceChart';
 import ChartToggle from '../components/ChartToggle';
 import { useOVTClient, SATS_PER_BTC } from '../src/hooks/useOVTClient';
 import AdminDashboard from '../components/admin/AdminDashboard';
@@ -14,12 +13,16 @@ import { useTradingModule } from '../src/hooks/useTradingModule';
 import { isAdminWallet } from '../src/utils/adminUtils';
 import { getGlobalNAVReference, updateGlobalNAVReference } from '../src/utils/priceMovement';
 import CurrencyToggle from '../components/CurrencyToggle';
-import NAVDisplay from '../components/NAVDisplay';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { usePortfolio } from '../src/hooks/usePortfolio';
 import { formatValue } from '../src/lib/formatting';
 import { useOVTPrice } from '../src/hooks/useOVTPrice';
 import priceService from '../src/services/priceService';
+import dynamic from 'next/dynamic';
+
+// Import client-only components with dynamic imports
+const PriceChart = dynamic(() => import('../components/PriceChart'), { ssr: false });
+const NAVDisplay = dynamic(() => import('../components/NAVDisplay'), { ssr: false });
 
 export default function Dashboard() {
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
@@ -80,6 +83,8 @@ export default function Dashboard() {
   
   // Update wallet connection status when address changes
   useEffect(() => {
+    if (typeof window === 'undefined') return; // Only run on client
+    
     if (network) {
       // Store the wallet address, not the network name
       const walletAddress = address || network;
@@ -94,6 +99,8 @@ export default function Dashboard() {
   
   // Periodically refresh data from server
   useEffect(() => {
+    if (typeof window === 'undefined') return; // Only run on client
+    
     // Initial fetch
     fetchNAV();
     
@@ -111,6 +118,8 @@ export default function Dashboard() {
   
   // Sync currency toggle with OVT client
   useEffect(() => {
+    if (typeof window === 'undefined') return; // Only run on client
+    
     if (baseCurrency && currency && baseCurrency !== currency && currency !== lastCurrencyRef.current) {
       lastCurrencyRef.current = currency;
       setBaseCurrency(currency);
