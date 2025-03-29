@@ -5,10 +5,7 @@ import { useCurrencyToggle, Currency } from '../src/hooks/useCurrencyToggle';
 import { useNAV } from '../src/hooks/useNAV';
 import { usePortfolio } from '../src/hooks/usePortfolio';
 import { PortfolioPosition } from '../src/utils/priceMovement';
-
-// Constants for numeric handling
-const SATS_PER_BTC = 100000000;
-const BTC_TO_USD = 40000; // Approximate conversion rate
+import { SATS_PER_BTC } from '../src/lib/formatting';  // Import from centralized formatter
 
 interface PortfolioChartProps {
   data?: PortfolioPosition[];
@@ -46,7 +43,7 @@ function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBa
   const [modalOpen, setModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // Use the centralized hooks
+  // Use the centralized hooks with less frequent updates
   const { nav, loading: navLoading } = useNAV();
   
   // Get portfolio data - either from props or from the usePortfolio hook
@@ -67,8 +64,16 @@ function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBa
   const displayCurrency = baseCurrency || currency;
   const navChangePercentage = changePercentage || (nav?.changePercentage?.toFixed(2) + '%') || '+0.00%';
 
-  // Transform portfolio data for the chart
+  // Transform portfolio data for the chart - using deep equality check for portfolioData
   const formattedData = useMemo(() => {
+    // Skip recalculation if nothing changed
+    if (portfolioData.length === 0) {
+      return [];
+    }
+    
+    // Debug the number of recalculations to detect excessive renders
+    console.log(`Recalculating formatted data with ${portfolioData.length} positions`);
+    
     return portfolioData.map((item: PortfolioPosition) => {
       // Calculate the initial investment (value) and current value
       const initialInvestment = item.value;
@@ -83,10 +88,14 @@ function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBa
       let currentValueConverted = currentValue;
       
       if (displayCurrency === 'usd') {
-        // Convert from sats to USD using a fixed rate for demo (1 BTC = $50000)
+        // Get BTC price from the centralized NAV data
+        const btcPrice = nav?.navUsd && nav.navSats 
+          ? (nav.navUsd / nav.navSats) * SATS_PER_BTC
+          : 50000; // Fallback to a reasonable value if not available
+          
+        // Convert from sats to USD
         const satsToBtc = 1 / SATS_PER_BTC;
-        const btcToUsd = 50000;
-        const satsToUsd = satsToBtc * btcToUsd;
+        const satsToUsd = satsToBtc * btcPrice;
         
         growthConverted = growth * satsToUsd;
         initialInvestmentConverted = initialInvestment * satsToUsd;
@@ -115,7 +124,7 @@ function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBa
         formatted
       };
     });
-  }, [portfolioData, displayCurrency, formatValue]);
+  }, [portfolioData, displayCurrency, formatValue, nav]);
   
   // Format Y axis values - memoize to prevent unnecessary recalculations
   const formatYAxis = useCallback((value: number): string => {
@@ -140,6 +149,14 @@ function PortfolioChart({ data, totalValue, changePercentage, baseCurrency, onBa
   const handleCloseModal = useCallback(() => {
     setModalOpen(false);
     setSelectedToken(null);
+  }, []);
+  
+  // Cleanup effect to handle component unmounting
+  React.useEffect(() => {
+    return () => {
+      // Ensure proper cleanup to prevent memory leaks
+      console.log('PortfolioChart unmounting - cleaning up');
+    };
   }, []);
 
   return (

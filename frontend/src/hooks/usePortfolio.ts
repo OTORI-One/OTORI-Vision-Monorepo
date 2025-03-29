@@ -60,19 +60,24 @@ export function usePortfolio() {
   useEffect(() => {
     fetchPositions();
     
-    // Set up periodic refresh (every 5 minutes)
-    const intervalId = setInterval(fetchPositions, 5 * 60 * 1000);
+    // Set up periodic refresh (every 10 seconds instead of 5 minutes)
+    // This will keep data updated but not so frequently that it causes performance issues
+    const intervalId = setInterval(fetchPositions, 10 * 1000);
     
-    return () => clearInterval(intervalId);
+    // Cleanup function to prevent memory leaks
+    return () => {
+      console.log('usePortfolio hook unmounting - cleaning up interval');
+      clearInterval(intervalId);
+    };
   }, [fetchPositions]);
 
-  // Calculate total value of all positions
-  const getTotalValue = useCallback(() => {
+  // Calculate total value of all positions - memoize to prevent recalculations
+  const totalValue = useMemo(() => {
     return positions.reduce((sum, position) => sum + position.current, 0);
   }, [positions]);
 
-  // Calculate overall change percentage
-  const getOverallChangePercentage = useCallback(() => {
+  // Calculate overall change percentage - also memoize
+  const overallChangePercentage = useMemo(() => {
     const totalCurrent = positions.reduce((sum, position) => sum + position.current, 0);
     const totalOriginal = positions.reduce((sum, position) => sum + position.value, 0);
     
@@ -91,8 +96,11 @@ export function usePortfolio() {
     isLoading,
     error,
     lastUpdate,
-    getTotalValue,
-    getOverallChangePercentage,
+    totalValue,
+    overallChangePercentage,
+    // Keep these methods for backward compatibility
+    getTotalValue: useCallback(() => totalValue, [totalValue]),
+    getOverallChangePercentage: useCallback(() => overallChangePercentage, [overallChangePercentage]),
     getPositionByName,
     refreshPortfolio: fetchPositions
   };

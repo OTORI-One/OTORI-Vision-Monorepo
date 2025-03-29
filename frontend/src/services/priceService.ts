@@ -3,6 +3,7 @@
  * 
  * This service handles communication with the centralized price API
  * to ensure consistent pricing data across all clients.
+ * It does NOT perform any price calculations locally - all price data comes from the backend.
  */
 
 import axios from 'axios';
@@ -95,8 +96,7 @@ export const getPortfolioPositions = async (): Promise<Position[]> => {
     }
     throw new Error('Failed to fetch portfolio positions');
   } catch (error) {
-    // If the API call fails, we might want to fall back to local data
-    console.error('Error fetching portfolio positions, using fallback data:', error);
+    console.error('Error fetching portfolio positions:', error);
     throw error;
   }
 };
@@ -111,21 +111,7 @@ export const getOVTPrice = async (): Promise<OVTPrice> => {
     throw new Error('Failed to fetch OVT price');
   } catch (error) {
     console.error('Error fetching OVT price:', error);
-    
-    // Return mock data if API call fails
-    console.log('Returning mock OVT price data due to API failure');
-    const mockOVTPrice: OVTPrice = {
-      price: 249, // Current price shown on OVT Price card
-      btcPriceSats: 249,
-      btcPriceFormatted: '249 sats',
-      usdPrice: 0.12, // Based on current BTC price
-      usdPriceFormatted: '$0.12',
-      dailyChange: 0.0, // Neutral 24h change
-      lastUpdate: Date.now(),
-      circulatingSupply: 1000000, // 1M OVT now in LP wallet
-      timestamp: Date.now()
-    };
-    return mockOVTPrice;
+    throw error; // Let the caller handle the error
   }
 };
 
@@ -198,6 +184,17 @@ export const updateOVTCirculatingSupply = async (): Promise<boolean> => {
   }
 };
 
+// Trigger OVT price update (admin only)
+export const triggerOVTPriceUpdate = async (): Promise<boolean> => {
+  try {
+    const response = await apiClient.post<{success: boolean}>('/update-ovt');
+    return response.data.success;
+  } catch (error) {
+    console.error('Error triggering OVT price update:', error);
+    throw error; // Re-throw to handle at caller level
+  }
+};
+
 // Helper functions for handling caching and real-time updates
 export const getCachedOVTPrice = (): OVTPrice | null => {
   try {
@@ -240,5 +237,6 @@ export default {
   triggerPriceUpdate,
   updateOVTCirculatingSupply,
   getCachedOVTPrice,
-  cacheOVTPrice
+  cacheOVTPrice,
+  triggerOVTPriceUpdate
 }; 

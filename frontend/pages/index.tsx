@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import Head from 'next/head';
-import { ArrowUpIcon, CurrencyDollarIcon, CircleStackIcon } from '@heroicons/react/24/outline';
+import { ArrowUpIcon, CurrencyDollarIcon, CircleStackIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 import WalletConnector from '../components/WalletConnector';
 import PortfolioChart from '../components/PortfolioChart';
 import PriceChart from '../components/PriceChart';
@@ -19,6 +19,7 @@ import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { usePortfolio } from '../src/hooks/usePortfolio';
 import { formatValue } from '../src/lib/formatting';
 import { useOVTPrice } from '../src/hooks/useOVTPrice';
+import priceService from '../src/services/priceService';
 
 export default function Dashboard() {
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
@@ -43,7 +44,8 @@ export default function Dashboard() {
     usdPriceFormatted, 
     dailyChange, 
     dailyChangeFormatted, 
-    isPositiveChange 
+    isPositiveChange,
+    refreshPrice
   } = useOVTPrice();
 
   // Get OVTClient data with useEffect for baseCurrency syncing instead of direct use
@@ -281,7 +283,25 @@ export default function Dashboard() {
           <div className="space-y-6">
             {/* Token Price Card */}
             <div className="bg-white border border-primary rounded-lg shadow-sm p-4">
-              <h2 className="text-xl font-semibold text-primary mb-4">OVT Price</h2>
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xl font-semibold text-primary">OVT Price</h2>
+                <button 
+                  onClick={async () => {
+                    // Force OVT price refresh
+                    try {
+                      await priceService.triggerOVTPriceUpdate();
+                      // Also refresh the NAV data
+                      fetchNAV();
+                    } catch (err) {
+                      console.error('Failed to refresh OVT price:', err);
+                    }
+                  }}
+                  className="text-primary hover:text-primary-dark p-1 rounded-full"
+                  title="Refresh OVT Price"
+                >
+                  <ArrowPathIcon className="h-4 w-4" />
+                </button>
+              </div>
               
               <div className="space-y-2">
                 <div className="flex justify-between items-center">

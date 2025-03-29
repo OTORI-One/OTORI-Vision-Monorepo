@@ -35,6 +35,7 @@ import {
   PortfolioPosition,
   getGlobalNAVReference
 } from '../utils/priceMovement';
+import priceService from '../services/priceService';
 
 // Constants for numeric handling
 export { SATS_PER_BTC };
@@ -401,164 +402,45 @@ export function useOVTClient() {
     setError(null);
 
     try {
-      // Defensive check for null portfolioPositions
-      if (!portfolioPositions || !Array.isArray(portfolioPositions)) {
-        throw new Error('Portfolio positions are not available');
-      }
+      // Fetch NAV data from the API
+      const navData = await priceService.getNAVData();
       
-      // Use stored portfolio positions instead of loading from mock data
-      const portfolioItems = portfolioPositions.map(position => ({
-        ...position,
-        address: position.address || `mock-address-${position.name.replace(/\s+/g, '-').toLowerCase()}`
-      }));
-
-      // Log portfolio items to help debug
-      console.log('Portfolio items for NAV calculation:', portfolioItems.length);
-      
-      // Calculate total value from portfolio items - this should be the current value
-      // Add a minimum fallback value to avoid zero values
-      const fallbackValue = getGlobalNAVReference(); // Use the global NAV reference as fallback
-      console.log('NAV fallback value:', fallbackValue);
-      
-      // Sum up current values with better error handling
-      let totalCurrentValue = 0;
-      try {
-        if (portfolioItems.length > 0) {
-          totalCurrentValue = portfolioItems.reduce((sum, item) => {
-            const current = item.current || item.value || 0; 
-            return sum + current;
-          }, 0);
-        }
-      } catch (err) {
-        console.error('Error summing portfolio values:', err);
-      }
-      
-      console.log('Calculated total current value:', totalCurrentValue);
-      
-      // Ensure we have a minimum value
-      if (totalCurrentValue <= 0) {
-        console.log('Using fallback NAV value:', fallbackValue);
-        totalCurrentValue = fallbackValue;
-      }
-      
-      // Calculate OVT price as a separate value based on NAV and distributed tokens
-      // This makes OVT price distinct from the NAV value
-      const distributedTokens = OVT_FALLBACK_DISTRIBUTED;
-      
-      // Fixed calculation to avoid NaN - ensure division by non-zero value
-      const calculatedOvtPrice = distributedTokens > 0 
-        ? Math.floor((totalCurrentValue * 0.65) / distributedTokens) 
-        : 219; // Fallback to a default price if calculation fails
-      
-      // Set the OVT price in sats - formatting happens later based on currency
-      setOvtPrice(calculatedOvtPrice);
-      updateGlobalOVTPrice(calculatedOvtPrice);
-      
-      // Log for debugging
-      console.log(`OVT price calculated: ${calculatedOvtPrice} sats, NAV: ${totalCurrentValue} sats`);
-      
-      // Calculate initial total value with error handling
-      let totalInitialValue = fallbackValue;
-      try {
-        if (portfolioItems.length > 0) {
-          const calculatedInitial = portfolioItems.reduce((sum, item) => sum + (item.value || 0), 0);
-          if (calculatedInitial > 0) {
-            totalInitialValue = calculatedInitial;
-          }
-        }
-      } catch (err) {
-        console.error('Error calculating initial value:', err);
-      }
-      
-      // Calculate portfolio growth percentage from initial to current
-      const portfolioGrowthPercentage = totalInitialValue > 0 
-        ? ((totalCurrentValue - totalInitialValue) / totalInitialValue) * 100
-        : 0;
-
-      // Apply consistent formatting for growth percentage
-      const formattedChangePercentage = portfolioGrowthPercentage.toFixed(2) + '%';
-
-      // Define fallback rune data to always have valid values
-      const fallbackRuneData = {
-        id: 'test-rune-id',
-        symbol: 'OVT',
-        supply: {
-          total: 2100000,
-          distributed: 2100000, // All tokens distributed now
-          treasury: 0, // Treasury transferred to LP
-          percentDistributed: 100 // 100% distributed
-        },
-        events: []
-      };
-
-      // Get real rune data with fallback for tests
-      let runeData;
-      try {
-        // Use mock data directly - but with less logging
-        runeData = fallbackRuneData;
-      } catch (err) {
-        // Reduced logging verbosity
-        runeData = fallbackRuneData;
-      }
-      
-      // Set NAV data with all the calculated values
-      const currencyToUse = baseCurrency || 'btc';
-      
-      // Format the NAV value correctly based on currency
-      let formattedNAV;
-      if (currencyToUse === 'usd' && btcPrice) {
-        const usdValue = (totalCurrentValue / SATS_PER_BTC) * btcPrice;
-        
-        // USD formatting - use standard rules
-        if (usdValue >= 1000000) {
-          formattedNAV = `$${(usdValue / 1000000).toFixed(2)}M`; 
-        } else if (usdValue >= 1000) {
-          formattedNAV = `$${(usdValue / 1000).toFixed(1)}k`; 
-        } else if (usdValue < 100) {
-          formattedNAV = `$${usdValue.toFixed(2)}`; 
-        } else {
-          formattedNAV = `$${Math.round(usdValue)}`;
-        }
-      } else {
-        formattedNAV = formatValue(totalCurrentValue, 'btc');
-      }
-      
-      // Set NAV data with all the calculated values
+      // Update local state with API data
       setNavData({
-        totalValue: formattedNAV,
-        totalValueSats: totalCurrentValue,
-        changePercentage: formattedChangePercentage,
-        portfolioItems,
-        tokenDistribution: {
-          totalSupply: fallbackRuneData.supply.total,
-          distributed: fallbackRuneData.supply.distributed,
-          runeId: fallbackRuneData.id,
-          runeSymbol: fallbackRuneData.symbol,
-          distributionEvents: []
-        }
-      });
-    } catch (error) {
-      console.error('Error fetching NAV data:', error);
-      setError('Failed to fetch portfolio data');
-      
-      // Even on error, set default NAV data to prevent UI issues
-      setNavData({
-        totalValue: formatValue(getGlobalNAVReference(), currencyToUse, btcPrice),
-        totalValueSats: getGlobalNAVReference(),
-        changePercentage: `0.00%`,
-        portfolioItems: [],
+        totalValue: currencyToUse === 'usd' ? navData.formattedTotalValueUSD : navData.formattedTotalValueSats,
+        totalValueSats: navData.totalValueSats,
+        changePercentage: `${navData.changePercentage.toFixed(2)}%`,
+        portfolioItems: [], // Will be populated later
         tokenDistribution: {
           totalSupply: 2100000,
-          distributed: 2100000,
+          distributed: navData.circulatingSupply || 2100000,
           runeId: OVT_RUNE_ID,
           runeSymbol: 'OVT',
           distributionEvents: []
         }
       });
+      
+      // Fetch portfolio positions to populate portfolioItems
+      try {
+        const positions = await priceService.getPortfolioPositions();
+        setPortfolioPositions(positions as Portfolio[]);
+      } catch (posError) {
+        console.error('Error fetching portfolio positions:', posError);
+      }
+      
+      // Update OVT price from NAV data
+      setOvtPrice(navData.ovtPrice);
+      updateGlobalOVTPrice(navData.ovtPrice);
+      
+      setError(null);
+      setLastPriceUpdateTime(Date.now());
+    } catch (err) {
+      console.error('Error fetching NAV data:', err);
+      setError('Failed to fetch NAV data');
     } finally {
       setIsLoading(false);
     }
-  }, [baseCurrency, btcPrice, portfolioPositions]);
+  }, [baseCurrency]);
 
   // Fetch NAV data on mount and when dependencies change
   useEffect(() => {

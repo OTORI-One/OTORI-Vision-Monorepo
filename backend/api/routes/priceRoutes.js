@@ -207,4 +207,35 @@ router.post('/update-ovt-supply', (req, res) => {
   }
 });
 
+/**
+ * @route POST /api/price/update-ovt
+ * @description Recalculate OVT price immediately (admin only, should be restricted in production)
+ * @access Restricted
+ */
+router.post('/update-ovt', (req, res) => {
+  try {
+    // In production, add authentication middleware and restrict this endpoint
+    const newPrice = priceService.calculateOVTPrice();
+    
+    // Update OVT price history
+    priceService.updatePriceHistory('ovt', newPrice);
+    
+    // Save the updated data
+    priceService.savePriceData();
+    
+    res.json({
+      success: true,
+      message: 'OVT price updated successfully',
+      newPrice,
+      timestamp: Date.now()
+    });
+  } catch (error) {
+    console.error('Error updating OVT price:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update OVT price'
+    });
+  }
+});
+
 module.exports = router; 

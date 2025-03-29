@@ -76,7 +76,7 @@ export function useNAV(): NAVHookResult {
   
   // Refresh portfolio data and recalculate NAV
   const refreshNAV = useCallback(() => {
-    // Don't allow refreshes more often than once per second
+    // Don't allow refreshes more often than once every 5 seconds
     if (updateThrottleRef.current) {
       return;
     }
@@ -103,6 +103,11 @@ export function useNAV(): NAVHookResult {
         debouncedSetNavData(updatedNav);
         setError(null); // Clear any previous errors
         setLoading(false);
+        
+        // Only reset the throttle after 5 seconds (reduced update frequency)
+        setTimeout(() => {
+          updateThrottleRef.current = false;
+        }, 5000);
       } catch (err) {
         console.error('Error refreshing NAV data:', err);
         setError('Failed to refresh NAV data');
@@ -142,6 +147,9 @@ export function useNAV(): NAVHookResult {
     
     initializeNAV();
     
+    // No internal timer - we'll rely on external triggers only
+    // This reduces the number of timers and avoids memory issues
+    
     // Cleanup function
     return () => {
       isMounted = false;
@@ -169,9 +177,9 @@ export function useNAV(): NAVHookResult {
     // Also listen for direct nav-update events for backward compatibility
     const handleLegacyNavUpdate = (event: CustomEvent) => {
       if (isMounted && event.detail && event.detail.nav) {
-        // Only refresh if it's been at least 1 second since the last update
+        // Only refresh if it's been at least 5 seconds since the last update
         const now = Date.now();
-        if (now - lastUpdated > 1000) {
+        if (now - lastUpdated > 5000) {
           refreshNAV();
         }
       }

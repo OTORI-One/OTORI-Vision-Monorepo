@@ -5,14 +5,63 @@
  * ensuring consistent pricing across all clients.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import priceService, { OVTPrice } from '../services/priceService';
-import { shouldUseMockData } from '../lib/hybridModeUtils';
 
 export function useOVTPrice() {
   const [ovtPrice, setOvtPrice] = useState<OVTPrice | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Function to fetch price data
+  const fetchOVTPrice = useCallback(async () => {
+    try {
+      setIsLoading(true);
+      
+      // Fetch from the API
+      const data = await priceService.getOVTPrice();
+      
+      // Only log price changes that are significant (more than 0.01%)
+      if (!ovtPrice || Math.abs(data.price - ovtPrice.price) > 0.0001 * ovtPrice.price) {
+        console.log('OVT Price refreshed:', { 
+          price: data.price,
+          dailyChange: data.dailyChange,
+          timestamp: new Date().toISOString() 
+        });
+      }
+      
+      setOvtPrice(data);
+      priceService.cacheOVTPrice(data);
+      setError(null);
+    } catch (err) {
+      console.error('Error fetching OVT price:', err);
+      setError('Failed to fetch OVT price data');
+      
+      // If we have cached data, continue using it
+      const cachedData = priceService.getCachedOVTPrice();
+      if (!ovtPrice && cachedData) {
+        setOvtPrice(cachedData);
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  }, [ovtPrice]);
+
+  // Function to force refresh (can be called by components)
+  const refreshPrice = useCallback(async () => {
+    try {
+      // First trigger an update on the server
+      await priceService.triggerOVTPriceUpdate();
+      
+      // Then fetch the updated price
+      await fetchOVTPrice();
+      
+      return true;
+    } catch (err) {
+      console.error('Error refreshing OVT price:', err);
+      return false;
+    }
+  }, [fetchOVTPrice]);
 
   useEffect(() => {
     // First check if we have a recent cached value
@@ -22,68 +71,14 @@ export function useOVTPrice() {
       setIsLoading(false);
     }
 
-    // Function to fetch price data
-    const fetchOVTPrice = async () => {
-      try {
-        setIsLoading(true);
-        
-        // Attempt to fetch from the API first
-        try {
-          // Fetch from the API - this will now be the primary approach
-          const data = await priceService.getOVTPrice();
-          setOvtPrice(data);
-          priceService.cacheOVTPrice(data);
-          setError(null);
-          return; // Exit early if API call succeeds
-        } catch (apiError) {
-          console.warn('Failed to fetch from API, will use mock data if enabled:', apiError);
-          // Continue to mock data fallback if the API call fails
-        }
-
-        // Check if we should use mock data (only as fallback)
-        if (shouldUseMockData('tokenSupply')) {
-          console.log('Using mock OVT price data as fallback');
-          // For mock data, use a static value with mock 24h change
-          const mockOVTPrice: OVTPrice = {
-            price: 336666.67, // Match our mock data defaults
-            btcPriceSats: 336666.67,
-            btcPriceFormatted: '336,667 sats',
-            usdPrice: 0.16, // Based on a $48k BTC price
-            usdPriceFormatted: '$0.16',
-            dailyChange: 7.59, // Mock 24h change
-            lastUpdate: Date.now(),
-            circulatingSupply: 1000000, // Default 1M circulating supply for testnet
-            timestamp: Date.now()
-          };
-          
-          setOvtPrice(mockOVTPrice);
-          priceService.cacheOVTPrice(mockOVTPrice);
-          setError(null);
-        } else {
-          // If we're here, the API failed and mock mode is disabled
-          throw new Error('API request failed and mock mode is disabled');
-        }
-      } catch (err) {
-        console.error('Error fetching OVT price:', err);
-        setError('Failed to fetch OVT price data');
-        
-        // If we have cached data, continue using it
-        if (!ovtPrice && cachedData) {
-          setOvtPrice(cachedData);
-        }
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
     // Fetch immediately
     fetchOVTPrice();
 
-    // Set up periodic refresh (every 5 minutes)
-    const intervalId = setInterval(fetchOVTPrice, 5 * 60 * 1000);
+    // Set up periodic refresh (every 5 seconds to reduce flashing and resource usage)
+    const intervalId = setInterval(fetchOVTPrice, 5000);
 
     return () => clearInterval(intervalId);
-  }, []);
+  }, [fetchOVTPrice]);
 
   // Calculate the formatted daily change safely
   const dailyChangeFormatted = (() => {
@@ -104,6 +99,7 @@ export function useOVTPrice() {
     lastUpdate: ovtPrice?.lastUpdate || 0,
     circulatingSupply: ovtPrice?.circulatingSupply || 1000000,
     isLoading,
-    error
+    error,
+    refreshPrice // Expose the refresh function
   };
 } 
