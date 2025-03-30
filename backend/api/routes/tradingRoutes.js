@@ -7,6 +7,7 @@
 const express = require('express');
 const router = express.Router();
 const tradingService = require('../services/tradingService');
+const utxoService = require('../services/utxoService');
 
 /**
  * @route GET /api/trading/orderbook
@@ -199,6 +200,115 @@ router.get('/price-impact', (req, res) => {
     priceImpact: `${(impact * 100).toFixed(2)}%`,
     timestamp: Date.now()
   });
+});
+
+/**
+ * @route GET /api/trading/utxo-stats
+ * @description Get UTXO management statistics and status
+ * @access Restricted
+ */
+router.get('/utxo-stats', (req, res) => {
+  try {
+    // Get UTXO service statistics
+    const stats = utxoService.getStats();
+    
+    res.json({
+      success: true,
+      stats,
+      config: {
+        smallUtxoThreshold: utxoService.SMALL_UTXO_THRESHOLD,
+        dustLimit: utxoService.DUST_LIMIT
+      },
+      timestamp: Date.now()
+    });
+  } catch (error) {
+    console.error('Error getting UTXO statistics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get UTXO statistics'
+    });
+  }
+});
+
+/**
+ * @route POST /api/trading/reset-utxo-stats
+ * @description Reset UTXO management statistics
+ * @access Admin
+ */
+router.post('/reset-utxo-stats', (req, res) => {
+  try {
+    // Reset UTXO service statistics
+    utxoService.resetStats();
+    
+    res.json({
+      success: true,
+      message: 'UTXO statistics reset successfully',
+      timestamp: Date.now()
+    });
+  } catch (error) {
+    console.error('Error resetting UTXO statistics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reset UTXO statistics'
+    });
+  }
+});
+
+/**
+ * @route GET /api/trading/validation-stats
+ * @description Get transaction validation statistics
+ * @access Admin
+ */
+router.get('/validation-stats', (req, res) => {
+  try {
+    // Define a metrics object to track validation statistics
+    // This would normally be stored in a database or persistent storage
+    const validationStats = {
+      // Basic transaction metrics
+      transactionsProcessed: 0,
+      transactionsValidated: 0,
+      transactionsRejected: 0,
+      
+      // UTXO validation metrics
+      utxosValidated: utxoService.getStats().totalQueriesCount || 0,
+      utxosOptimized: utxoService.getStats().optimizationCount || 0,
+      
+      // Fee statistics
+      averageFeeRate: 2, // Example value in sats/byte
+      totalFeesCollected: 0, // Example value in sats
+      
+      // Transaction types
+      buyTransactions: 0,
+      sellTransactions: 0,
+      transferTransactions: 0,
+      
+      // Validation failures by type
+      invalidSignatureCount: 0,
+      insufficientFundsCount: 0,
+      invalidUtxoCount: 0,
+      
+      // Time-based metrics
+      averageValidationTimeMs: 120, // Example value
+      
+      // Status
+      lastUpdated: Date.now()
+    };
+    
+    // In a real implementation, we would load these statistics from a database
+    
+    res.json({
+      success: true,
+      stats: validationStats,
+      utxoStats: utxoService.getStats(),
+      timestamp: Date.now()
+    });
+  } catch (error) {
+    console.error('Error getting validation statistics:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get validation statistics'
+    });
+  }
 });
 
 module.exports = router; 

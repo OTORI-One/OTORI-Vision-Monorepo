@@ -15,6 +15,9 @@ app.use(bodyParser.json());
 // Import trading service
 const tradingService = require('./services/tradingService');
 
+// Import the UTXO service
+const utxoService = require('./services/utxoService');
+
 // Add CORS support
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -1121,8 +1124,16 @@ app.post('/ovt/buy', async (req, res) => {
       });
     }
     
-    // 2. Check for sufficient BTC balance
-    const btcBalance = await getWalletBalance(fromAddress);
+    // 2. Check for sufficient BTC balance using UTXO service
+    let btcBalance = 0;
+    try {
+      btcBalance = await utxoService.getAddressBalance(fromAddress);
+      console.log(`BTC balance for address ${fromAddress}: ${btcBalance} sats`);
+    } catch (error) {
+      console.error(`Error getting balance: ${error.message}`);
+      // Fallback to original method if UTXO service fails
+      btcBalance = await getWalletBalance(fromAddress);
+    }
     
     // 3. Calculate the current price and check against maxPrice if specified
     const lpInfo = await getRemoteLPInfo();
@@ -1140,10 +1151,14 @@ app.post('/ovt/buy', async (req, res) => {
     // 4. Calculate total cost in sats
     const totalCost = amount * currentPrice;
     
-    if (btcBalance < totalCost) {
+    // Add estimated fee for the transaction
+    const estimatedFee = utxoService.calculateEstimatedFee(1, 2);
+    const totalRequired = totalCost + estimatedFee;
+    
+    if (btcBalance < totalRequired) {
       return res.status(400).json({
         success: false,
-        error: `Insufficient balance. Required: ${totalCost} sats, Available: ${btcBalance} sats`
+        error: `Insufficient balance. Required: ${totalRequired} sats (${totalCost} + ${estimatedFee} fee), Available: ${btcBalance} sats`
       });
     }
     
@@ -1167,6 +1182,7 @@ app.post('/ovt/buy', async (req, res) => {
         amount: amount,
         price: currentPrice,
         totalCost: totalCost,
+        estimatedFee: estimatedFee,
         fromAddress: fromAddress,
         toAddress: LP_ADDRESS,
         timestamp: Date.now(),
@@ -1246,10 +1262,48 @@ app.post('/ovt/sell', async (req, res) => {
     // 4. Calculate total return in sats
     const totalReturn = amount * currentPrice;
     
-    // 5. Create PSBTs for the transaction
-    // In a real implementation, we would create actual PSBTs here
-    // For now, we'll return a simulated PSBT
-    const psbt = `cHNidP8BAHECAAAAAfUbVEKkUNXZbVFS3uB7z6X4wYQ3r8BwkyM2qX49CD2xAAAAAAD/////AgDh9QUAAAAAIgAgPU1kBB9KxCYkWxV7k2JP5gQVz8w/DNSE0UIRbVEIQEQB1AEAAAAAFgAU3AxdYMxkdq5YdZXKhQMb2jPMBsIAAAAAAAEA3gIAAAAAAQF2xNJVrnHvWW7yP2xj5chMSCHGQsibjEBG1DHp4HQYHgEAAAAA/v///wKghgEAAAAAACIAIIab5mIiJnE/LrxLlnFM7dKKLJ9anXA2u8BiQZIXQ3KbJbwNAAAAAAAWABRYhfmKkJ3MLp3hIBvAdgUkZ5XKpwJHMEQCIB7Kn9ikm0jrDHhUdK5JTCblI7PJWBUmKQOyJQnI8zLrAiAuBd8dDuSm2cMLZFcKDQ3MYrCSQimHfmiK8Rh1Yp4H8QEhA7dYnQPU0nNdEFdO3YcQB9pXdBIQIqiFeh8tCJRyzx1SrgAAAA==`;
+    // 5. Try to get real UTXOs for the transaction if available
+    let utxoDetails = { psbts: [] };
+    try {
+      // Get UTXOs associated with the fromAddress that contain runes
+      const addressUtxos = await utxoService.getAddressUtxos(fromAddress);
+      console.log(`Found ${addressUtxos.length} UTXOs for address ${fromAddress}`);
+      
+      if (addressUtxos.length > 0) {
+        // Select optimal UTXOs for the transaction
+        // In a real implementation, we would need to check which UTXOs hold the runes
+        // and select those specific ones
+        const optimizedUtxos = utxoService.selectOptimalUtxos(
+          addressUtxos, 
+          utxoService.DUST_LIMIT + utxoService.calculateEstimatedFee(1, 2)
+        );
+        
+        // Create a PSBT
+        const psbtInfo = await utxoService.createOptimizedPSBT(
+          recipient,
+          utxoService.DUST_LIMIT, // Minimum BTC amount
+          {
+            preferSmallUtxos: true
+            // For an actual rune transfer, we'd need more complex logic here
+          }
+        );
+        
+        if (psbtInfo && psbtInfo.psbt) {
+          utxoDetails = {
+            psbts: [psbtInfo.psbt],
+            utxos: optimizedUtxos.utxos
+          };
+        }
+      }
+    } catch (error) {
+      console.error(`Error selecting UTXOs: ${error.message}`);
+      // If there's an error, we'll fall back to the mock PSBT below
+    }
+    
+    // If we don't have real UTXOs, create a simulated PSBT
+    if (utxoDetails.psbts.length === 0) {
+      utxoDetails.psbts = [`cHNidP8BAHECAAAAAfUbVEKkUNXZbVFS3uB7z6X4wYQ3r8BwkyM2qX49CD2xAAAAAAD/////AgDh9QUAAAAAIgAgPU1kBB9KxCYkWxV7k2JP5gQVz8w/DNSE0UIRbVEIQEQB1AEAAAAAFgAU3AxdYMxkdq5YdZXKhQMb2jPMBsIAAAAAAAEA3gIAAAAAAQF2xNJVrnHvWW7yP2xj5chMSCHGQsibjEBG1DHp4HQYHgEAAAAA/v///wKghgEAAAAAACIAIIab5mIiJnE/LrxLlnFM7dKKLJ9anXA2u8BiQZIXQ3KbJbwNAAAAAAAWABRYhfmKkJ3MLp3hIBvAdgUkZ5XKpwJHMEQCIB7Kn9ikm0jrDHhUdK5JTCblI7PJWBUmKQOyJQnI8zLrAiAuBd8dDuSm2cMLZFcKDQ3MYrCSQimHfmiK8Rh1Yp4H8QEhA7dYnQPU0nNdEFdO3YcQB9pXdBIQIqiFeh8tCJRyzx1SrgAAAA==`];
+    }
     
     // 6. Return the transaction information
     // In a production system, the user would sign the PSBT and submit it back
@@ -1261,7 +1315,8 @@ app.post('/ovt/sell', async (req, res) => {
         amount: amount,
         price: currentPrice,
         totalReturn: totalReturn,
-        psbts: [psbt],
+        psbts: utxoDetails.psbts,
+        utxos: utxoDetails.utxos || [],
         fromAddress: fromAddress,
         toAddress: recipient,
         timestamp: Date.now(),
@@ -1292,16 +1347,78 @@ app.post('/ovt/submit-transaction', async (req, res) => {
     
     console.log(`Processing transaction submission: ${txType} ${amount} OVT from ${fromAddress} to ${toAddress}`);
     
-    // In a real implementation, we would:
+    // Create a tracking ID in case we can't broadcast immediately
+    const trackingId = `tx-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+    
     // 1. Validate the signed PSBT
+    let validationResult = { isValid: false, error: null };
+    try {
+      // Use UTXO service to analyze the PSBT
+      const psbtAnalysis = utxoService.analyzePSBT(signedPsbt);
+      
+      // Check if the PSBT is complete and ready to broadcast
+      if (psbtAnalysis.error) {
+        validationResult = { isValid: false, error: psbtAnalysis.error };
+      } else if (!psbtAnalysis.complete && psbtAnalysis.next === 'signer') {
+        validationResult = { isValid: false, error: 'PSBT is not fully signed' };
+      } else {
+        validationResult = { isValid: true };
+      }
+      
+      console.log(`PSBT validation result: ${validationResult.isValid ? 'Valid' : 'Invalid'}`);
+      if (validationResult.error) {
+        console.log(`Validation error: ${validationResult.error}`);
+      }
+    } catch (error) {
+      console.error(`Error validating PSBT: ${error.message}`);
+      validationResult = { isValid: false, error: error.message };
+    }
+    
+    if (!validationResult.isValid) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid transaction: ${validationResult.error}`,
+        trackingId
+      });
+    }
+    
     // 2. Broadcast the transaction to the Bitcoin network
-    // 3. Monitor for confirmation
-    // 4. Update transaction status
+    let txid = trackingId;
+    let broadcastSuccess = false;
     
-    // For now, we'll simulate a successful transaction
-    const txid = `tx-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+    try {
+      // Use UTXO service to finalize and broadcast the PSBT
+      const finalizeResult = await utxoService.finalizePSBT(signedPsbt);
+      
+      if (finalizeResult && finalizeResult.txid) {
+        txid = finalizeResult.txid;
+        broadcastSuccess = true;
+        console.log(`Transaction broadcast successful. TXID: ${txid}`);
+      } else {
+        console.error('Failed to broadcast transaction');
+      }
+    } catch (error) {
+      console.error(`Error broadcasting transaction: ${error.message}`);
+      
+      // If we can't broadcast, return a pending status with the trackingId
+      return res.status(202).json({
+        success: true,
+        transaction: {
+          txid: trackingId,
+          type: txType,
+          amount: amount,
+          fromAddress: fromAddress,
+          toAddress: toAddress,
+          timestamp: Date.now(),
+          status: 'pending',
+          confirmations: 0,
+          error: error.message
+        },
+        message: 'Transaction submitted but broadcast failed. Please try again later.'
+      });
+    }
     
-    // Return a success response with transaction details
+    // 3. Return a success response with transaction details
     res.json({
       success: true,
       transaction: {
@@ -1311,10 +1428,12 @@ app.post('/ovt/submit-transaction', async (req, res) => {
         fromAddress: fromAddress,
         toAddress: toAddress,
         timestamp: Date.now(),
-        status: 'confirmed',
-        confirmations: 1
+        status: broadcastSuccess ? 'submitted' : 'pending',
+        confirmations: 0
       },
-      message: 'Transaction submitted successfully'
+      message: broadcastSuccess ? 
+        'Transaction submitted successfully' : 
+        'Transaction prepared but not broadcast'
     });
   } catch (error) {
     console.error('Error submitting transaction:', error);

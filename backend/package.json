@@ -8,7 +8,10 @@
     "dev": "nodemon api/index.js",
     "runes-api": "node api/runes_API.js",
     "lp-distribute": "node scripts/distribute_lp_runes.js",
-    "lp-manage-psbts": "node scripts/manage_lp_psbts.js"
+    "lp-manage-psbts": "node scripts/manage_lp_psbts.js",
+    "test": "jest",
+    "test:validation": "jest --testRegex=\".*\\.validation\\.test\\.js$\"",
+    "test:validation:watch": "jest --testRegex=\".*\\.validation\\.test\\.js$\" --watch"
   },
   "dependencies": {
     "express": "^4.18.2",
@@ -17,6 +20,7 @@
     "cors": "^2.8.5"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.0.1",
+    "jest": "^29.7.0"
   }
 } 

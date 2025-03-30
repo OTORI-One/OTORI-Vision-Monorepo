@@ -17,6 +17,7 @@ const PORT = process.env.PORT || 3030;
 const runesAPI = require('./runes_API');
 const priceRoutes = require('./routes/priceRoutes');
 const tradingRoutes = require('./routes/tradingRoutes');
+const validationRoutes = require('./routes/validationRoutes');
 
 // Middleware
 app.use(express.json());
@@ -44,9 +45,17 @@ if (!fs.existsSync(dataDir)) {
   console.log('Created data directory:', dataDir);
 }
 
+// Logs directory initialization for validation logs
+const logsDir = path.join(dataDir, 'logs');
+if (!fs.existsSync(logsDir)) {
+  fs.mkdirSync(logsDir, { recursive: true });
+  console.log('Created logs directory:', logsDir);
+}
+
 // Mount API routes
 app.use('/api/price', priceRoutes);
 app.use('/api/trading', tradingRoutes);
+app.use('/api/validation', validationRoutes);
 
 // Mount Runes API routes directly on the root path
 // This makes endpoints like /ovt/distribution available
@@ -139,7 +148,73 @@ app.get('/', (req, res) => {
       path: '/api/trading/price-impact',
       method: 'GET',
       description: 'Calculate price impact for a trade',
-    }
+    },
+    // New validation endpoints
+    {
+      path: '/api/validation/validate',
+      method: 'POST',
+      description: 'Validate a complete Bitcoin transaction',
+    },
+    {
+      path: '/api/validation/validate-inputs',
+      method: 'POST',
+      description: 'Validate transaction inputs only',
+    },
+    {
+      path: '/api/validation/validate-outputs',
+      method: 'POST',
+      description: 'Validate transaction outputs only',
+    },
+    {
+      path: '/api/validation/validate-signature',
+      method: 'POST',
+      description: 'Validate transaction signature',
+    },
+    {
+      path: '/api/validation/stats',
+      method: 'GET',
+      description: 'Get transaction validation statistics',
+    },
+    {
+      path: '/api/validation/report',
+      method: 'GET',
+      description: 'Get validation report for a specific period',
+    },
+    {
+      path: '/api/trading/utxo-stats',
+      method: 'GET',
+      description: 'Get UTXO management statistics and status',
+    },
+    {
+      path: '/api/trading/reset-utxo-stats',
+      method: 'POST',
+      description: 'Reset UTXO management statistics (admin only)',
+    },
+    {
+      path: '/api/trading/validation-stats',
+      method: 'GET',
+      description: 'Get transaction validation statistics (admin only)',
+    },
+    {
+      path: '/ovt/buy',
+      method: 'POST',
+      description: 'Prepare and execute a token purchase transaction',
+    },
+    {
+      path: '/ovt/sell',
+      method: 'POST',
+      description: 'Prepare a token sale transaction',
+    },
+    {
+      path: '/ovt/submit-transaction',
+      method: 'POST',
+      description: 'Submit a signed transaction for broadcast',
+    },
+    {
+      path: '/ovt/transactions',
+      method: 'GET',
+      description: 'Get transaction history for an address',
+    },
   ];
 
   // Format the response as HTML for better readability in browsers
