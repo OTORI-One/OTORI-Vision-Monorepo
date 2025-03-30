@@ -21,25 +21,35 @@ export function usePortfolio() {
     try {
       setIsLoading(true);
       
-      // Check if we should use mock data based on hybrid mode settings
-      if (shouldUseMockData('portfolio')) {
-        // If in mock mode, use the mock portfolio but add the dailyChange field
-        const mockData = mockPortfolioPositions.map(pos => ({
-          ...pos,
-          dailyChange: pos.change // Use existing change value for daily change in mock data
-        })) as Position[];
-        
-        setPositions(mockData);
+      // Even in mock mode, try the backend API first (it will use our moved mock data)
+      // Only fall back to frontend mock data if the API call fails
+      try {
+        // Fetch positions from the centralized price service
+        const data = await priceService.getPortfolioPositions();
+        setPositions(data);
         setLastUpdate(Date.now());
+        setError(null);
         setIsLoading(false);
         return;
+      } catch (apiError) {
+        // If we're in mock mode, don't show an error, just use mock data
+        if (shouldUseMockData('portfolio')) {
+          console.log('API request failed in mock mode, using local mock data');
+        } else {
+          // In production mode, log the error
+          console.error('Error fetching portfolio positions from API:', apiError);
+          setError('Failed to fetch portfolio data from API. Using fallback data.');
+        }
       }
       
-      // Fetch positions from the centralized price service
-      const data = await priceService.getPortfolioPositions();
-      setPositions(data);
+      // If we reach here, the API call failed, so use mock data
+      const mockData = mockPortfolioPositions.map(pos => ({
+        ...pos,
+        dailyChange: pos.change // Use existing change value for daily change in mock data
+      })) as Position[];
+      
+      setPositions(mockData);
       setLastUpdate(Date.now());
-      setError(null);
     } catch (error) {
       console.error('Error fetching portfolio positions:', error);
       setError('Failed to fetch portfolio data. Using fallback data.');

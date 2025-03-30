@@ -221,7 +221,11 @@ function updateGlobalMarketSentiment() {
  * Used for correlation calculations
  */
 function assignSector(position) {
+  if (!position) return 'infrastructure'; // Default if position is undefined
   if (position.sector) return position.sector;
+  
+  // Check if name exists before accessing toLowerCase()
+  if (!position.name) return 'infrastructure'; // Default if name is undefined
   
   // Assign a sector based on name (very simple approach)
   const name = position.name.toLowerCase();
@@ -253,6 +257,12 @@ function assignSector(position) {
  * with realistic correlation to the market and sector
  */
 function generateDailyPriceChange(position, positiveBias = true) {
+  // Check if position is defined
+  if (!position) {
+    console.warn('generateDailyPriceChange called with undefined position');
+    return 0; // Return safe default
+  }
+
   // Update global market sentiment first (once per batch)
   if (Math.random() < 0.1) { // 10% chance to update global markets per position
     updateGlobalMarketSentiment();
@@ -308,6 +318,12 @@ function generateDailyPriceChange(position, positiveBias = true) {
  * Generates a more extreme "super spike" between +/- 25% and +/- 50%
  */
 function generateSuperSpike(position) {
+  // Check if position is defined
+  if (!position) {
+    console.warn('generateSuperSpike called with undefined position');
+    return 0.25; // Return safe default positive value
+  }
+  
   // Determine magnitude range based on market cap
   let minMagnitude = 0.25; // Default 25% minimum
   let maxMagnitude = 0.50; // Default 50% maximum
@@ -498,7 +514,32 @@ async function updatePrices() {
     
     // Update each position with correlated movements
     Object.keys(priceState.positions).forEach(positionName => {
+      // Safety check: ensure position exists
+      if (!positionName || !priceState.positions[positionName]) {
+        console.warn(`Skipping undefined position for key: ${positionName}`);
+        return; // Skip this iteration
+      }
+      
       const position = priceState.positions[positionName];
+      
+      // Safety check: ensure position has required properties
+      if (!position.current || typeof position.current !== 'number' || !isFinite(position.current)) {
+        console.warn(`Position ${positionName} has invalid current value, initializing it`);
+        position.current = position.value || 100000; // Default to original value or 100k sats
+      }
+      
+      if (!position.value || typeof position.value !== 'number' || !isFinite(position.value)) {
+        console.warn(`Position ${positionName} has invalid value, setting default`);
+        position.value = position.current || 100000; // Default to current value or 100k sats
+      }
+      
+      if (!position.volatilityState) {
+        position.volatilityState = {
+          lastValue: position.current,
+          momentum: 0,
+          trend: 0
+        };
+      }
       
       // Determine if a super spike should occur
       const shouldSpike = shouldTriggerSuperSpike(
@@ -537,8 +578,9 @@ async function updatePrices() {
         lastSpikeDay: shouldSpike ? currentDay : (position.lastSpikeDay || 0),
         volatilityState: {
           lastValue: newValue,
-          momentum: (newValue / currentValue - 1) * 0.5 + position.volatilityState.momentum * 0.5,
-          trend: position.volatilityState.trend * 0.7 + priceChange * 0.3
+          momentum: (newValue / currentValue - 1) * 0.5 + 
+            (position.volatilityState?.momentum || 0) * 0.5,
+          trend: (position.volatilityState?.trend || 0) * 0.7 + priceChange * 0.3
         }
       };
       
@@ -696,65 +738,118 @@ function savePriceData() {
 
 // Update price history for a position
 function updatePriceHistory(positionName, currentValue) {
-  const now = new Date();
-  const dayKey = getDayKey(now);
-  const hourKey = getHourKey(now);
-  
-  // Ensure the position exists in history
-  if (!priceState.priceHistory.daily[positionName]) {
-    priceState.priceHistory.daily[positionName] = {};
+  try {
+    // Safety checks
+    if (!positionName || typeof currentValue !== 'number' || !isFinite(currentValue)) {
+      console.warn(`Invalid input to updatePriceHistory: ${positionName}, ${currentValue}`);
+      return;
+    }
+    
+    // Ensure priceState.priceHistory exists
+    if (!priceState.priceHistory) {
+      priceState.priceHistory = { daily: {}, hourly: {} };
+    }
+    
+    // Ensure daily and hourly entries exist
+    if (!priceState.priceHistory.daily) {
+      priceState.priceHistory.daily = {};
+    }
+    
+    if (!priceState.priceHistory.hourly) {
+      priceState.priceHistory.hourly = {};
+    }
+    
+    const now = new Date();
+    const dayKey = getDayKey(now);
+    const hourKey = getHourKey(now);
+    
+    // Ensure the position exists in history
+    if (!priceState.priceHistory.daily[positionName]) {
+      priceState.priceHistory.daily[positionName] = {};
+    }
+    
+    if (!priceState.priceHistory.hourly[positionName]) {
+      priceState.priceHistory.hourly[positionName] = {};
+    }
+    
+    // Update daily data
+    priceState.priceHistory.daily[positionName][dayKey] = currentValue;
+    
+    // Update hourly data
+    priceState.priceHistory.hourly[positionName][hourKey] = currentValue;
+    
+    // Cleanup old data (keep only last 30 days and 7 days of hourly data)
+    cleanupHistoricalData();
+  } catch (error) {
+    console.error(`Error in updatePriceHistory: ${error.message}`);
   }
-  
-  if (!priceState.priceHistory.hourly[positionName]) {
-    priceState.priceHistory.hourly[positionName] = {};
-  }
-  
-  // Update daily data
-  priceState.priceHistory.daily[positionName][dayKey] = currentValue;
-  
-  // Update hourly data
-  priceState.priceHistory.hourly[positionName][hourKey] = currentValue;
-  
-  // Cleanup old data (keep only last 30 days and 7 days of hourly data)
-  cleanupHistoricalData();
 }
 
 // Cleanup old historical data
 function cleanupHistoricalData() {
-  const MAX_DAILY_DAYS = 30;
-  const MAX_HOURLY_DAYS = 7;
-  
-  const now = new Date();
-  const dailyCutoff = new Date(now);
-  dailyCutoff.setDate(dailyCutoff.getDate() - MAX_DAILY_DAYS);
-  
-  const hourlyCutoff = new Date(now);
-  hourlyCutoff.setDate(hourlyCutoff.getDate() - MAX_HOURLY_DAYS);
-  
-  // Clean daily data
-  Object.keys(priceState.priceHistory.daily).forEach(positionName => {
-    const positionData = priceState.priceHistory.daily[positionName];
-    Object.keys(positionData).forEach(dateKey => {
-      const [year, month, day] = dateKey.split('-').map(n => parseInt(n));
-      const entryDate = new Date(year, month - 1, day);
-      if (entryDate < dailyCutoff) {
-        delete positionData[dateKey];
-      }
+  try {
+    // Safety check for priceState.priceHistory
+    if (!priceState.priceHistory || !priceState.priceHistory.daily || !priceState.priceHistory.hourly) {
+      console.warn('Invalid priceState.priceHistory structure in cleanupHistoricalData');
+      return;
+    }
+    
+    const MAX_DAILY_DAYS = 30;
+    const MAX_HOURLY_DAYS = 7;
+    
+    const now = new Date();
+    const dailyCutoff = new Date(now);
+    dailyCutoff.setDate(dailyCutoff.getDate() - MAX_DAILY_DAYS);
+    
+    const hourlyCutoff = new Date(now);
+    hourlyCutoff.setDate(hourlyCutoff.getDate() - MAX_HOURLY_DAYS);
+    
+    // Clean daily data
+    Object.keys(priceState.priceHistory.daily).forEach(positionName => {
+      const positionData = priceState.priceHistory.daily[positionName];
+      if (!positionData) return; // Skip if no position data
+      
+      Object.keys(positionData).forEach(dateKey => {
+        try {
+          const [year, month, day] = dateKey.split('-').map(n => parseInt(n));
+          const entryDate = new Date(year, month - 1, day);
+          if (entryDate < dailyCutoff) {
+            delete positionData[dateKey];
+          }
+        } catch (error) {
+          console.warn(`Invalid date key in daily data: ${dateKey}`);
+        }
+      });
     });
-  });
-  
-  // Clean hourly data
-  Object.keys(priceState.priceHistory.hourly).forEach(positionName => {
-    const positionData = priceState.priceHistory.hourly[positionName];
-    Object.keys(positionData).forEach(dateTimeKey => {
-      const [dateKey, hour] = dateTimeKey.split('T');
-      const [year, month, day] = dateKey.split('-').map(n => parseInt(n));
-      const entryDate = new Date(year, month - 1, day, parseInt(hour));
-      if (entryDate < hourlyCutoff) {
-        delete positionData[dateTimeKey];
-      }
+    
+    // Clean hourly data
+    Object.keys(priceState.priceHistory.hourly).forEach(positionName => {
+      const positionData = priceState.priceHistory.hourly[positionName];
+      if (!positionData) return; // Skip if no position data
+      
+      Object.keys(positionData).forEach(dateTimeKey => {
+        try {
+          const [dateKey, hour] = dateTimeKey.split('T');
+          if (!dateKey || !hour) {
+            console.warn(`Invalid dateTimeKey format: ${dateTimeKey}`);
+            delete positionData[dateTimeKey];
+            return;
+          }
+          
+          const [year, month, day] = dateKey.split('-').map(n => parseInt(n));
+          const entryDate = new Date(year, month - 1, day, parseInt(hour));
+          if (entryDate < hourlyCutoff || isNaN(entryDate.getTime())) {
+            delete positionData[dateTimeKey];
+          }
+        } catch (error) {
+          console.warn(`Invalid date time key in hourly data: ${dateTimeKey}`);
+          delete positionData[dateTimeKey];
+        }
+      });
     });
-  });
+  } catch (error) {
+    console.error(`Error in cleanupHistoricalData: ${error.message}`);
+  }
 }
 
 // Format date as YYYY-MM-DD
@@ -919,6 +1014,30 @@ function calculate24HourChange(positionName) {
 // Simulate price movement for a position
 function simulatePriceMovement(position) {
   try {
+    // Check if position is undefined
+    if (!position) {
+      console.warn('simulatePriceMovement called with undefined position');
+      return {
+        current: 100000,
+        value: 100000,
+        change: 0,
+        pricePerToken: 100,
+        tokenAmount: 1000,
+        description: "Default position",
+        lastUpdate: Date.now(),
+        lastSpikeDay: 0
+      };
+    }
+    
+    // Ensure position has required properties
+    if (!position.current || typeof position.current !== 'number' || !isFinite(position.current)) {
+      position.current = position.value || 100000;
+    }
+    
+    if (!position.value || typeof position.value !== 'number' || !isFinite(position.value)) {
+      position.value = position.current || 100000;
+    }
+
     // Generate random daily change between -3% and +5% with positive bias
     const generateDailyChange = () => {
       const u1 = Math.random();
@@ -1019,8 +1138,8 @@ function simulatePriceMovement(position) {
 // Get default portfolio for initialization
 function getDefaultPortfolio() {
   try {
-    // Try to load the mock-data from the frontend
-    const mockDataPath = path.join(__dirname, '../../../frontend/src/mock-data/portfolio-positions.json');
+    // Try to load the mock-data from the backend's data directory
+    const mockDataPath = path.join(__dirname, '../../data/mock/portfolio-positions.json');
     if (fs.existsSync(mockDataPath)) {
       const mockData = JSON.parse(fs.readFileSync(mockDataPath, 'utf8'));
       console.log(`Loaded portfolio positions from mock data: ${mockData.length} positions found`);
