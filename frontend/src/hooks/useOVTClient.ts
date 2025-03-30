@@ -29,7 +29,7 @@ import {
   getHybridModeConfig
 } from '../lib/hybridModeUtils';
 import { ensurePortfolioDataLoaded } from '../utils/portfolioLoader';
-import { SATS_PER_BTC, formatCurrencyValue } from '../lib/formatting';
+import { SATS_PER_BTC, formatValue as formatValueUtils } from '../lib/formatting';
 import { 
   simulatePortfolioPriceMovements, 
   PortfolioPosition,
@@ -84,69 +84,27 @@ const archClient = new ArchClient({
 
 // Helper function to format values consistently
 const formatValue = (value: number, displayMode: 'btc' | 'usd' = 'btc', btcPrice?: number | null): string => {
-  // Early validation to prevent infinity issues - before ANY calculations
-  if (!Number.isFinite(value)) {
-    console.error('formatValue received non-finite value - returning zero:', value, new Error().stack);
-    return displayMode === 'usd' ? '$0.00' : '0 sats';
-  }
-
-  if (displayMode === 'usd' && (btcPrice === undefined || btcPrice === null || !Number.isFinite(btcPrice))) {
-    console.warn('formatValue received invalid btcPrice, using default:', btcPrice);
-    btcPrice = 50000; // Default fallback
-  }
-  
+  // Wrap the entire function in a try-catch to ensure it never throws
   try {
-    // Apply minimum value threshold
-    if (value < 0) {
-      value = 0;
+    // Early validation to prevent infinity issues - before ANY calculations
+    if (value === null || value === undefined || !Number.isFinite(value)) {
+      // Use a fixed default value instead of propagating Infinity
+      console.error('formatValue received non-finite value - using default value', new Error().stack);
+      return displayMode === 'usd' ? '$0.00' : '0 sats';
     }
-    
-    // Ensure we're using a valid BTC price for USD conversion
-    const effectiveBtcPrice = (btcPrice && Number.isFinite(btcPrice)) ? btcPrice : 50000;
-    
-    if (displayMode === 'usd') {
-      // Format USD value
-      return formatCurrencyValueLocal(value, 'usd');
-    } else {
-      // Format BTC value
-      return formatCurrencyValueLocal(value, 'btc');
-    }
+
+    // Don't do any calculations here - just use the centralized formatting utility
+    return formatValueUtils(value, displayMode, btcPrice);
   } catch (error) {
-    console.error('Error in formatValue:', error);
-    return displayMode === 'usd' ? '$0.00' : '₿0.00';
+    console.error('Fatal error in formatValue:', error);
+    return displayMode === 'usd' ? '$0.00' : '0 sats';
   }
 };
 
 // Add a specialized currency formatter that follows the frontend-specific-dev-rules
 const formatCurrencyValueLocal = (value: number, currency: 'btc' | 'usd' = 'usd'): string => {
-  // Validate input to prevent Infinity issues
-  if (!Number.isFinite(value) || value === 0) {
-    return currency === 'usd' ? '$0.00' : '0 sats';
-  }
-  
-  if (currency === 'usd') {
-    // USD Value Standards:
-    if (value >= 1000000) {
-      return `$${(value / 1000000).toFixed(2)}M`;
-    } else if (value >= 1000) {
-      return `$${Math.floor(value / 1000)}k`;
-    } else {
-      return `$${value.toFixed(2)}`;
-    }
-  } else {
-    // BTC Value Standards:
-    const btcValue = value / SATS_PER_BTC;
-    
-    if (btcValue >= 0.1) {
-      return `₿${btcValue.toFixed(2)}`;
-    } else if (value >= 1000000) {
-      return `${(value / 1000000).toFixed(2)}M sats`;
-    } else if (value >= 1000) {
-      return `${Math.floor(value / 1000)}k sats`;
-    } else {
-      return `${Math.floor(value)} sats`;
-    }
-  }
+  // Delegate to the centralized formatting utility
+  return formatValueUtils(value, currency);
 };
 
 // Add global store for currency and price to maintain consistency across page navigations
@@ -206,8 +164,10 @@ export function useOVTClient() {
   // This prevents small fluctuations from causing re-renders
   const { price: rawBtcPrice } = bitcoinPriceHook;
   const btcPrice = useMemo(() => {
-    // Initialize with the current value
-    if (typeof rawBtcPrice !== 'number') return 50000;
+    // Safety check for null/undefined/NaN/Infinity
+    if (typeof rawBtcPrice !== 'number' || !Number.isFinite(rawBtcPrice)) {
+      return 50000; // Safe default
+    }
     
     // Round to the nearest 100 to reduce fluctuations
     return Math.round(rawBtcPrice / 100) * 100;
@@ -225,27 +185,33 @@ export function useOVTClient() {
   
   // Formatted OVT price for consistent display
   const formattedOvtPrice = useMemo(() => {
-    // Make sure we have a non-zero value
-    const valueToFormat = Math.max(ovtPrice || 0, 1);
-    
-    // Format the value based on currency
-    if (baseCurrency === 'usd' && btcPrice) {
-      const usdValue = (valueToFormat / SATS_PER_BTC) * btcPrice;
+    try {
+      // Check if ovtPrice is valid
+      if (!Number.isFinite(ovtPrice) || ovtPrice <= 0) {
+        // Default reasonable value
+        const defaultPrice = getGlobalNAVReference();
+        
+        // If the default is also invalid, use a hard-coded fallback
+        if (!Number.isFinite(defaultPrice) || defaultPrice <= 0) {
+          return baseCurrency === 'usd' ? '$0.00' : '0 sats';
+        }
+        
+        return formatValue(defaultPrice, baseCurrency, btcPrice);
+      }
       
-      // USD formatting - use standard rules
-      if (usdValue >= 1000000) {
-        return `$${(usdValue / 1000000).toFixed(2)}M`; 
+      // Check for valid BTC price for USD conversion
+      if (baseCurrency === 'usd') {
+        if (!Number.isFinite(btcPrice) || btcPrice <= 0) {
+          // If BTC price is invalid, fall back to BTC display
+          return formatValue(ovtPrice, 'btc');
+        }
       }
-      if (usdValue >= 1000) {
-        return `$${(usdValue / 1000).toFixed(1)}k`; 
-      }
-      if (usdValue < 100) {
-        return `$${usdValue.toFixed(2)}`; 
-      }
-      return `$${Math.round(usdValue)}`;
-    } else {
-      // BTC formatting
-      return formatValue(valueToFormat, 'btc');
+      
+      // Now it's safe to format with validated values
+      return formatValue(ovtPrice, baseCurrency, btcPrice);
+    } catch (error) {
+      console.error('Error formatting OVT price (returning safe default):', error);
+      return baseCurrency === 'usd' ? '$0.00' : '0 sats';
     }
   }, [ovtPrice, baseCurrency, btcPrice]);
 

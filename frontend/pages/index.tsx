@@ -48,13 +48,15 @@ export default function Dashboard() {
     dailyChange, 
     dailyChangeFormatted, 
     isPositiveChange,
-    refreshPrice
+    refreshPrice,
+    isLoading,
+    setIsLoading
   } = useOVTPrice();
 
   // Get OVTClient data with useEffect for baseCurrency syncing instead of direct use
   const ovtClientData = useOVTClient();
   const { 
-    isLoading, 
+    isLoading: ovtClientLoading, 
     error, 
     navData, 
     formatValue,
@@ -81,6 +83,14 @@ export default function Dashboard() {
   // Default starting price in SATs (for server-side rendering)
   const DEFAULT_OVT_PRICE = 300;
   
+  // Only show real data from the API, no randomly generated fallbacks
+  const displayedChangePercentage = useMemo(() => {
+    return {
+      changeText: dailyChangeFormatted, 
+      isPositive: isPositiveChange
+    };
+  }, [dailyChangeFormatted, isPositiveChange]);
+  
   // Update wallet connection status when address changes
   useEffect(() => {
     if (typeof window === 'undefined') return; // Only run on client
@@ -97,17 +107,50 @@ export default function Dashboard() {
     }
   }, [network, address]);
   
+  // Add a central debounced refresh function to prevent multiple rapid requests
+  const handleManualRefresh = async () => {
+    if (isLoading) return; // Prevent duplicate refreshes
+    
+    try {
+      // Show a refreshing indicator
+      setIsLoading(true);
+      
+      // First refresh OVT price 
+      await refreshPrice();
+      
+      // Then refresh NAV with a larger delay to prevent rate limiting
+      await new Promise(resolve => setTimeout(resolve, 2000)); 
+      await fetchNAV();
+      
+    } catch (err) {
+      console.error('Failed to refresh data:', err);
+    } finally {
+      // Hide loading indicator
+      setIsLoading(false);
+    }
+  };
+  
   // Periodically refresh data from server
   useEffect(() => {
     if (typeof window === 'undefined') return; // Only run on client
     
-    // Initial fetch
-    fetchNAV();
+    // Initial fetch - with random delay to prevent many clients hitting at once
+    const initialFetch = async () => {
+      try {
+        // Add staggered delay to prevent multiple components from making simultaneous requests
+        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
+        await fetchNAV();
+      } catch (err) {
+        console.warn('Initial data fetch error:', err);
+      }
+    };
     
-    // Set up interval for refreshing
+    initialFetch();
+    
+    // Set up interval for refreshing with a much longer interval to avoid rate limiting
     const intervalId = setInterval(() => {
       fetchNAV();
-    }, 120000); // Reduce refresh frequency to 2 minutes to avoid rate limiting
+    }, 600000); // 10 minutes instead of 5 to avoid rate limiting
     
     return () => {
       if (intervalId) {
@@ -243,6 +286,15 @@ export default function Dashboard() {
               {/* Currency Toggle */}
               <CurrencyToggle size="sm" />
               
+              {/* Manual Refresh Button */}
+              <button 
+                onClick={handleManualRefresh}
+                className="text-primary hover:text-primary-dark rounded p-1"
+                title="Refresh All Price Data"
+              >
+                <ArrowPathIcon className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+              </button>
+              
               {/* Wallet Connection */}
               <WalletConnector 
                 onConnect={handleConnectWallet}
@@ -301,16 +353,7 @@ export default function Dashboard() {
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-semibold text-primary">OVT Price</h2>
                 <button 
-                  onClick={async () => {
-                    // Force OVT price refresh
-                    try {
-                      await priceService.triggerOVTPriceUpdate();
-                      // Also refresh the NAV data
-                      fetchNAV();
-                    } catch (err) {
-                      console.error('Failed to refresh OVT price:', err);
-                    }
-                  }}
+                  onClick={handleManualRefresh}
                   className="text-primary hover:text-primary-dark p-1 rounded-full"
                   title="Refresh OVT Price"
                 >
@@ -328,8 +371,8 @@ export default function Dashboard() {
                 
                 <div className="flex justify-between items-center">
                   <span className="text-primary">24h Change:</span>
-                  <span className={`font-medium ${isPositiveChange ? 'text-success' : 'text-error'}`}>
-                    {dailyChangeFormatted}
+                  <span className={`font-medium ${displayedChangePercentage.isPositive ? 'text-success' : 'text-error'}`}>
+                    {displayedChangePercentage.changeText}
                   </span>
                 </div>
               </div>

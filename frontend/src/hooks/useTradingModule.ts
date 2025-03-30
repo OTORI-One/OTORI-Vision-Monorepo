@@ -1,7 +1,9 @@
 import { useState, useCallback, useEffect } from 'react';
-import { useOVTClient } from './useOVTClient';
 import { getDataSourceIndicator } from '../lib/hybridModeUtils';
 import { ArchTransaction } from '../lib/archClient';
+import { useOVTClient } from './useOVTClient';
+import priceService from '../services/priceService';
+import { useOVTPrice } from './useOVTPrice';
 
 // Define types for our trading module
 export interface Order {
@@ -16,17 +18,27 @@ export interface OrderBook {
 
 export interface TradeTransaction {
   txid: string;
-  type: 'buy' | 'sell';
+  type: 'BUY' | 'SELL';
   amount: number;
-  price: number;
+  confirmations: number;
   timestamp: number;
-  status: 'pending' | 'confirmed' | 'failed';
-  details?: {
-    orderType?: 'market' | 'limit';
+  metadata: {
+    price: number;
+    status: 'pending' | 'confirmed' | 'failed';
+    orderType: 'market' | 'limit';
     limitPrice?: number;
     filledAt?: number;
   };
 }
+
+export type TradeParams = {
+  type: 'buy' | 'sell';
+  amount: number;
+  maxPrice?: number; // for buy orders
+  minPrice?: number; // for sell orders
+  executionPrice: number; // price trade executed at
+  fee?: number;
+};
 
 // Local storage keys
 const TRADE_HISTORY_KEY = 'ovt-trade-history';
@@ -55,224 +67,158 @@ export function useTradingModule() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [tradeHistory, setTradeHistory] = useState<TradeTransaction[]>([]);
-  const { archClient } = useOVTClient();
-
-  // Get data source indicator for UI
-  const dataSourceIndicator = getDataSourceIndicator('trading');
-
-  // Load stored data on mount
-  useEffect(() => {
-    try {
-      // Load trade history
-      const storedTradeHistory = localStorage.getItem(TRADE_HISTORY_KEY);
-      if (storedTradeHistory) {
-        setTradeHistory(JSON.parse(storedTradeHistory));
-      }
-    } catch (err) {
-      console.error('Error loading trade data from local storage:', err);
-    }
-  }, []);
-
-  // Save trade history whenever it changes
-  useEffect(() => {
-    try {
-      localStorage.setItem(TRADE_HISTORY_KEY, JSON.stringify(tradeHistory));
-    } catch (err) {
-      console.error('Error saving trade history to local storage:', err);
-    }
-  }, [tradeHistory]);
-
-  // Get current market price
-  const getMarketPrice = useCallback(async (): Promise<number> => {
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      // Try to get the price from the API
-      const price = await archClient.getMarketPrice();
-      setIsLoading(false);
-      return price;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error fetching price';
-      console.warn('Market price fetch error, using cached price:', errorMessage);
-      setError(errorMessage);
-      setIsLoading(false);
-      
-      // Get OVT price from local storage as fallback
-      try {
-        const savedPrice = localStorage.getItem('ovt-global-price');
-        if (savedPrice) {
-          const parsedPrice = parseFloat(savedPrice);
-          if (Number.isFinite(parsedPrice) && parsedPrice > 0) {
-            console.log('Using cached OVT price from localStorage:', parsedPrice);
-            return parsedPrice;
-          }
-        }
-      } catch (e) {
-        console.error('Failed to get OVT price from localStorage:', e);
-      }
-      
-      // If all else fails, return a hardcoded fallback price
-      return 700000; // 700k sats as fallback
-    }
-  }, [archClient]);
-
-  // Estimate price impact for a given order size
-  const estimatePriceImpact = useCallback(async (
-    amount: number, 
-    isBuy: boolean
-  ): Promise<number> => {
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const impactPrice = await archClient.estimatePriceImpact(amount, isBuy);
-      setIsLoading(false);
-      return impactPrice;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error estimating price';
-      setError(errorMessage);
-      setIsLoading(false);
-      throw err;
-    }
-  }, [archClient]);
-
-  // Get order book
-  const getOrderBook = useCallback(async (): Promise<OrderBook> => {
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const orderBook = await archClient.getOrderBook();
-      setIsLoading(false);
-      return orderBook;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error fetching order book';
-      setError(errorMessage);
-      setIsLoading(false);
-      throw err;
-    }
-  }, [archClient]);
-
-  // Buy OVT tokens
-  const buyOVT = useCallback(async (
-    amount: number,
-    maxPrice?: number
-  ): Promise<TradeTransaction> => {
+  
+  // Get consistent OVT price from price service
+  const priceData = useOVTPrice();
+  
+  // We keep the reference to useOVTClient for now but comment out its direct usage
+  // This will be useful when implementing on-chain interactions with the OTORI program
+  // in the future, but for now we use the centralized price service
+  const ovtClientResult = useOVTClient();
+  // Let archClient;
+  // if (ovtClientResult) {
+  //   archClient = ovtClientResult.archClient;
+  // }
+  
+  /**
+   * Simulates getting the current market price from the on-chain program
+   */
+  const getMarketPrice = useCallback(() => {
+    // Use price service rather than direct calculation
+    return priceData.btcPriceSats;
+  }, [priceData.btcPriceSats]);
+  
+  /**
+   * Simulates buying OVT at either market price or up to a specified max price
+   */
+  const buyOVT = useCallback(async (amount: number, maxPrice?: number): Promise<TradeTransaction> => {
     if (amount <= 0) {
-      throw new Error('Amount must be positive');
+      throw new Error('Amount must be greater than 0');
     }
-
+    
     setIsLoading(true);
     setError(null);
-
+    
     try {
-      // Get execution price
-      const executionPrice = await estimatePriceImpact(amount, true);
+      // Get current price from price service
+      const marketPrice = getMarketPrice();
       
-      // Check if price exceeds max price (for limit orders)
-      if (maxPrice && executionPrice > maxPrice) {
-        throw new Error(`Execution price ${executionPrice} exceeds max price ${maxPrice}`);
+      // Check if price is acceptable
+      if (maxPrice && marketPrice > maxPrice) {
+        throw new Error(`Market price (${marketPrice}) exceeds maximum price (${maxPrice})`);
       }
-
-      // Execute trade
-      const transaction = await archClient.executeTrade({
+      
+      // Simulate a transaction - in the future this would call the OTORI program
+      const transaction = await simulateTradeTransaction({
         type: 'buy',
         amount,
-        executionPrice,
-        maxPrice
+        maxPrice,
+        executionPrice: marketPrice
       });
       
-      // Convert ArchTransaction to TradeTransaction
-      const tradeTransaction = convertArchToTradeTransaction(transaction);
-      
       // Update trade history
-      setTradeHistory(prev => [tradeTransaction, ...prev]);
+      setTradeHistory(prev => [transaction, ...prev]);
       
-      setIsLoading(false);
-      return tradeTransaction;
+      return transaction;
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error buying OVT';
+      const errorMessage = err instanceof Error ? err.message : 'Error executing buy order';
       setError(errorMessage);
-      setIsLoading(false);
       throw err;
+    } finally {
+      setIsLoading(false);
     }
-  }, [archClient, estimatePriceImpact]);
-
-  // Sell OVT tokens
-  const sellOVT = useCallback(async (
-    amount: number,
-    minPrice?: number
-  ): Promise<TradeTransaction> => {
+  }, [getMarketPrice]);
+  
+  /**
+   * Simulates selling OVT at either market price or down to a specified min price
+   */
+  const sellOVT = useCallback(async (amount: number, minPrice?: number): Promise<TradeTransaction> => {
     if (amount <= 0) {
-      throw new Error('Amount must be positive');
+      throw new Error('Amount must be greater than 0');
     }
-
+    
     setIsLoading(true);
     setError(null);
-
+    
     try {
-      // Get execution price
-      const executionPrice = await estimatePriceImpact(amount, false);
+      // Get current price from price service
+      const marketPrice = getMarketPrice();
       
-      // Check if price is below min price (for limit orders)
-      if (minPrice && executionPrice < minPrice) {
-        throw new Error(`Execution price ${executionPrice} below min price ${minPrice}`);
+      // Check if price is acceptable
+      if (minPrice && marketPrice < minPrice) {
+        throw new Error(`Market price (${marketPrice}) is below minimum price (${minPrice})`);
       }
-
-      // Execute trade
-      const transaction = await archClient.executeTrade({
+      
+      // Simulate a transaction - in the future this would call the OTORI program
+      const transaction = await simulateTradeTransaction({
         type: 'sell',
         amount,
-        executionPrice,
-        minPrice
+        minPrice,
+        executionPrice: marketPrice
       });
       
-      // Convert ArchTransaction to TradeTransaction
-      const tradeTransaction = convertArchToTradeTransaction(transaction);
-      
       // Update trade history
-      setTradeHistory(prev => [tradeTransaction, ...prev]);
+      setTradeHistory(prev => [transaction, ...prev]);
       
-      setIsLoading(false);
-      return tradeTransaction;
+      return transaction;
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error selling OVT';
+      const errorMessage = err instanceof Error ? err.message : 'Error executing sell order';
       setError(errorMessage);
-      setIsLoading(false);
       throw err;
+    } finally {
+      setIsLoading(false);
     }
-  }, [archClient, estimatePriceImpact]);
+  }, [getMarketPrice]);
 
-  // Get recent trades
-  const getRecentTrades = useCallback(async (limit: number = 10): Promise<TradeTransaction[]> => {
-    setIsLoading(true);
-    setError(null);
-
+  // Helper to simulate transaction for development purposes
+  const simulateTradeTransaction = useCallback(async (params: TradeParams): Promise<TradeTransaction> => {
     try {
-      const trades = await archClient.getTransactionHistory(limit.toString());
-      const convertedTrades = trades.map(convertArchToTradeTransaction);
-      setIsLoading(false);
-      return convertedTrades;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error fetching trades';
-      setError(errorMessage);
-      setIsLoading(false);
-      throw err;
+      // In a real implementation, this would submit to the blockchain
+      // For now just creating a simulated transaction
+      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate network delay
+      
+      // Create a simulated transaction
+      const txid = `tx-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      return {
+        txid,
+        type: params.type.toUpperCase() as 'BUY' | 'SELL',
+        amount: params.amount,
+        confirmations: 0,
+        timestamp: Date.now(),
+        metadata: {
+          price: params.executionPrice,
+          status: 'pending' as 'pending' | 'confirmed' | 'failed',
+          orderType: (params.maxPrice || params.minPrice ? 'limit' : 'market') as 'market' | 'limit',
+          limitPrice: params.maxPrice || params.minPrice,
+          filledAt: params.executionPrice
+        }
+      };
+    } catch (error) {
+      console.error('Error simulating transaction:', error);
+      throw error;
     }
-  }, [archClient]);
-
-  // Return the trading module interface
+  }, []);
+  
+  // Update state with trade history
+  useEffect(() => {
+    const updateHistory = async () => {
+      // In the future, fetch the actual trade history from the OTORI program
+      // For now, just using our local state
+    };
+    
+    updateHistory().catch(console.error);
+  }, []);
+  
+  // Get the current data source indicator
+  const dataSource = getDataSourceIndicator('trading');
+  
   return {
     buyOVT,
     sellOVT,
-    getOrderBook,
     getMarketPrice,
-    estimatePriceImpact,
-    getRecentTrades,
-    tradeHistory,
     isLoading,
     error,
-    dataSourceIndicator
+    tradeHistory,
+    dataSource
   };
 } 

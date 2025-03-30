@@ -9,8 +9,8 @@ import {
 } from '../lib/navCalculator';
 import { PortfolioPosition, getPortfolioFromLocalStorage } from '../utils/priceMovement';
 import { useCurrencyToggle, Currency } from './useCurrencyToggle';
-import { formatValue, SATS_PER_BTC } from '@/src/lib/formatting';
-import priceService from '@/src/services/priceService';
+import { formatValue, SATS_PER_BTC } from '../lib/formatting';
+import priceService from '../services/priceService';
 
 interface NAVHookResult {
   nav: NAVResult;
@@ -133,52 +133,63 @@ export function useNAV(): NAVHookResult {
     // Add subscription to global updates
     navDataCache.subscribers.add(handleNavUpdate);
     
+    // Track last fetch time in a module-level variable to prevent multiple components
+    // from triggering parallel requests
+    let lastFetchAttempt = 0;
+    
     // Initial data fetch if cache is stale or empty
     if (!isCacheFresh(10000)) {
-      // Try to use price store API data first
-      if (priceStore) {
-        priceStore.fetchNAVData()
-          .then(data => {
-            // Map from API format to NAV format
-            const navResult: NAVResult = {
-              navSats: data.totalValueSats,
-              navUsd: data.totalValueUSD,
-              formattedNavSats: data.formattedTotalValueSats,
-              formattedNavUsd: data.formattedTotalValueUSD,
-              pricePerToken: data.ovtPrice,
-              pricePerTokenUsd: data.btcPrice ? (data.ovtPrice / SATS_PER_BTC) * data.btcPrice : 0,
-              totalTokenSupply: data.circulatingSupply || 2100000,
-              changePercentage: data.changePercentage || 0
-            };
-            
-            // Update module-level cache for all components
-            updateNavSubscribers(navResult);
-          })
-          .catch(err => {
-            console.warn('Could not fetch initial NAV data from API:', err);
-            // Use fallback local calculation if API fails
-            try {
-              const portfolioPositions = getPortfolioFromLocalStorage();
-              const initialNav = calculateNAV(portfolioPositions);
+      // Only fetch if no other component has requested data in the last 5 seconds
+      const now = Date.now();
+      if (now - lastFetchAttempt > 5000) {
+        lastFetchAttempt = now;
+        
+        // Try to use price store API data first
+        if (priceStore) {
+          // Don't use force=true to respect cache and rate limits
+          priceStore.fetchNAVData(false)
+            .then(data => {
+              // Map from API format to NAV format
+              const navResult: NAVResult = {
+                navSats: data.totalValueSats,
+                navUsd: data.totalValueUSD,
+                formattedNavSats: data.formattedTotalValueSats,
+                formattedNavUsd: data.formattedTotalValueUSD,
+                pricePerToken: data.ovtPrice,
+                pricePerTokenUsd: data.btcPrice ? (data.ovtPrice / SATS_PER_BTC) * data.btcPrice : 0,
+                totalTokenSupply: data.circulatingSupply || 2100000,
+                changePercentage: data.changePercentage || 0
+              };
               
-              // Update module-level cache
-              updateNavSubscribers(initialNav);
-            } catch (calcErr) {
-              console.error('Error with fallback NAV calculation:', calcErr);
-              setError('Failed to load NAV data');
-            }
-          });
-      } else {
-        // No price store available, use local calculation
-        try {
-          const portfolioPositions = getPortfolioFromLocalStorage();
-          const initialNav = calculateNAV(portfolioPositions);
-          
-          // Update module-level cache
-          updateNavSubscribers(initialNav);
-        } catch (err) {
-          console.error('Error calculating local NAV:', err);
-          setError('Failed to load NAV data');
+              // Update module-level cache for all components
+              updateNavSubscribers(navResult);
+            })
+            .catch(err => {
+              console.warn('Could not fetch initial NAV data from API:', err);
+              // Use fallback local calculation if API fails
+              try {
+                const portfolioPositions = getPortfolioFromLocalStorage();
+                const initialNav = calculateNAV(portfolioPositions);
+                
+                // Update module-level cache
+                updateNavSubscribers(initialNav);
+              } catch (calcErr) {
+                console.error('Error with fallback NAV calculation:', calcErr);
+                setError('Failed to load NAV data');
+              }
+            });
+        } else {
+          // No price store available, use local calculation
+          try {
+            const portfolioPositions = getPortfolioFromLocalStorage();
+            const initialNav = calculateNAV(portfolioPositions);
+            
+            // Update module-level cache
+            updateNavSubscribers(initialNav);
+          } catch (err) {
+            console.error('Error calculating local NAV:', err);
+            setError('Failed to load NAV data');
+          }
         }
       }
     }

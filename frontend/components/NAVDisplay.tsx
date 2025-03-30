@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import priceService from '../src/services/priceService';
 import { SATS_PER_BTC } from '../src/lib/formatting';
@@ -170,33 +170,43 @@ function NAVDisplayComponent({ size = 'md', showChange = true }: NAVDisplayProps
     
     // Trigger a fetch immediately (but don't wait for it)
     if (!hasInitializedRef.current) {
-      priceStore.fetchNAVData();
+      priceStore.fetchNAVData(false); // Use cached data if available
     }
     
     return () => {
       unsubscribe();
     };
-  }, [nav, navData]);
+  }, [nav]);
   
-  // Format values based on current currency
-  const formattedTotalValue = currency === 'usd' 
-    ? navData.formattedTotalValueUSD 
-    : navData.formattedTotalValueSats;
-  
-  // Format change percentage with safety checks
-  const changePercentage = (typeof navData.changePercentage === 'number' && isFinite(navData.changePercentage))
-    ? navData.changePercentage.toFixed(2)
-    : (typeof globalNavCache.navPercentage === 'number' && isFinite(globalNavCache.navPercentage))
-      ? globalNavCache.navPercentage.toFixed(2)
-      : '0.00';
+  // Calculate the formatted values more efficiently using memoization
+  // And ensure consistent rendering between server and client
+  const formattedValues = useMemo(() => {
+    // For server-side rendering, use the most stable, consistent values
+    // that match what the client is likely to receive
+    const serverDefaultValue = currency === 'usd' ? '$0.00' : '0 sats';
+    const serverDefaultChange = '+0.00%';
     
-  const isPositive = (typeof navData.changePercentage === 'number' && isFinite(navData.changePercentage))
-    ? navData.changePercentage >= 0
-    : (typeof globalNavCache.navPercentage === 'number' && isFinite(globalNavCache.navPercentage))
-      ? globalNavCache.navPercentage >= 0
-      : true;
+    // Format values based on current currency and real data
+    const formattedTotalValue = currency === 'usd' 
+      ? navData.formattedTotalValueUSD || serverDefaultValue
+      : navData.formattedTotalValueSats || serverDefaultValue;
     
-  const formattedChangePercentage = `${isPositive ? '+' : ''}${changePercentage}%`;
+    // Format change percentage with safety checks
+    let changePercentage = (typeof navData.changePercentage === 'number' && isFinite(navData.changePercentage))
+      ? navData.changePercentage.toFixed(2)
+      : (typeof globalNavCache.navPercentage === 'number' && isFinite(globalNavCache.navPercentage))
+        ? globalNavCache.navPercentage.toFixed(2)
+        : '0.00';
+    
+    const isPositive = parseFloat(changePercentage) >= 0;
+    const formattedChangePercentage = `${isPositive ? '+' : ''}${changePercentage}%`;
+
+    return {
+      formattedTotalValue,
+      formattedChangePercentage,
+      isPositive
+    };
+  }, [currency, navData, globalNavCache.navPercentage]); // Only recompute when these dependencies change
   
   // Size classes
   const sizes = {
@@ -219,14 +229,14 @@ function NAVDisplayComponent({ size = 'md', showChange = true }: NAVDisplayProps
         </p>
         <div className="flex items-center">
           <p className={`${valueSize[size]} font-bold text-primary mr-2`}>
-            {formattedTotalValue}
+            {formattedValues.formattedTotalValue}
           </p>
           
           {showChange && (
             <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium ${
-              isPositive ? 'bg-success bg-opacity-10 text-success' : 'bg-error bg-opacity-10 text-error'
+              formattedValues.isPositive ? 'bg-success bg-opacity-10 text-success' : 'bg-error bg-opacity-10 text-error'
             }`}>
-              {formattedChangePercentage}
+              {formattedValues.formattedChangePercentage}
             </span>
           )}
         </div>

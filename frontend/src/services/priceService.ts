@@ -10,6 +10,8 @@ import axios from 'axios';
 
 // API base URL - can be overridden via environment variables
 const API_BASE_URL = process.env.NEXT_PUBLIC_PRICE_API_URL || 'http://localhost:3030/api/price';
+const CACHE_TTL = 10000; // Cache time-to-live: 10 seconds
+const SATS_PER_BTC = 100000000; // 100M sats per BTC
 
 // Central data storage - this is the single source of truth
 class PriceStore {
@@ -34,6 +36,12 @@ class PriceStore {
   private _pendingNavPromise: Promise<NAVData> | null = null;
   private _pendingOvtPromise: Promise<OVTPrice> | null = null;
   private _pendingBtcPromise: Promise<BitcoinPrice> | null = null;
+  
+  // Centralized queue for API requests to prevent 429 errors
+  private requestQueue: Map<string, number> = new Map();
+  private QUEUE_DELAY = 1500; // 1.5 seconds between requests of the same type
+  private MAX_CONCURRENT_REQUESTS = 1; // Limit concurrent requests
+  private activeRequests = 0;
   
   // Constructor is private for singleton pattern
   private constructor() {}
@@ -188,88 +196,170 @@ class PriceStore {
     return null;
   }
   
-  // Method to fetch NAV data with automatic caching
-  public async fetchNAVData(force: boolean = false): Promise<NAVData> {
-    // If we have recent data and this isn't a forced refresh, return cached data
+  // Helper method to handle API requests with rate limiting and retry logic
+  private async executeRateLimitedRequest<T>(
+    endpoint: string,
+    requestFn: () => Promise<T>,
+    retries = 2
+  ): Promise<T> {
+    // Check when last request of this type was made
+    const lastRequestTime = this.requestQueue.get(endpoint) || 0;
     const now = Date.now();
-    if (!force && this._navData && (now - this._navLastFetched < 5000)) {
+    const timeSinceLastRequest = now - lastRequestTime;
+    
+    // If too recent, wait before making the request
+    if (timeSinceLastRequest < this.QUEUE_DELAY) {
+      // Wait for the remaining time plus a small buffer
+      const waitTime = this.QUEUE_DELAY - timeSinceLastRequest + Math.random() * 500;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    // Wait if we have too many active requests globally
+    while (this.activeRequests >= this.MAX_CONCURRENT_REQUESTS) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    
+    // Update the queue with current timestamp
+    this.requestQueue.set(endpoint, Date.now());
+    
+    try {
+      // Track active request count
+      this.activeRequests++;
+      
+      // Execute the actual API request
+      return await requestFn();
+    } catch (error) {
+      if (retries > 0) {
+        console.warn(`Request to ${endpoint} failed, retrying... (${retries} attempts left)`);
+        // Exponential backoff: wait longer for each retry
+        const backoffTime = (3 - retries) * 3000 + Math.random() * 2000;
+        await new Promise(resolve => setTimeout(resolve, backoffTime));
+        return this.executeRateLimitedRequest(endpoint, requestFn, retries - 1);
+      }
+      throw error;
+    } finally {
+      // Decrease active request count when done
+      this.activeRequests--;
+    }
+  }
+  
+  // Method to fetch NAV data with automatic caching and retry
+  public async fetchNAVData(force: boolean = false): Promise<NAVData> {
+    const now = Date.now();
+    const CACHE_TTL = 10000; // 10 seconds TTL
+    
+    // If we have recent data and this isn't a forced refresh, return cached data
+    if (!force && this._navData && (now - this._navLastFetched < CACHE_TTL)) {
       return this._navData;
     }
     
-    // If we have a pending request, return that promise
+    // Rate limiting - prevent too many requests
     if (this._pendingNavPromise) {
       return this._pendingNavPromise;
     }
     
-    // Create and store the promise
-    this._pendingNavPromise = getNAVData()
-      .then(data => {
+    // Mark fetch time
+    this._navLastFetched = now;
+    
+    // Use the rate-limited request helper
+    this._pendingNavPromise = this.executeRateLimitedRequest<NAVData>(
+      'nav',
+      () => getNAVData(),
+      3 // Three retries for NAV data since it's critical
+    )
+    .then(data => {
+      // Update cache with valid data
+      if (!this._navData || this.hasDataChanged(this._navData, data)) {
         this.navData = data; // This will trigger listeners
-        return data;
-      })
-      .catch(err => {
-        console.error('Error fetching NAV data:', err);
-        
-        // Try to use cached data if API call fails
-        if (!this._navData) {
-          const cachedData = this.loadCachedData<NAVData>('nav-data-cache');
-          if (cachedData) {
-            this._navData = cachedData;
-          }
-        }
-        
-        // If we have any data, return it; otherwise rethrow
-        if (this._navData) {
-          return this._navData;
-        }
-        throw err;
-      })
-      .finally(() => {
-        this._pendingNavPromise = null;
-      });
+      }
+      this._pendingNavPromise = null;
+      return data;
+    })
+    .catch(err => {
+      console.error('All NAV data fetch attempts failed:', err);
+      this._pendingNavPromise = null;
+      
+      // Use cached data if we have it
+      if (this._navData) {
+        console.log('Using cached NAV data from memory');
+        return this._navData;
+      }
+      
+      // Try to load from localStorage
+      const cachedData = this.loadCachedData<NAVData>('nav-data');
+      if (cachedData) {
+        console.log('Using cached NAV data from localStorage');
+        this._navData = cachedData;
+        return cachedData;
+      }
+      
+      // If we have nothing else, throw the error
+      throw new Error('Failed to fetch NAV data and no cache available');
+    });
     
     return this._pendingNavPromise;
   }
   
-  // Method to fetch OVT price with automatic caching
+  // Method to fetch OVT price with automatic caching and retry
   public async fetchOVTPrice(force: boolean = false): Promise<OVTPrice> {
-    // If we have recent data and this isn't a forced refresh, return cached data
     const now = Date.now();
-    if (!force && this._ovtPrice && (now - this._ovtLastFetched < 5000)) {
+    const CACHE_TTL = 10000; // 10 seconds TTL
+    
+    // If not forcing refresh and data is still fresh, use cached data
+    if (!force && this._ovtPrice && (now - this._ovtLastFetched < CACHE_TTL)) {
       return this._ovtPrice;
     }
     
-    // If we have a pending request, return that promise
+    // Rate limiting - prevent too many requests
     if (this._pendingOvtPromise) {
       return this._pendingOvtPromise;
     }
     
-    // Create and store the promise
-    this._pendingOvtPromise = getOVTPrice()
-      .then(data => {
+    // Mark fetch time
+    this._ovtLastFetched = now;
+    
+    // Use the rate-limited request helper
+    this._pendingOvtPromise = this.executeRateLimitedRequest<OVTPrice>(
+      'ovt',
+      () => getOVTPrice(),
+      3 // Three retries for OVT price data since it's critical
+    )
+    .then(data => {
+      // Ensure dailyChange is a valid number
+      if (typeof data.dailyChange !== 'number' || !isFinite(data.dailyChange)) {
+        // Use zero instead of a random number for transparency
+        data.dailyChange = 0;
+        console.warn('Server returned invalid dailyChange value, using 0');
+      }
+      
+      // Update cache with valid data
+      if (!this._ovtPrice || this.hasDataChanged(this._ovtPrice, data)) {
         this.ovtPrice = data; // This will trigger listeners
-        return data;
-      })
-      .catch(err => {
-        console.error('Error fetching OVT price:', err);
-        
-        // Try to use cached data if API call fails
-        if (!this._ovtPrice) {
-          const cachedData = this.loadCachedData<OVTPrice>('ovt-price-data');
-          if (cachedData) {
-            this._ovtPrice = cachedData;
-          }
-        }
-        
-        // If we have any data, return it; otherwise rethrow
-        if (this._ovtPrice) {
-          return this._ovtPrice;
-        }
-        throw err;
-      })
-      .finally(() => {
-        this._pendingOvtPromise = null;
-      });
+      }
+      this._pendingOvtPromise = null;
+      return data;
+    })
+    .catch(err => {
+      console.error('All OVT price fetch attempts failed:', err);
+      this._pendingOvtPromise = null;
+      
+      // Use cached data if we have it
+      if (this._ovtPrice) {
+        console.log('Using cached OVT price data from memory');
+        return this._ovtPrice;
+      }
+      
+      // Try to load from localStorage
+      const cachedData = this.loadCachedData<OVTPrice>('ovt-price-data');
+      if (cachedData) {
+        console.log('Using cached OVT price data from localStorage');
+        this._ovtPrice = cachedData;
+        return cachedData;
+      }
+      
+      // If we have nothing else, throw the error
+      throw new Error('Failed to fetch OVT price data and no cache available');
+    });
     
     return this._pendingOvtPromise;
   }
@@ -278,7 +368,9 @@ class PriceStore {
   public async fetchBTCPrice(force: boolean = false): Promise<BitcoinPrice> {
     // If we have recent data and this isn't a forced refresh, return cached data
     const now = Date.now();
-    if (!force && this._btcPrice && (now - this._btcLastFetched < 5000)) {
+    const CACHE_TTL = 30000; // BTC price changes less frequently, use 30 seconds
+    
+    if (!force && this._btcPrice && (now - this._btcLastFetched < CACHE_TTL)) {
       return this._btcPrice;
     }
     
@@ -287,32 +379,44 @@ class PriceStore {
       return this._pendingBtcPromise;
     }
     
-    // Create and store the promise
-    this._pendingBtcPromise = getBitcoinPrice()
-      .then(data => {
+    // Mark fetch time
+    this._btcLastFetched = now;
+    
+    // Use the rate-limited request helper
+    this._pendingBtcPromise = this.executeRateLimitedRequest<BitcoinPrice>(
+      'bitcoin',
+      () => getBitcoinPrice(),
+      2 // Two retries for BTC price
+    )
+    .then(data => {
+      // Update cache with valid data
+      if (!this._btcPrice || this.hasDataChanged(this._btcPrice, data)) {
         this.btcPrice = data; // This will trigger listeners
-        return data;
-      })
-      .catch(err => {
-        console.error('Error fetching BTC price:', err);
-        
-        // Try to use cached data if API call fails
-        if (!this._btcPrice) {
-          const cachedData = this.loadCachedData<BitcoinPrice>('btc-price-data');
-          if (cachedData) {
-            this._btcPrice = cachedData;
-          }
-        }
-        
-        // If we have any data, return it; otherwise rethrow
-        if (this._btcPrice) {
-          return this._btcPrice;
-        }
-        throw err;
-      })
-      .finally(() => {
-        this._pendingBtcPromise = null;
-      });
+      }
+      this._pendingBtcPromise = null;
+      return data;
+    })
+    .catch(err => {
+      console.error('All BTC price fetch attempts failed:', err);
+      this._pendingBtcPromise = null;
+      
+      // Use cached data if we have it
+      if (this._btcPrice) {
+        console.log('Using cached BTC price data from memory');
+        return this._btcPrice;
+      }
+      
+      // Try to load from localStorage
+      const cachedData = this.loadCachedData<BitcoinPrice>('btc-price-data');
+      if (cachedData) {
+        console.log('Using cached BTC price data from localStorage');
+        this._btcPrice = cachedData;
+        return cachedData;
+      }
+      
+      // If we have nothing else, throw the error
+      throw new Error('Failed to fetch BTC price data and no cache available');
+    });
     
     return this._pendingBtcPromise;
   }
@@ -344,10 +448,10 @@ class PriceStore {
     let lastSuccessfulFetch = Date.now();
     
     // Much more aggressive throttling to avoid rate limiting
-    const MIN_INTERVAL = 15000;    // Minimum time between requests (15s)
-    const MAX_INTERVAL = 120000;   // Maximum time between requests (2 minutes)
+    const MIN_INTERVAL = 30000;    // Minimum time between requests (30s)
+    const MAX_INTERVAL = 300000;   // Maximum time between requests (5 minutes)
     const BACKOFF_FACTOR = 4;      // More aggressive exponential backoff
-    const QUEUE_PROCESS_DELAY = 3000; // Time between processing queue items
+    const QUEUE_PROCESS_DELAY = 5000; // Time between processing queue items
     
     // Calculate interval based on API health
     const getRefreshInterval = () => {
@@ -468,6 +572,33 @@ class PriceStore {
         clearInterval(btcInterval);
       });
     }
+  }
+
+  // Add a utility method to check if data has changed meaningfully
+  private hasDataChanged(oldData: any, newData: any, threshold: number = 0.1): boolean {
+    // For NAVData comparison
+    if (oldData.totalValueSats !== undefined && newData.totalValueSats !== undefined) {
+      // Only consider it changed if value differs by more than 0.1%
+      const pctChange = Math.abs((newData.totalValueSats - oldData.totalValueSats) / oldData.totalValueSats);
+      return pctChange > threshold / 100; // Convert to decimal (0.1% = 0.001)
+    }
+    
+    // For OVTPrice comparison
+    if (oldData.price !== undefined && newData.price !== undefined) {
+      // Only consider it changed if price differs by more than 0.1%
+      const pctChange = Math.abs((newData.price - oldData.price) / oldData.price);
+      return pctChange > threshold / 100;
+    }
+    
+    // For BitcoinPrice comparison
+    if (oldData.price !== undefined && newData.price !== undefined) {
+      // Only consider it changed if price differs by more than 0.1%
+      const pctChange = Math.abs((newData.price - oldData.price) / oldData.price);
+      return pctChange > threshold / 100;
+    }
+    
+    // Default to true if no specific comparison rule exists
+    return true;
   }
 }
 

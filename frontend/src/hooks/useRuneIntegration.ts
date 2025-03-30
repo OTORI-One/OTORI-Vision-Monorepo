@@ -44,17 +44,24 @@ export interface TransactionResult {
   status: 'pending' | 'confirmed' | 'failed';
   confirmations: number;
   timestamp: number;
+  price?: number;
+  totalCost?: number;
+  totalReturn?: number;
+  psbts?: string[];
 }
 
 // Transaction interface
 export interface RuneTransaction {
   txid: string;
-  type: 'send' | 'receive';
+  type: 'BUY' | 'SELL';
   amount: number;
   address: string;
   timestamp: number;
   confirmations: number;
   status: 'pending' | 'confirmed' | 'failed';
+  price?: number;
+  totalCost?: number;
+  totalReturn?: number;
 }
 
 // Token balance interface
@@ -186,92 +193,6 @@ export function useRuneIntegration() {
   }, [API_BASE_URL]);
 
   /**
-   * Transfer rune tokens
-   */
-  const transferRune = useCallback(async (
-    fromAddress: string = address || '',
-    toAddress: string,
-    runeId: string = OVT_RUNE_ID,
-    amount: number
-  ): Promise<TransactionResult> => {
-    if (!fromAddress || !toAddress) {
-      throw new Error('Both sender and recipient addresses are required');
-    }
-    
-    if (!connected) {
-      throw new Error('Wallet connection required for transfers');
-    }
-    
-    if (amount <= 0) {
-      throw new Error('Amount must be greater than zero');
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      // Create transfer request data
-      const transferData = {
-        fromAddress,
-        toAddress,
-        runeId,
-        amount
-      };
-
-      // Sign the transfer request to prove ownership
-      const message = `Transfer ${amount} OVT to ${toAddress}`;
-      
-      // Get signature - handle different return types from LaserEyes implementations
-      let signature: string = '';
-      let pubkey: string = '';
-      
-      const signResult = await signMessage(message);
-      
-      // Determine the shape of the result
-      if (typeof signResult === 'string') {
-        // Basic implementation just returns signature string
-        signature = signResult;
-        // We'll need to get pubkey from elsewhere or use address as identifier
-        pubkey = fromAddress;
-      } else if (typeof signResult === 'object' && signResult !== null) {
-        // Extended implementation returns object with signature and pubkey
-        const typedResult = signResult as unknown as SignMessageResult;
-        signature = typedResult.signature || '';
-        pubkey = typedResult.pubkey || fromAddress;
-      }
-      
-      // Add signature to request
-      const transferRequest = {
-        ...transferData,
-        signature,
-        pubkey
-      };
-
-      // Send transfer request to API
-      const response = await axios.post(`${API_BASE_URL}/ovt/transfer`, transferRequest);
-      
-      // Return transaction result
-      const result: TransactionResult = {
-        txid: response.data.txid,
-        status: response.data.status || 'pending',
-        confirmations: response.data.confirmations || 0,
-        timestamp: Date.now()
-      };
-      
-      // Refresh balance after transfer
-      await getBalance(fromAddress, runeId);
-      
-      return result;
-    } catch (err) {
-      console.error('Error transferring tokens:', err);
-      setError('Failed to transfer tokens');
-      throw err;
-    } finally {
-      setIsLoading(false);
-    }
-  }, [address, connected, signMessage, getBalance, API_BASE_URL]);
-
-  /**
    * Get transaction history for address
    */
   const getTransactionHistory = useCallback(async (
@@ -291,15 +212,22 @@ export function useRuneIntegration() {
         `${API_BASE_URL}/ovt/transactions?address=${walletAddress}&runeId=${runeId}`
       );
       
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Failed to fetch transaction history');
+      }
+      
       // Format transactions from API response
-      const txs = (response.data?.transactions || []).map((tx: any) => ({
+      const txs = (response.data.transactions || []).map((tx: any) => ({
         txid: tx.txid,
         type: tx.type,
         amount: tx.amount,
-        address: tx.address,
+        address: tx.fromAddress === walletAddress ? tx.toAddress : tx.fromAddress,
         timestamp: tx.timestamp,
         confirmations: tx.confirmations || 0,
-        status: tx.status || 'confirmed'
+        status: tx.status || 'confirmed',
+        price: tx.price,
+        totalCost: tx.totalCost,
+        totalReturn: tx.totalReturn
       }));
       
       setTransactions(txs);
@@ -312,6 +240,243 @@ export function useRuneIntegration() {
       setIsLoading(false);
     }
   }, [address, API_BASE_URL]);
+
+  /**
+   * Buy OVT tokens
+   */
+  const buyOVT = useCallback(async (
+    amount: number,
+    maxPrice?: number
+  ): Promise<TransactionResult> => {
+    if (!address || !connected) {
+      throw new Error('Wallet connection required for buying tokens');
+    }
+    
+    if (amount <= 0) {
+      throw new Error('Amount must be greater than zero');
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // Sign the transaction request
+      const message = `Buy ${amount} OVT${maxPrice ? ` at max price ${maxPrice}` : ''}`;
+      let signature = '';
+      let pubkey = '';
+      
+      try {
+        const signResult = await signMessage(message);
+        
+        // Handle different return types from LaserEyes implementations
+        if (typeof signResult === 'string') {
+          signature = signResult;
+          pubkey = ''; // Can't get pubkey from string signature
+        } else if (typeof signResult === 'object' && signResult !== null) {
+          const typedResult = signResult as unknown as SignMessageResult;
+          signature = typedResult.signature || '';
+          pubkey = typedResult.pubkey || '';
+        }
+      } catch (signError) {
+        console.warn('Failed to sign message, proceeding without signature:', signError);
+      }
+      
+      // Build request data
+      const requestData = {
+        fromAddress: address,
+        amount,
+        maxPrice,
+        signature,
+        pubkey
+      };
+      
+      // Call API to prepare buy transaction
+      const response = await axios.post(`${API_BASE_URL}/ovt/buy`, requestData);
+      
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Failed to prepare buy transaction');
+      }
+      
+      const txData = response.data.transaction;
+      
+      // In a production app, we would now:
+      // 1. Present the PSBT to the user for signing with their wallet
+      // 2. Submit the signed PSBT back to the API
+      // For now, we'll simulate a successful transaction
+      
+      // Refresh balance after transaction
+      setTimeout(() => getBalance(address), 1000);
+      
+      // Refresh transaction history
+      setTimeout(() => getTransactionHistory(address), 1500);
+      
+      return {
+        txid: txData.txid,
+        status: txData.status || 'pending',
+        confirmations: txData.confirmations || 0,
+        timestamp: txData.timestamp || Date.now(),
+        price: txData.price,
+        totalCost: txData.totalCost,
+        psbts: txData.psbts
+      };
+    } catch (err) {
+      console.error('Error buying OVT tokens:', err);
+      setError(err instanceof Error ? err.message : 'Failed to buy tokens');
+      throw err;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [address, connected, signMessage, getBalance, getTransactionHistory, API_BASE_URL]);
+
+  /**
+   * Sell OVT tokens
+   */
+  const sellOVT = useCallback(async (
+    amount: number,
+    minPrice?: number,
+    toAddress: string = OVT_LP_ADDRESS
+  ): Promise<TransactionResult> => {
+    if (!address || !connected) {
+      throw new Error('Wallet connection required for selling tokens');
+    }
+    
+    if (amount <= 0) {
+      throw new Error('Amount must be greater than zero');
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // First check if we have enough OVT to sell
+      const currentBalance = await getBalance(address);
+      
+      if (currentBalance < amount) {
+        throw new Error(`Insufficient balance: required ${amount}, available ${currentBalance}`);
+      }
+      
+      // Sign the transaction request
+      const message = `Sell ${amount} OVT${minPrice ? ` at min price ${minPrice}` : ''}`;
+      let signature = '';
+      let pubkey = '';
+      
+      try {
+        const signResult = await signMessage(message);
+        
+        // Handle different return types from LaserEyes implementations
+        if (typeof signResult === 'string') {
+          signature = signResult;
+          pubkey = ''; // Can't get pubkey from string signature
+        } else if (typeof signResult === 'object' && signResult !== null) {
+          const typedResult = signResult as unknown as SignMessageResult;
+          signature = typedResult.signature || '';
+          pubkey = typedResult.pubkey || '';
+        }
+      } catch (signError) {
+        console.warn('Failed to sign message, proceeding without signature:', signError);
+      }
+      
+      // Build request data
+      const requestData = {
+        fromAddress: address,
+        toAddress,
+        amount,
+        minPrice,
+        signature,
+        pubkey
+      };
+      
+      // Call API to prepare sell transaction
+      const response = await axios.post(`${API_BASE_URL}/ovt/sell`, requestData);
+      
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Failed to prepare sell transaction');
+      }
+      
+      const txData = response.data.transaction;
+      
+      // In a production app, we would now:
+      // 1. Present the PSBT to the user for signing with their wallet
+      // 2. Submit the signed PSBT back to the API
+      // For now, we'll simulate a successful transaction
+      
+      // Refresh balance after transaction
+      setTimeout(() => getBalance(address), 1000);
+      
+      // Refresh transaction history
+      setTimeout(() => getTransactionHistory(address), 1500);
+      
+      return {
+        txid: txData.txid,
+        status: txData.status || 'pending',
+        confirmations: txData.confirmations || 0,
+        timestamp: txData.timestamp || Date.now(),
+        price: txData.price,
+        totalReturn: txData.totalReturn,
+        psbts: txData.psbts
+      };
+    } catch (err) {
+      console.error('Error selling OVT tokens:', err);
+      setError(err instanceof Error ? err.message : 'Failed to sell tokens');
+      throw err;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [address, connected, signMessage, getBalance, getTransactionHistory, API_BASE_URL]);
+
+  /**
+   * Submit a signed transaction
+   */
+  const submitTransaction = useCallback(async (
+    signedPsbt: string,
+    txType: 'BUY' | 'SELL',
+    fromAddress: string,
+    toAddress: string,
+    amount: number
+  ): Promise<TransactionResult> => {
+    if (!signedPsbt) {
+      throw new Error('Signed PSBT is required');
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // Call API to submit the signed transaction
+      const response = await axios.post(`${API_BASE_URL}/ovt/submit-transaction`, {
+        signedPsbt,
+        txType,
+        fromAddress,
+        toAddress,
+        amount
+      });
+      
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Failed to submit transaction');
+      }
+      
+      const txData = response.data.transaction;
+      
+      // Refresh balance after transaction
+      setTimeout(() => getBalance(fromAddress), 1000);
+      
+      // Refresh transaction history
+      setTimeout(() => getTransactionHistory(fromAddress), 1500);
+      
+      return {
+        txid: txData.txid,
+        status: txData.status || 'confirmed',
+        confirmations: txData.confirmations || 1,
+        timestamp: txData.timestamp || Date.now()
+      };
+    } catch (err) {
+      console.error('Error submitting transaction:', err);
+      setError(err instanceof Error ? err.message : 'Failed to submit transaction');
+      throw err;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [getBalance, getTransactionHistory, API_BASE_URL]);
 
   /**
    * Get distribution statistics for OVT token
@@ -392,7 +557,9 @@ export function useRuneIntegration() {
     // Actions
     getBalance,
     getTokenMetadata,
-    transferRune,
+    buyOVT,
+    sellOVT,
+    submitTransaction,
     getTransactionHistory,
     getDistributionStats,
     formatTokenAmount,

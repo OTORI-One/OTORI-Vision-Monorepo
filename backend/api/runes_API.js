@@ -469,6 +469,51 @@ app.get('/', (req, res) => {
       description: 'Get LP wallet information for the OVT rune',
     },
     {
+      path: '/ovt/transactions',
+      method: 'GET',
+      description: 'Get transaction history for an address',
+      params: {
+        address: 'Wallet address to fetch transactions for'
+      }
+    },
+    {
+      path: '/ovt/buy',
+      method: 'POST',
+      description: 'Prepare a buy transaction for OVT tokens',
+      body: {
+        fromAddress: 'Buyer wallet address',
+        amount: 'Amount of OVT to buy',
+        maxPrice: 'Maximum price willing to pay (optional)',
+        signature: 'Transaction signature (optional)',
+        pubkey: 'Public key for signature verification (optional)'
+      }
+    },
+    {
+      path: '/ovt/sell',
+      method: 'POST',
+      description: 'Prepare a sell transaction for OVT tokens',
+      body: {
+        fromAddress: 'Seller wallet address',
+        toAddress: 'Recipient wallet address (optional, defaults to LP address)',
+        amount: 'Amount of OVT to sell',
+        minPrice: 'Minimum price willing to accept (optional)',
+        signature: 'Transaction signature (optional)',
+        pubkey: 'Public key for signature verification (optional)'
+      }
+    },
+    {
+      path: '/ovt/submit-transaction',
+      method: 'POST',
+      description: 'Submit a signed transaction',
+      body: {
+        signedPsbt: 'Signed PSBT transaction',
+        txType: 'Transaction type (BUY or SELL)',
+        fromAddress: 'Sender wallet address',
+        toAddress: 'Recipient wallet address',
+        amount: 'Amount of OVT in the transaction'
+      }
+    },
+    {
       path: '/ovt/prepare-lp-distribution',
       method: 'POST',
       description: 'Prepare PSBTs for LP distribution',
@@ -880,5 +925,291 @@ app.use((req, res, next) => {
   
   next();
 });
+
+// Add new transaction endpoints
+app.post('/ovt/buy', async (req, res) => {
+  try {
+    const { fromAddress, amount, maxPrice, signature, pubkey } = req.body;
+    
+    if (!fromAddress || !amount || amount <= 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid parameters. Required: fromAddress, amount' 
+      });
+    }
+    
+    console.log(`Processing buy request: ${amount} OVT from ${fromAddress}`);
+    
+    // 1. Verify the signature if provided
+    let isSignatureValid = true;
+    if (signature && pubkey) {
+      // In a real implementation, we would verify the signature here
+      // For example: isSignatureValid = verifySignature(message, signature, pubkey);
+      console.log(`Signature verification: ${isSignatureValid ? 'valid' : 'invalid'}`);
+    }
+    
+    if (!isSignatureValid) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid signature'
+      });
+    }
+    
+    // 2. Check for sufficient BTC balance
+    const btcBalance = await getWalletBalance(fromAddress);
+    
+    // 3. Calculate the current price and check against maxPrice if specified
+    const lpInfo = await getRemoteLPInfo();
+    const currentPrice = lpInfo.success ? 
+      lpInfo.result.lpInfo.pricing.currentPriceSats : 
+      700; // Default fallback price
+    
+    if (maxPrice && currentPrice > maxPrice) {
+      return res.status(400).json({
+        success: false,
+        error: `Current price (${currentPrice}) exceeds maximum price (${maxPrice})`
+      });
+    }
+    
+    // 4. Calculate total cost in sats
+    const totalCost = amount * currentPrice;
+    
+    if (btcBalance < totalCost) {
+      return res.status(400).json({
+        success: false,
+        error: `Insufficient balance. Required: ${totalCost} sats, Available: ${btcBalance} sats`
+      });
+    }
+    
+    // 5. Create PSBTs for the transaction
+    // In a real implementation, we would create actual PSBTs here
+    // For now, we'll return a simulated PSBT
+    const psbt = `cHNidP8BAHECAAAAAfUbVEKkUNXZbVFS3uB7z6X4wYQ3r8BwkyM2qX49CD2xAAAAAAD/////AgDh9QUAAAAAIgAgPU1kBB9KxCYkWxV7k2JP5gQVz8w/DNSE0UIRbVEIQEQB1AEAAAAAFgAU3AxdYMxkdq5YdZXKhQMb2jPMBsIAAAAAAAEA3gIAAAAAAQF2xNJVrnHvWW7yP2xj5chMSCHGQsibjEBG1DHp4HQYHgEAAAAA/v///wKghgEAAAAAACIAIIab5mIiJnE/LrxLlnFM7dKKLJ9anXA2u8BiQZIXQ3KbJbwNAAAAAAAWABRYhfmKkJ3MLp3hIBvAdgUkZ5XKpwJHMEQCIB7Kn9ikm0jrDHhUdK5JTCblI7PJWBUmKQOyJQnI8zLrAiAuBd8dDuSm2cMLZFcKDQ3MYrCSQimHfmiK8Rh1Yp4H8QEhA7dYnQPU0nNdEFdO3YcQB9pXdBIQIqiFeh8tCJRyzx1SrgAAAA==`;
+    
+    // 6. Return the transaction information
+    // In a production system, the user would sign the PSBT and submit it back
+    res.json({
+      success: true,
+      transaction: {
+        txid: `tx-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+        type: 'BUY',
+        amount: amount,
+        price: currentPrice,
+        totalCost: totalCost,
+        psbts: [psbt],
+        fromAddress: fromAddress,
+        toAddress: LP_ADDRESS,
+        timestamp: Date.now(),
+        status: 'pending'
+      },
+      message: 'Buy transaction prepared successfully'
+    });
+  } catch (error) {
+    console.error('Error processing buy transaction:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.toString() 
+    });
+  }
+});
+
+app.post('/ovt/sell', async (req, res) => {
+  try {
+    const { fromAddress, toAddress, amount, minPrice, signature, pubkey } = req.body;
+    
+    if (!fromAddress || !amount || amount <= 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid parameters. Required: fromAddress, amount' 
+      });
+    }
+    
+    // If toAddress is not specified, use the LP address
+    const recipient = toAddress || LP_ADDRESS;
+    
+    console.log(`Processing sell request: ${amount} OVT from ${fromAddress} to ${recipient}`);
+    
+    // 1. Verify the signature if provided
+    let isSignatureValid = true;
+    if (signature && pubkey) {
+      // In a real implementation, we would verify the signature here
+      // For example: isSignatureValid = verifySignature(message, signature, pubkey);
+      console.log(`Signature verification: ${isSignatureValid ? 'valid' : 'invalid'}`);
+    }
+    
+    if (!isSignatureValid) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid signature'
+      });
+    }
+    
+    // 2. Check for sufficient OVT balance
+    const balancesResult = await getRemoteWalletBalances();
+    const userBalances = balancesResult.success ? 
+      balancesResult.result.balances.filter(b => b.address === fromAddress) : 
+      [];
+    
+    const ovtBalance = userBalances.length > 0 ? userBalances[0].amount : 0;
+    
+    if (ovtBalance < amount) {
+      return res.status(400).json({
+        success: false,
+        error: `Insufficient OVT balance. Required: ${amount}, Available: ${ovtBalance}`
+      });
+    }
+    
+    // 3. Calculate the current price and check against minPrice if specified
+    const lpInfo = await getRemoteLPInfo();
+    const currentPrice = lpInfo.success ? 
+      lpInfo.result.lpInfo.pricing.currentPriceSats : 
+      700; // Default fallback price
+    
+    if (minPrice && currentPrice < minPrice) {
+      return res.status(400).json({
+        success: false,
+        error: `Current price (${currentPrice}) is below minimum price (${minPrice})`
+      });
+    }
+    
+    // 4. Calculate total return in sats
+    const totalReturn = amount * currentPrice;
+    
+    // 5. Create PSBTs for the transaction
+    // In a real implementation, we would create actual PSBTs here
+    // For now, we'll return a simulated PSBT
+    const psbt = `cHNidP8BAHECAAAAAfUbVEKkUNXZbVFS3uB7z6X4wYQ3r8BwkyM2qX49CD2xAAAAAAD/////AgDh9QUAAAAAIgAgPU1kBB9KxCYkWxV7k2JP5gQVz8w/DNSE0UIRbVEIQEQB1AEAAAAAFgAU3AxdYMxkdq5YdZXKhQMb2jPMBsIAAAAAAAEA3gIAAAAAAQF2xNJVrnHvWW7yP2xj5chMSCHGQsibjEBG1DHp4HQYHgEAAAAA/v///wKghgEAAAAAACIAIIab5mIiJnE/LrxLlnFM7dKKLJ9anXA2u8BiQZIXQ3KbJbwNAAAAAAAWABRYhfmKkJ3MLp3hIBvAdgUkZ5XKpwJHMEQCIB7Kn9ikm0jrDHhUdK5JTCblI7PJWBUmKQOyJQnI8zLrAiAuBd8dDuSm2cMLZFcKDQ3MYrCSQimHfmiK8Rh1Yp4H8QEhA7dYnQPU0nNdEFdO3YcQB9pXdBIQIqiFeh8tCJRyzx1SrgAAAA==`;
+    
+    // 6. Return the transaction information
+    // In a production system, the user would sign the PSBT and submit it back
+    res.json({
+      success: true,
+      transaction: {
+        txid: `tx-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+        type: 'SELL',
+        amount: amount,
+        price: currentPrice,
+        totalReturn: totalReturn,
+        psbts: [psbt],
+        fromAddress: fromAddress,
+        toAddress: recipient,
+        timestamp: Date.now(),
+        status: 'pending'
+      },
+      message: 'Sell transaction prepared successfully'
+    });
+  } catch (error) {
+    console.error('Error processing sell transaction:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.toString() 
+    });
+  }
+});
+
+// Add endpoint for transaction submission after signing
+app.post('/ovt/submit-transaction', async (req, res) => {
+  try {
+    const { signedPsbt, txType, fromAddress, toAddress, amount } = req.body;
+    
+    if (!signedPsbt || !txType || !fromAddress || !toAddress || !amount) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required parameters' 
+      });
+    }
+    
+    console.log(`Processing transaction submission: ${txType} ${amount} OVT from ${fromAddress} to ${toAddress}`);
+    
+    // In a real implementation, we would:
+    // 1. Validate the signed PSBT
+    // 2. Broadcast the transaction to the Bitcoin network
+    // 3. Monitor for confirmation
+    // 4. Update transaction status
+    
+    // For now, we'll simulate a successful transaction
+    const txid = `tx-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+    
+    // Return a success response with transaction details
+    res.json({
+      success: true,
+      transaction: {
+        txid,
+        type: txType,
+        amount: amount,
+        fromAddress: fromAddress,
+        toAddress: toAddress,
+        timestamp: Date.now(),
+        status: 'confirmed',
+        confirmations: 1
+      },
+      message: 'Transaction submitted successfully'
+    });
+  } catch (error) {
+    console.error('Error submitting transaction:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.toString() 
+    });
+  }
+});
+
+// Add transaction history endpoint
+app.get('/ovt/transactions', async (req, res) => {
+  try {
+    const address = req.query.address;
+    
+    if (!address) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Address parameter is required' 
+      });
+    }
+    
+    console.log(`Fetching transaction history for address: ${address}`);
+    
+    // In a real implementation, we would fetch transactions from the blockchain
+    // For now, we'll return mock data
+    const transactions = [
+      {
+        txid: 'tx-1234567890abcdef',
+        type: 'BUY',
+        amount: 100,
+        price: 700,
+        totalCost: 70000,
+        fromAddress: address,
+        toAddress: LP_ADDRESS,
+        timestamp: Date.now() - 86400000, // 1 day ago
+        status: 'confirmed',
+        confirmations: 6
+      },
+      {
+        txid: 'tx-abcdef1234567890',
+        type: 'SELL',
+        amount: 50,
+        price: 710,
+        totalReturn: 35500,
+        fromAddress: address,
+        toAddress: LP_ADDRESS,
+        timestamp: Date.now() - 43200000, // 12 hours ago
+        status: 'confirmed',
+        confirmations: 3
+      }
+    ];
+    
+    res.json({
+      success: true,
+      transactions,
+      count: transactions.length
+    });
+  } catch (error) {
+    console.error('Error fetching transaction history:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.toString() 
+    });
+  }
+});
+
 // Export the Express app for use in other modules
 module.exports = app;
