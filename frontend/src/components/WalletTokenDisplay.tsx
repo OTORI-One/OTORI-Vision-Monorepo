@@ -9,6 +9,7 @@ import React, { useEffect, useState } from 'react';
 import { useLaserEyes } from '@omnisat/lasereyes';
 import useRuneIntegration from '../hooks/useRuneIntegration';
 import { useBitcoinPrice } from '../hooks/useBitcoinPrice';
+import axios from 'axios';
 
 // Define UTXO interface
 interface UTXO {
@@ -83,17 +84,35 @@ const WalletTokenDisplay: React.FC<WalletTokenDisplayProps> = ({ address: propAd
     
     // Only fetch balances if we have an address
     if (address) {
-      // Fetch BTC balance from LaserEyes
-      getUtxos(address)
-        .then((utxos: UTXO[]) => {
+      // Try to fetch Bitcoin UTXOs directly from Signet explorer
+      const fetchBitcoinBalance = async () => {
+        try {
+          // First try using LaserEyes
+          const utxos = await getUtxos(address);
           const totalSats = utxos.reduce((sum: number, utxo: UTXO) => sum + utxo.value, 0);
           setBtcBalance(totalSats);
-        })
-        .catch((error: Error) => {
-          console.error('Error fetching BTC balance:', error);
-          setBtcBalance(0);
-        })
-        .finally(() => setIsLoading(false));
+        } catch (error) {
+          console.error('Error fetching BTC balance from LaserEyes:', error);
+          
+          // Fallback to direct signet mempool.space API if LaserEyes fails
+          try {
+            const response = await axios.get(`https://mempool.space/signet/api/address/${address}/utxo`);
+            if (response.data && Array.isArray(response.data)) {
+              const totalSats = response.data.reduce((sum: number, utxo: any) => sum + utxo.value, 0);
+              setBtcBalance(totalSats);
+            } else {
+              setBtcBalance(0);
+            }
+          } catch (signetError) {
+            console.error('Error fetching BTC balance from signet explorer:', signetError);
+            setBtcBalance(0);
+          }
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      
+      fetchBitcoinBalance();
       
       // Get OVT balance using our new hook (already handled in the hook internally)
       getBalance(address).catch(console.error);

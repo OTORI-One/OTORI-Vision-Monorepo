@@ -4,6 +4,7 @@ import { ArchTransaction } from '../lib/archClient';
 import { useOVTClient } from './useOVTClient';
 import priceService from '../services/priceService';
 import { useOVTPrice } from './useOVTPrice';
+import { TransactionDetails } from '../../components/TransactionConfirmationModal';
 
 // Define types for our trading module
 export interface Order {
@@ -40,6 +41,25 @@ export type TradeParams = {
   fee?: number;
 };
 
+// Add new types for confirmation flow
+export interface TradingModuleResult {
+  buyOVT: (amount: number, maxPrice?: number) => Promise<TradeTransaction | null>;
+  sellOVT: (amount: number, minPrice?: number) => Promise<TradeTransaction | null>;
+  getMarketPrice: () => number;
+  prepareTransaction: (type: 'buy' | 'sell', amount: number, limitPrice?: number) => TransactionDetails;
+  executeTransaction: (details: TransactionDetails) => Promise<TradeTransaction>;
+  isLoading: boolean;
+  error: string | null;
+  tradeHistory: TradeTransaction[];
+  dataSource: {
+    isMock: boolean;
+    label: string;
+    color: string;
+  };
+  pendingTransaction: TransactionDetails | null;
+  setPendingTransaction: (tx: TransactionDetails | null) => void;
+}
+
 // Local storage keys
 const TRADE_HISTORY_KEY = 'ovt-trade-history';
 
@@ -47,13 +67,14 @@ const TRADE_HISTORY_KEY = 'ovt-trade-history';
 const convertArchToTradeTransaction = (archTx: ArchTransaction): TradeTransaction => {
   return {
     txid: archTx.txid,
-    type: archTx.type.toLowerCase() as 'buy' | 'sell',
+    type: archTx.type as 'BUY' | 'SELL',
     amount: archTx.amount,
-    price: archTx.metadata?.price || 0,
+    confirmations: archTx.confirmations,
     timestamp: archTx.timestamp,
-    status: archTx.metadata?.status || 'confirmed',
-    details: {
-      orderType: archTx.metadata?.orderType,
+    metadata: {
+      price: archTx.metadata?.price || 0,
+      status: archTx.metadata?.status || 'confirmed',
+      orderType: archTx.metadata?.orderType || 'market',
       limitPrice: archTx.metadata?.limitPrice,
       filledAt: archTx.metadata?.filledAt
     }
@@ -63,10 +84,11 @@ const convertArchToTradeTransaction = (archTx: ArchTransaction): TradeTransactio
 /**
  * Hook for trading OVT tokens
  */
-export function useTradingModule() {
+export function useTradingModule(): TradingModuleResult {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [tradeHistory, setTradeHistory] = useState<TradeTransaction[]>([]);
+  const [pendingTransaction, setPendingTransaction] = useState<TransactionDetails | null>(null);
   
   // Get consistent OVT price from price service
   const priceData = useOVTPrice();
@@ -89,31 +111,47 @@ export function useTradingModule() {
   }, [priceData.btcPriceSats]);
   
   /**
-   * Simulates buying OVT at either market price or up to a specified max price
+   * Prepares transaction details for confirmation
    */
-  const buyOVT = useCallback(async (amount: number, maxPrice?: number): Promise<TradeTransaction> => {
-    if (amount <= 0) {
-      throw new Error('Amount must be greater than 0');
-    }
+  const prepareTransaction = useCallback((type: 'buy' | 'sell', amount: number, limitPrice?: number): TransactionDetails => {
+    const marketPrice = getMarketPrice();
+    const executionPrice = limitPrice || marketPrice;
     
+    // Use the specified limit price or market price
+    const price = type === 'buy' 
+      ? Math.min(executionPrice, marketPrice) // For buy orders, use the lower price
+      : Math.max(executionPrice, marketPrice); // For sell orders, use the higher price
+    
+    const totalValue = amount * price;
+    
+    // Estimate fees (simplified for now)
+    const feeEstimate = totalValue * 0.001; // 0.1% fee
+    
+    return {
+      type,
+      amount,
+      price,
+      totalValue,
+      feeEstimate,
+      tokenSymbol: 'OVT'
+    };
+  }, [getMarketPrice]);
+  
+  /**
+   * Executes a prepared transaction
+   */
+  const executeTransaction = useCallback(async (details: TransactionDetails): Promise<TradeTransaction> => {
     setIsLoading(true);
     setError(null);
     
     try {
-      // Get current price from price service
-      const marketPrice = getMarketPrice();
-      
-      // Check if price is acceptable
-      if (maxPrice && marketPrice > maxPrice) {
-        throw new Error(`Market price (${marketPrice}) exceeds maximum price (${maxPrice})`);
-      }
-      
       // Simulate a transaction - in the future this would call the OTORI program
       const transaction = await simulateTradeTransaction({
-        type: 'buy',
-        amount,
-        maxPrice,
-        executionPrice: marketPrice
+        type: details.type,
+        amount: details.amount,
+        maxPrice: details.type === 'buy' ? details.price : undefined,
+        minPrice: details.type === 'sell' ? details.price : undefined,
+        executionPrice: details.price
       });
       
       // Update trade history
@@ -121,54 +159,52 @@ export function useTradingModule() {
       
       return transaction;
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Error executing buy order';
+      const errorMessage = err instanceof Error ? err.message : 'Error executing transaction';
       setError(errorMessage);
       throw err;
     } finally {
       setIsLoading(false);
+      setPendingTransaction(null);
     }
-  }, [getMarketPrice]);
+  }, []);
+  
+  /**
+   * Simulates buying OVT at either market price or up to a specified max price
+   */
+  const buyOVT = useCallback(async (amount: number, maxPrice?: number): Promise<TradeTransaction | null> => {
+    if (amount <= 0) {
+      setError('Amount must be greater than 0');
+      return null;
+    }
+    
+    // Prepare the transaction details
+    const txDetails = prepareTransaction('buy', amount, maxPrice);
+    
+    // Update pending transaction (will trigger UI to show confirmation)
+    setPendingTransaction(txDetails);
+    
+    // Return null - the actual execution happens when confirmation is received
+    return null;
+  }, [prepareTransaction]);
   
   /**
    * Simulates selling OVT at either market price or down to a specified min price
    */
-  const sellOVT = useCallback(async (amount: number, minPrice?: number): Promise<TradeTransaction> => {
+  const sellOVT = useCallback(async (amount: number, minPrice?: number): Promise<TradeTransaction | null> => {
     if (amount <= 0) {
-      throw new Error('Amount must be greater than 0');
+      setError('Amount must be greater than 0');
+      return null;
     }
     
-    setIsLoading(true);
-    setError(null);
+    // Prepare the transaction details
+    const txDetails = prepareTransaction('sell', amount, minPrice);
     
-    try {
-      // Get current price from price service
-      const marketPrice = getMarketPrice();
-      
-      // Check if price is acceptable
-      if (minPrice && marketPrice < minPrice) {
-        throw new Error(`Market price (${marketPrice}) is below minimum price (${minPrice})`);
-      }
-      
-      // Simulate a transaction - in the future this would call the OTORI program
-      const transaction = await simulateTradeTransaction({
-        type: 'sell',
-        amount,
-        minPrice,
-        executionPrice: marketPrice
-      });
-      
-      // Update trade history
-      setTradeHistory(prev => [transaction, ...prev]);
-      
-      return transaction;
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Error executing sell order';
-      setError(errorMessage);
-      throw err;
-    } finally {
-      setIsLoading(false);
-    }
-  }, [getMarketPrice]);
+    // Update pending transaction (will trigger UI to show confirmation)
+    setPendingTransaction(txDetails);
+    
+    // Return null - the actual execution happens when confirmation is received
+    return null;
+  }, [prepareTransaction]);
 
   // Helper to simulate transaction for development purposes
   const simulateTradeTransaction = useCallback(async (params: TradeParams): Promise<TradeTransaction> => {
@@ -216,9 +252,13 @@ export function useTradingModule() {
     buyOVT,
     sellOVT,
     getMarketPrice,
+    prepareTransaction,
+    executeTransaction,
     isLoading,
     error,
     tradeHistory,
-    dataSource
+    dataSource,
+    pendingTransaction,
+    setPendingTransaction
   };
 } 

@@ -19,6 +19,8 @@ import { formatValue } from '../src/lib/formatting';
 import { useOVTPrice } from '../src/hooks/useOVTPrice';
 import priceService from '../src/services/priceService';
 import dynamic from 'next/dynamic';
+import TransactionConfirmationModal from '../components/TransactionConfirmationModal';
+import useRuneIntegration from '../src/hooks/useRuneIntegration';
 
 // Import client-only components with dynamic imports
 const PriceChart = dynamic(() => import('../components/PriceChart'), { ssr: false });
@@ -36,6 +38,10 @@ export default function Dashboard() {
   const previousNavRef = useRef<number>(0);
   // Add a ref to track currency changes
   const lastCurrencyRef = useRef<string | null>(null);
+  
+  // Add confirmation state
+  const [showConfirmation, setShowConfirmation] = useState<boolean>(false);
+  const [isProcessingTx, setIsProcessingTx] = useState<boolean>(false);
   
   // Use the currency toggle hook
   const { currency, toggleCurrency, formatValue: formatCurrencyValue } = useCurrencyToggle();
@@ -71,8 +77,25 @@ export default function Dashboard() {
   const { price: btcPrice } = useBitcoinPrice();
   const { network, address } = useLaserEyes();
   
-  // Use the trading hook
-  const { buyOVT, sellOVT, getMarketPrice } = useTradingModule();
+  // Use the RuneIntegration hook for real wallet transactions
+  const { 
+    buyOVT: runesBuyOVT,
+    sellOVT: runesSellOVT,
+    isLoading: runesLoading,
+    error: runesError
+  } = useRuneIntegration();
+  
+  // Use the trading hook with the updated confirmation pattern
+  const { 
+    buyOVT, 
+    sellOVT, 
+    getMarketPrice,
+    prepareTransaction,
+    executeTransaction,
+    pendingTransaction,
+    setPendingTransaction, 
+    error: tradingError 
+  } = useTradingModule();
 
   // State for admin status
   const [isAdmin, setIsAdmin] = useState<boolean>(false);
@@ -91,43 +114,15 @@ export default function Dashboard() {
     };
   }, [dailyChangeFormatted, isPositiveChange]);
   
-  // Update wallet connection status when address changes
-  useEffect(() => {
-    if (typeof window === 'undefined') return; // Only run on client
-    
-    if (network) {
-      // Store the wallet address, not the network name
-      const walletAddress = address || network;
-      setConnectedAddress(walletAddress);
-      // Check if the connected wallet is an admin wallet
-      setIsAdmin(isAdminWallet(walletAddress));
-    } else {
-      setConnectedAddress(null);
-      setIsAdmin(false);
-    }
-  }, [network, address]);
+  // Wallet connection handlers
+  const handleConnectWallet = (address: string) => {
+    setConnectedAddress(address);
+    setIsAdmin(isAdminWallet(address));
+  };
   
-  // Add a central debounced refresh function to prevent multiple rapid requests
-  const handleManualRefresh = async () => {
-    if (isLoading) return; // Prevent duplicate refreshes
-    
-    try {
-      // Show a refreshing indicator
-      setIsLoading(true);
-      
-      // First refresh OVT price 
-      await refreshPrice();
-      
-      // Then refresh NAV with a larger delay to prevent rate limiting
-      await new Promise(resolve => setTimeout(resolve, 2000)); 
-      await fetchNAV();
-      
-    } catch (err) {
-      console.error('Failed to refresh data:', err);
-    } finally {
-      // Hide loading indicator
-      setIsLoading(false);
-    }
+  const handleDisconnectWallet = () => {
+    setConnectedAddress(null);
+    setIsAdmin(false);
   };
   
   // Periodically refresh data from server
@@ -168,15 +163,99 @@ export default function Dashboard() {
       setBaseCurrency(currency);
     }
   }, [currency, baseCurrency, setBaseCurrency]);
-
-  const handleConnectWallet = (address: string) => {
-    setConnectedAddress(address);
-    setIsAdmin(isAdminWallet(address));
+  
+  // Update wallet connection status when address changes
+  useEffect(() => {
+    if (typeof window === 'undefined') return; // Only run on client
+    
+    if (network) {
+      // Store the wallet address, not the network name
+      const walletAddress = address || network;
+      setConnectedAddress(walletAddress);
+      // Check if the connected wallet is an admin wallet
+      setIsAdmin(isAdminWallet(walletAddress));
+    } else {
+      setConnectedAddress(null);
+      setIsAdmin(false);
+    }
+  }, [network, address]);
+  
+  // Add a central debounced refresh function to prevent multiple rapid requests
+  const handleManualRefresh = async () => {
+    if (isLoading) return; // Prevent duplicate refreshes
+    
+    try {
+      // Show a refreshing indicator
+      setIsLoading(true);
+      
+      // First refresh OVT price 
+      await refreshPrice();
+      
+      // Then refresh NAV with a larger delay to prevent rate limiting
+      await new Promise(resolve => setTimeout(resolve, 2000)); 
+      await fetchNAV();
+      
+    } catch (err) {
+      console.error('Failed to refresh data:', err);
+    } finally {
+      // Hide loading indicator
+      setIsLoading(false);
+    }
   };
   
-  const handleDisconnectWallet = () => {
-    setConnectedAddress(null);
-    setIsAdmin(false);
+  // Handle pending transactions (confirmation flow)
+  useEffect(() => {
+    if (pendingTransaction) {
+      setShowConfirmation(true);
+    }
+  }, [pendingTransaction]);
+
+  // Cancel a pending transaction
+  const handleCancelTransaction = () => {
+    setPendingTransaction(null);
+    setShowConfirmation(false);
+  };
+
+  // Confirm and execute a transaction
+  const handleConfirmTransaction = async () => {
+    if (!pendingTransaction) return;
+    
+    setIsProcessingTx(true);
+    
+    try {
+      // Instead of using executeTransaction from useTradingModule, use the rune integration hooks
+      // which will trigger the wallet extensions
+      let result;
+      if (pendingTransaction.type === 'buy') {
+        result = await runesBuyOVT(pendingTransaction.amount, pendingTransaction.price);
+      } else {
+        result = await runesSellOVT(pendingTransaction.amount, pendingTransaction.price);
+      }
+      
+      // Show success message
+      setSuccessMessage(`Successfully ${pendingTransaction.type === 'buy' ? 'purchased' : 'sold'} ${pendingTransaction.amount} OVT`);
+      
+      // Reset form
+      if (pendingTransaction.type === 'buy') {
+        setBuyAmount('');
+      } else {
+        setSellAmount('');
+      }
+      
+      // Simulate a change in the global NAV
+      const navChangePercentage = pendingTransaction.type === 'buy' ? 
+        0.001 + (Math.random() * 0.004) : -0.0005 - (Math.random() * 0.0015);
+      updateGlobalNAVReference(navChangePercentage);
+      
+      // Refresh NAV data
+      fetchNAV();
+    } catch (err) {
+      console.error('Transaction failed:', err);
+      setNetworkError(err instanceof Error ? err.message : 'Transaction failed');
+    } finally {
+      setIsProcessingTx(false);
+      setShowConfirmation(false);
+    }
   };
   
   // Handle buy OVT operation
@@ -184,26 +263,14 @@ export default function Dashboard() {
     if (!buyAmount || parseFloat(buyAmount) <= 0) return;
     
     try {
-      setIsSubmitting(true);
+      setNetworkError(null);
       setSuccessMessage(null);
       
       const amount = parseFloat(buyAmount);
-      const result = await buyOVT(amount);
-      
-      setBuyAmount('');
-      setSuccessMessage(`Successfully purchased ${amount} OVT!`);
-      
-      // Simulate a positive impact on the global NAV (0.1-0.5% increase)
-      const positiveBump = 0.001 + (Math.random() * 0.004);
-      updateGlobalNAVReference(positiveBump);
-      
-      // Refresh NAV data
-      fetchNAV();
+      // This will trigger the confirmation flow
+      await buyOVT(amount);
     } catch (error) {
-      // Reduced error logging - just set the user-facing error
       setNetworkError(error instanceof Error ? error.message : 'Error processing your purchase');
-    } finally {
-      setIsSubmitting(false);
     }
   };
   
@@ -212,26 +279,14 @@ export default function Dashboard() {
     if (!sellAmount || parseFloat(sellAmount) <= 0) return;
     
     try {
-      setIsSubmitting(true);
+      setNetworkError(null);
       setSuccessMessage(null);
       
       const amount = parseFloat(sellAmount);
-      const result = await sellOVT(amount);
-      
-      setSellAmount('');
-      setSuccessMessage(`Successfully sold ${amount} OVT!`);
-      
-      // Simulate a small negative impact on the global NAV (0.05-0.2% decrease)
-      const negativeBump = -0.0005 - (Math.random() * 0.0015);
-      updateGlobalNAVReference(negativeBump);
-      
-      // Refresh NAV data
-      fetchNAV();
+      // This will trigger the confirmation flow
+      await sellOVT(amount);
     } catch (error) {
-      // Reduced error logging - just set the user-facing error
       setNetworkError(error instanceof Error ? error.message : 'Error processing your sale');
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
@@ -393,11 +448,11 @@ export default function Dashboard() {
                       onChange={(e) => setBuyAmount(e.target.value)}
                       className="flex-grow bg-white border border-primary border-opacity-20 text-primary rounded p-2"
                       placeholder="Amount"
-                      disabled={isSubmitting}
+                      disabled={isSubmitting || isProcessingTx}
                     />
                     <button
                       onClick={handleBuy}
-                      disabled={isSubmitting || !buyAmount}
+                      disabled={isSubmitting || !buyAmount || isProcessingTx}
                       className="bg-success hover:bg-success/80 text-white rounded px-4 py-2 disabled:opacity-50"
                     >
                       Buy
@@ -415,11 +470,11 @@ export default function Dashboard() {
                       onChange={(e) => setSellAmount(e.target.value)}
                       className="flex-grow bg-white border border-primary border-opacity-20 text-primary rounded p-2"
                       placeholder="Amount"
-                      disabled={isSubmitting}
+                      disabled={isSubmitting || isProcessingTx}
                     />
                     <button
                       onClick={handleSell}
-                      disabled={isSubmitting || !sellAmount}
+                      disabled={isSubmitting || !sellAmount || isProcessingTx}
                       className="bg-error hover:bg-error/80 text-white rounded px-4 py-2 disabled:opacity-50"
                     >
                       Sell
@@ -430,6 +485,17 @@ export default function Dashboard() {
             )}
           </div>
         </div>
+        
+        {/* Transaction Confirmation Modal */}
+        {pendingTransaction && (
+          <TransactionConfirmationModal
+            isOpen={showConfirmation}
+            onClose={handleCancelTransaction}
+            onConfirm={handleConfirmTransaction}
+            transactionDetails={pendingTransaction}
+            isProcessing={isProcessingTx}
+          />
+        )}
       </div>
     </Layout>
   );

@@ -7,7 +7,7 @@
 
 import React, { useState } from 'react';
 import useRuneIntegration from '../hooks/useRuneIntegration';
-import { useLaserEyes } from '@omnisat/lasereyes';
+import { useLaserEyes, UNISAT, XVERSE } from '@omnisat/lasereyes';
 
 const RuneIntegrationExample: React.FC = () => {
   const laserEyes = useLaserEyes();
@@ -34,7 +34,7 @@ const RuneIntegrationExample: React.FC = () => {
   const connectWallet = () => {
     // Use whatever connect method is available in LaserEyes
     if (laserEyes.connect) {
-      laserEyes.connect();
+      laserEyes.connect(XVERSE);
     } else if (typeof (window as any).bitcoin !== 'undefined') {
       // Fallback to direct browser wallet connection if available
       (window as any).bitcoin.enable().catch(console.error);
@@ -259,9 +259,9 @@ const RuneIntegrationExample: React.FC = () => {
                   <tr key={tx.txid}>
                     <td className="px-3 py-2 whitespace-nowrap text-sm">
                       <span className={`px-2 py-1 rounded-full text-xs ${
-                        tx.type === 'send' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'
+                        tx.type === 'SELL' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'
                       }`}>
-                        {tx.type === 'send' ? 'Sent' : 'Received'}
+                        {tx.type === 'SELL' ? 'Sent' : 'Received'}
                       </span>
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap text-sm">

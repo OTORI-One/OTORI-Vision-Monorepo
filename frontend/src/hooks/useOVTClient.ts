@@ -93,6 +93,11 @@ const formatValue = (value: number, displayMode: 'btc' | 'usd' = 'btc', btcPrice
       return displayMode === 'usd' ? '$0.00' : '0 sats';
     }
 
+    // Return safe default if the btcPrice is needed but invalid
+    if (displayMode === 'usd' && (btcPrice === null || btcPrice === undefined || !Number.isFinite(btcPrice) || btcPrice <= 0)) {
+      return '$0.00';
+    }
+
     // Don't do any calculations here - just use the centralized formatting utility
     return formatValueUtils(value, displayMode, btcPrice);
   } catch (error) {

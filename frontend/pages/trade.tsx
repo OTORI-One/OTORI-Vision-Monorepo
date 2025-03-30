@@ -13,6 +13,8 @@ import { usePortfolio } from '../src/hooks/usePortfolio';
 import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
 import priceService from '../src/services/priceService';
+import TransactionConfirmationModal from '../components/TransactionConfirmationModal';
+import { useTradingModule } from '../src/hooks/useTradingModule';
 
 // Ensure NAV data is loaded before rendering
 if (typeof window !== 'undefined') {
@@ -39,8 +41,31 @@ export default function TradePage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [laserEyesWallets, setLaserEyesWallets] = useState<string[]>([]);
   
+  // Trade form state
+  const [buyAmount, setBuyAmount] = useState<string>('');
+  const [sellAmount, setSellAmount] = useState<string>('');
+  const [lastTradeStatus, setLastTradeStatus] = useState<{success: boolean, message: string} | null>(null);
+  
   // Get data source indicator for trading
   const tradingDataSource = getDataSourceIndicator('trading');
+  
+  // Confirmation modal state
+  const [showConfirmation, setShowConfirmation] = useState<boolean>(false);
+  const [isProcessingTx, setIsProcessingTx] = useState<boolean>(false);
+  
+  // Use our trading module
+  const { 
+    buyOVT, 
+    sellOVT, 
+    getMarketPrice, 
+    isLoading,
+    tradeHistory,
+    error,
+    pendingTransaction,
+    setPendingTransaction,
+    executeTransaction,
+    dataSource 
+  } = useTradingModule();
   
   // Mark component as mounted to prevent hydration issues
   useEffect(() => {
@@ -67,6 +92,60 @@ export default function TradePage() {
     }
   }, [walletAddress]);
   
+  // Handle pending transactions (confirmation flow)
+  useEffect(() => {
+    if (pendingTransaction) {
+      setShowConfirmation(true);
+    }
+  }, [pendingTransaction]);
+
+  // Cancel a pending transaction
+  const handleCancelTransaction = () => {
+    setPendingTransaction(null);
+    setShowConfirmation(false);
+  };
+
+  // Confirm and execute a transaction
+  const handleConfirmTransaction = async () => {
+    if (!pendingTransaction) return;
+    
+    setIsProcessingTx(true);
+    
+    try {
+      const result = await executeTransaction(pendingTransaction);
+      console.log('Transaction executed:', result);
+      
+      // Show success message
+      if (pendingTransaction.type === 'buy') {
+        setLastTradeStatus({
+          success: true,
+          message: `Successfully purchased ${pendingTransaction.amount} OVT at ${pendingTransaction.price} sats per token`
+        });
+      } else {
+        setLastTradeStatus({
+          success: true,
+          message: `Successfully sold ${pendingTransaction.amount} OVT at ${pendingTransaction.price} sats per token`
+        });
+      }
+      
+      // Reset form
+      if (pendingTransaction.type === 'buy') {
+        setBuyAmount('');
+      } else {
+        setSellAmount('');
+      }
+    } catch (err) {
+      console.error('Transaction failed:', err);
+      setLastTradeStatus({
+        success: false,
+        message: err instanceof Error ? err.message : 'Transaction failed'
+      });
+    } finally {
+      setIsProcessingTx(false);
+      setShowConfirmation(false);
+    }
+  };
+  
   // Wallet connection handlers
   const handleConnectWallet = (address: string) => {
     setConnectedAddress(address);
@@ -76,6 +155,72 @@ export default function TradePage() {
   const handleDisconnectWallet = () => {
     setConnectedAddress(null);
     setIsAdmin(false);
+  };
+  
+  // Update buy handler
+  const handleBuy = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!isConnected) {
+      setLastTradeStatus({
+        success: false,
+        message: 'Please connect your wallet first'
+      });
+      return;
+    }
+    
+    const amount = parseFloat(buyAmount);
+    if (isNaN(amount) || amount <= 0) {
+      setLastTradeStatus({
+        success: false,
+        message: 'Please enter a valid amount'
+      });
+      return;
+    }
+    
+    try {
+      // This will trigger the confirmation flow
+      await buyOVT(amount);
+    } catch (error) {
+      console.error('Error preparing buy transaction:', error);
+      setLastTradeStatus({
+        success: false,
+        message: error instanceof Error ? error.message : 'Failed to prepare transaction'
+      });
+    }
+  };
+  
+  // Update sell handler
+  const handleSell = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!isConnected) {
+      setLastTradeStatus({
+        success: false,
+        message: 'Please connect your wallet first'
+      });
+      return;
+    }
+    
+    const amount = parseFloat(sellAmount);
+    if (isNaN(amount) || amount <= 0) {
+      setLastTradeStatus({
+        success: false,
+        message: 'Please enter a valid amount'
+      });
+      return;
+    }
+    
+    try {
+      // This will trigger the confirmation flow
+      await sellOVT(amount);
+    } catch (error) {
+      console.error('Error preparing sell transaction:', error);
+      setLastTradeStatus({
+        success: false,
+        message: error instanceof Error ? error.message : 'Failed to prepare transaction'
+      });
+    }
   };
   
   return (
@@ -150,6 +295,17 @@ export default function TradePage() {
           />
         )}
       </div>
+
+      {/* Add the confirmation modal at the end of the component */}
+      {pendingTransaction && (
+        <TransactionConfirmationModal
+          isOpen={showConfirmation}
+          onClose={handleCancelTransaction}
+          onConfirm={handleConfirmTransaction}
+          transactionDetails={pendingTransaction}
+          isProcessing={isProcessingTx}
+        />
+      )}
     </Layout>
   );
 } 

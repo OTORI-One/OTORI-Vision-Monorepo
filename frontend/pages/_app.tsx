@@ -49,14 +49,14 @@ export default function App({ Component, pageProps }: AppProps) {
   }, [btcPrice]);
   
   console.log('[_app.tsx] Initializing LaserEyesProvider with config:', {
-    network: BaseNetwork.TESTNET4,
+    network: BaseNetwork.SIGNET,
     timestamp: new Date().toISOString()
   });
   
   return (
     <LaserEyesProvider 
       config={{ 
-        network: BaseNetwork.TESTNET4
+        network: BaseNetwork.SIGNET
       }}
     >
       <CurrencyProvider initialCurrency="usd">
