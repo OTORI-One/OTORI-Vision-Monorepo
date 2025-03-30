@@ -19,6 +19,10 @@ const priceRoutes = require('./routes/priceRoutes');
 const tradingRoutes = require('./routes/tradingRoutes');
 const validationRoutes = require('./routes/validationRoutes');
 const adminRoutes = require('./routes/adminRoutes');
+const healthRoutes = require('./routes/healthRoutes');
+
+// Import error monitoring middleware
+const { createErrorMonitoringMiddleware } = require('./services/errorMonitoringService');
 
 // Middleware
 app.use(express.json());
@@ -58,15 +62,19 @@ app.use('/api/price', priceRoutes);
 app.use('/api/trading', tradingRoutes);
 app.use('/api/validation', validationRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/health', healthRoutes); // Mount new health check routes
 
 // Mount Runes API routes directly on the root path
 // This makes endpoints like /ovt/distribution available
 app.use('/', runesAPI);
 
-// Simple health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Simple redirect from old health endpoint to new detailed health checks
+app.get('/api/health-check', (req, res) => {
+  res.redirect('/api/health');
 });
+
+// Add error monitoring middleware
+app.use(createErrorMonitoringMiddleware());
 
 // Home route for API documentation
 app.get('/', (req, res) => {
@@ -79,7 +87,37 @@ app.get('/', (req, res) => {
     {
       path: '/api/health',
       method: 'GET',
-      description: 'Health check endpoint',
+      description: 'Basic health check endpoint',
+    },
+    {
+      path: '/api/health/detailed',
+      method: 'GET',
+      description: 'Detailed system health check',
+    },
+    {
+      path: '/api/health/circuit-breakers',
+      method: 'GET',
+      description: 'Get circuit breaker status',
+    },
+    {
+      path: '/api/health/retry-stats',
+      method: 'GET',
+      description: 'Get retry statistics',
+    },
+    {
+      path: '/api/health/error-stats',
+      method: 'GET',
+      description: 'Get error statistics',
+    },
+    {
+      path: '/api/health/mock-status',
+      method: 'GET',
+      description: 'Get mock service status',
+    },
+    {
+      path: '/api/health/mock-mode',
+      method: 'POST',
+      description: 'Toggle mock service mode',
     },
     {
       path: '/api/price/portfolio',
@@ -269,6 +307,16 @@ app.get('/', (req, res) => {
     name: 'OTORI Vision API',
     version: '1.0.0',
     endpoints
+  });
+});
+
+// Error handler middleware
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(err.status || 500).json({
+    status: 'error',
+    message: err.message || 'Internal Server Error',
+    errorId: err.errorId
   });
 });
 
