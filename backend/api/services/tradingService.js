@@ -5,6 +5,14 @@
  */
 
 const orderMatchingService = require('./orderMatchingService');
+const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// Load environment variables for accessing remote OrdPi
+const LP_ADDRESS = process.env.NEXT_PUBLIC_LP_ADDRESS || 'tb1p3vn6wc0dlud3tvckv95datu3stq4qycz7vj9mzpclfkrv9rh8jqsjrw38f';
+const OVT_RUNE_ID = process.env.NEXT_PUBLIC_OVT_RUNE_ID || '240249:101';
 
 // Mock orderbook - used only when orderMatchingService is unavailable
 const mockOrderbook = {
@@ -39,6 +47,99 @@ let orderMatchingServiceActive = false;
     orderMatchingServiceActive = false;
   }
 })();
+
+/**
+ * Helper function to execute ord commands via SSH on the remote OrdPi
+ * @param {string} command - The ord command to execute
+ * @returns {Object} The result from the command
+ */
+function executeOrdCommand(command) {
+  try {
+    // Set up the command to execute via SSH on the OrdPi
+    const sshConnection = 'BTCPi@91.7.62.224';
+    const sshPort = '2211';
+    const sshPassword = process.env.ORDPI_SSH_PASSWORD;
+    
+    // Full ord command with config
+    const ordCommand = `ord --config /home/BTCPi/.ord/ord.yaml --signet ${command}`;
+    
+    // Build the sshpass command
+    const fullCommand = `sshpass -p "${sshPassword}" ssh -o StrictHostKeyChecking=no -p ${sshPort} ${sshConnection} "${ordCommand}"`;
+    
+    // Execute the SSH command (log a redacted version)
+    console.log(`Trading: Executing SSH command: ${fullCommand.replace(sshPassword, '[REDACTED]')}`);
+    
+    const result = execSync(fullCommand).toString();
+    console.log(`Trading: Command result: ${result}`);
+    
+    return { success: true, result };
+  } catch (error) {
+    console.error(`Trading: Error executing command: ${command}`, error);
+    return { success: false, error: error.toString() };
+  }
+}
+
+/**
+ * Execute a token transfer from LP wallet to recipient
+ * @param {string} recipientAddress - Address to receive tokens 
+ * @param {number} amount - Amount of OVT to transfer
+ * @returns {Promise<Object>} Transaction result
+ */
+async function transferTokensFromLP(recipientAddress, amount) {
+  try {
+    console.log(`Executing real token transfer: ${amount} OVT from LP to ${recipientAddress}`);
+    
+    // Check if we can access the LP wallet on OrdPi
+    const balanceCheck = executeOrdCommand('wallet balance');
+    if (!balanceCheck.success) {
+      throw new Error('Could not access LP wallet on OrdPi');
+    }
+    
+    console.log(`LP wallet balance before transfer: ${balanceCheck.result}`);
+    
+    // Create the transfer transaction
+    // The command structure:
+    // ord wallet send recipientAddress amount --rune=OVT_RUNE_ID
+    const transferCommand = `wallet send ${recipientAddress} ${amount} --rune="${OVT_RUNE_ID}"`;
+    const transferResult = executeOrdCommand(transferCommand);
+    
+    if (!transferResult.success) {
+      throw new Error(`Failed to create transfer: ${transferResult.error}`);
+    }
+    
+    // Get the transaction ID from the response
+    let txid = 'unknown';
+    try {
+      // Try to parse the txid from the response
+      // Example response: "Sent 100 OTORI•VISION•TOKEN to recipient in transaction abc123..."
+      const txidMatch = transferResult.result.match(/transaction\s+([a-zA-Z0-9]{64})/);
+      if (txidMatch && txidMatch[1]) {
+        txid = txidMatch[1];
+      } else {
+        // If we can't extract a specific format, just use the whole result as the transaction info
+        txid = transferResult.result.trim();
+      }
+    } catch (e) {
+      console.error('Error parsing transaction ID:', e);
+    }
+    
+    return {
+      success: true,
+      txid,
+      amount,
+      from: LP_ADDRESS,
+      to: recipientAddress,
+      timestamp: Date.now(),
+      rawResult: transferResult.result
+    };
+  } catch (error) {
+    console.error('Error transferring tokens from LP:', error);
+    return {
+      success: false,
+      error: error.toString()
+    };
+  }
+}
 
 /**
  * Helper to handle errors with fallback to mock data
@@ -166,6 +267,58 @@ async function placeOrder(order) {
 }
 
 /**
+ * Execute a buy order directly by transferring OVT from LP to buyer
+ * @param {string} buyerAddress - Address of the buyer
+ * @param {number} amount - Amount of OVT to buy
+ * @param {number} price - Price in sats per OVT
+ * @returns {Promise<Object>} Transaction result
+ */
+async function executeBuyOrder(buyerAddress, amount, price) {
+  try {
+    console.log(`Executing buy order: ${amount} OVT to ${buyerAddress} at ${price} sats/OVT`);
+    
+    // TODO: In a production system, we'd first collect BTC payment here
+    // For now, we're just transferring OVT tokens from LP to buyer
+    
+    // Transfer tokens from LP to buyer
+    const transferResult = await transferTokensFromLP(buyerAddress, amount);
+    
+    if (!transferResult.success) {
+      throw new Error(`Token transfer failed: ${transferResult.error}`);
+    }
+    
+    // Record the trade in our system
+    const trade = {
+      id: `trade-${Date.now()}`,
+      txid: transferResult.txid,
+      type: 'buy',
+      price,
+      amount,
+      total: price * amount,
+      buyerAddress,
+      sellerAddress: LP_ADDRESS, // LP is the seller in this case
+      timestamp: Date.now(),
+      status: 'completed'
+    };
+    
+    // In a real system, we'd store this in a database
+    mockRecentTrades.unshift(trade);
+    
+    return {
+      success: true,
+      trade,
+      transaction: transferResult
+    };
+  } catch (error) {
+    console.error('Error executing buy order:', error);
+    return {
+      success: false,
+      error: error.toString()
+    };
+  }
+}
+
+/**
  * Get a user's orders
  * @param {string} address User's wallet address
  * @returns {Promise<Array>} User's orders
@@ -277,5 +430,7 @@ module.exports = {
   placeOrder,
   getUserOrders,
   cancelOrder,
-  getStats
+  getStats,
+  executeBuyOrder, // Export the new direct buy execution function
+  transferTokensFromLP // Export the token transfer function for direct use
 }; 
