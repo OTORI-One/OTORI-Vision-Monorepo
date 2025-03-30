@@ -18,6 +18,7 @@ const runesAPI = require('./runes_API');
 const priceRoutes = require('./routes/priceRoutes');
 const tradingRoutes = require('./routes/tradingRoutes');
 const validationRoutes = require('./routes/validationRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 
 // Middleware
 app.use(express.json());
@@ -56,6 +57,7 @@ if (!fs.existsSync(logsDir)) {
 app.use('/api/price', priceRoutes);
 app.use('/api/trading', tradingRoutes);
 app.use('/api/validation', validationRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Mount Runes API routes directly on the root path
 // This makes endpoints like /ovt/distribution available
