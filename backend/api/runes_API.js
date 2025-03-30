@@ -32,8 +32,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// Load environment variables
-require('dotenv').config({ path: path.join(__dirname, '..', '.env.local') });
+// Load environment variables based on NODE_ENV
+const NODE_ENV = process.env.NODE_ENV || 'development';
+let envPath = path.join(__dirname, '..', '.env.local');
+
+// If specific environment file exists, use it instead
+const envDevPath = path.join(__dirname, '..', `.env.${NODE_ENV}`);
+if (fs.existsSync(envDevPath)) {
+  envPath = envDevPath;
+  console.log(`Loading environment from ${envPath}`);
+}
+
+require('dotenv').config({ path: envPath });
 
 // OVT rune constants
 const OVT_RUNE_ID = process.env.NEXT_PUBLIC_OVT_RUNE_ID || '240249:101';
