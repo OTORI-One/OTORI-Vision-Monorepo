@@ -247,14 +247,23 @@ function executeRemoteCommand(command, sshConfig, options = {}) {
  */
 async function executeSshPassCommand(command, options = {}) {
   // Get SSH configuration from environment
-  const sshPassword = process.env.ORDPI_SSH_PASSWORD;
+  // IMPORTANT: Never log or expose the password in any way
+  // Use environment variables for sensitive information
+  let sshPassword;
+  
+  // Check for password in environment variables - multiple possible locations
+  if (process.env.ORDPI_SSH_PASSWORD) {
+    sshPassword = process.env.ORDPI_SSH_PASSWORD;
+  } else if (process.env.SSH_PASSWORD) {
+    sshPassword = process.env.SSH_PASSWORD;
+  } else {
+    // Throw error if password not available but don't log anything sensitive
+    throw new Error('SSH password not configured. Set ORDPI_SSH_PASSWORD or SSH_PASSWORD environment variable.');
+  }
+  
   const sshHost = process.env.ORDPI_SSH_HOST || '91.7.62.224';
   const sshPort = process.env.ORDPI_SSH_PORT || '2211';
   const sshUser = process.env.ORDPI_SSH_USER || 'BTCPi';
-  
-  if (!sshPassword) {
-    throw new Error('SSH password not configured. Set ORDPI_SSH_PASSWORD environment variable.');
-  }
   
   // Build the sshpass command - NEVER include the actual password in logs
   const sshCommand = `sshpass -p "${sshPassword}" ssh -o StrictHostKeyChecking=no -p ${sshPort} ${sshUser}@${sshHost} "${command}"`;
@@ -263,36 +272,61 @@ async function executeSshPassCommand(command, options = {}) {
   const logCommand = `sshpass -p "[REDACTED]" ssh -o StrictHostKeyChecking=no -p ${sshPort} ${sshUser}@${sshHost} "${command}"`;
   console.log(`Executing SSH command: ${logCommand}`);
   
-  // Execute the command but never log the actual command with password
-  const result = await executeCommand(sshCommand, {
-    ...options,
-    // Make sure the full command with password is never logged in error messages
-    onError: (err) => {
-      // Remove any trace of password from error messages
-      if (err.message && err.message.includes(sshPassword)) {
-        err.message = err.message.replace(sshPassword, '[REDACTED]');
+  try {
+    // Execute the command but never log the actual command with password
+    const result = await executeCommand(sshCommand, {
+      ...options,
+      // Make sure the full command with password is never logged in error messages
+      onError: (err) => {
+        // Remove any trace of password from error messages
+        if (err.message && err.message.includes(sshPassword)) {
+          err.message = err.message.replace(new RegExp(sshPassword, 'g'), '[REDACTED]');
+        }
+        if (err.stderr && err.stderr.includes(sshPassword)) {
+          err.stderr = err.stderr.replace(new RegExp(sshPassword, 'g'), '[REDACTED]');
+        }
+        if (err.stdout && err.stdout.includes(sshPassword)) {
+          err.stdout = err.stdout.replace(new RegExp(sshPassword, 'g'), '[REDACTED]');
+        }
+        if (options.onError) options.onError(err);
       }
-      if (err.stderr && err.stderr.includes(sshPassword)) {
-        err.stderr = err.stderr.replace(sshPassword, '[REDACTED]');
-      }
-      if (err.stdout && err.stdout.includes(sshPassword)) {
-        err.stdout = err.stdout.replace(sshPassword, '[REDACTED]');
-      }
-      if (options.onError) options.onError(err);
+    });
+    
+    // Make sure we don't accidentally log the password in the result
+    if (result.stdout && result.stdout.includes(sshPassword)) {
+      result.stdout = result.stdout.replace(new RegExp(sshPassword, 'g'), '[REDACTED]');
     }
-  });
-  
-  // Make sure we don't accidentally log the password in the result
-  if (result.stdout && result.stdout.includes(sshPassword)) {
-    result.stdout = result.stdout.replace(sshPassword, '[REDACTED]');
+    if (result.stderr && result.stderr.includes(sshPassword)) {
+      result.stderr = result.stderr.replace(new RegExp(sshPassword, 'g'), '[REDACTED]');
+    }
+    
+    // Only log the results, not the command that might contain the password
+    console.log(`Command result: ${result.stdout}`);
+    
+    return result;
+  } catch (error) {
+    // Sanitize the error to remove any passwords before throwing
+    if (error && typeof error === 'object') {
+      // Handle all properties that might contain the password
+      if (error.message && error.message.includes(sshPassword)) {
+        error.message = error.message.replace(new RegExp(sshPassword, 'g'), '[REDACTED]');
+      }
+      if (error.stack && error.stack.includes(sshPassword)) {
+        error.stack = error.stack.replace(new RegExp(sshPassword, 'g'), '[REDACTED]');
+      }
+      if (error.cmd && error.cmd.includes(sshPassword)) {
+        error.cmd = error.cmd.replace(new RegExp(sshPassword, 'g'), '[REDACTED]');
+      }
+      if (error.stdout && error.stdout.includes(sshPassword)) {
+        error.stdout = error.stdout.replace(new RegExp(sshPassword, 'g'), '[REDACTED]');
+      }
+      if (error.stderr && error.stderr.includes(sshPassword)) {
+        error.stderr = error.stderr.replace(new RegExp(sshPassword, 'g'), '[REDACTED]');
+      }
+    }
+    
+    throw error;
   }
-  if (result.stderr && result.stderr.includes(sshPassword)) {
-    result.stderr = result.stderr.replace(sshPassword, '[REDACTED]');
-  }
-  
-  console.log(`Command result: ${result.stdout}`);
-  
-  return result;
 }
 
 /**
@@ -446,12 +480,19 @@ function maskSensitiveInfo(command) {
   
   let maskedCommand = command;
   
-  // Mask passwords in RPC commands
+  // Get passwords from environment for masking - NEVER log these directly
+  const sensitiveVars = [
+    process.env.ORDPI_SSH_PASSWORD,
+    process.env.BITCOIN_RPC_PASSWORD,
+    process.env.SSH_PASSWORD
+  ].filter(Boolean); // Remove undefined/null values
+  
+  // Mask passwords in RPC commands with better regex
   if (maskedCommand.includes('-rpcpassword=')) {
-    maskedCommand = maskedCommand.replace(/-rpcpassword=\S+/g, '-rpcpassword=[REDACTED]');
+    maskedCommand = maskedCommand.replace(/-rpcpassword=["']?[^"'\s]+["']?/g, '-rpcpassword=[REDACTED]');
   }
   
-  // Mask SSH passwords in sshpass commands
+  // Mask SSH passwords in sshpass commands with improved pattern
   if (maskedCommand.includes('sshpass -p')) {
     maskedCommand = maskedCommand.replace(/sshpass -p ["'].*?["']/g, 'sshpass -p "[REDACTED]"');
   }
@@ -459,14 +500,16 @@ function maskSensitiveInfo(command) {
   // Mask private keys (assumes they are hex strings of 64 characters)
   maskedCommand = maskedCommand.replace(/[a-f0-9]{64}/gi, '[REDACTED_KEY]');
   
-  // Mask potential passwords in environment variables
-  if (process.env.ORDPI_SSH_PASSWORD && maskedCommand.includes(process.env.ORDPI_SSH_PASSWORD)) {
-    maskedCommand = maskedCommand.replace(new RegExp(process.env.ORDPI_SSH_PASSWORD, 'g'), '[REDACTED]');
-  }
-  
-  if (process.env.BITCOIN_RPC_PASSWORD && maskedCommand.includes(process.env.BITCOIN_RPC_PASSWORD)) {
-    maskedCommand = maskedCommand.replace(new RegExp(process.env.BITCOIN_RPC_PASSWORD, 'g'), '[REDACTED]');
-  }
+  // Mask potential passwords from environment variables
+  // This is done at the end to catch any passwords that might be in the command
+  // but weren't caught by the specific patterns above
+  sensitiveVars.forEach(password => {
+    if (password && maskedCommand.includes(password)) {
+      // Use regex to replace all occurrences safely
+      const safePassword = password.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // Escape special regex chars
+      maskedCommand = maskedCommand.replace(new RegExp(safePassword, 'g'), '[REDACTED]');
+    }
+  });
   
   return maskedCommand;
 }
