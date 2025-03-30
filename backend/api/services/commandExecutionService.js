@@ -256,14 +256,40 @@ async function executeSshPassCommand(command, options = {}) {
     throw new Error('SSH password not configured. Set ORDPI_SSH_PASSWORD environment variable.');
   }
   
-  // Build the sshpass command
+  // Build the sshpass command - NEVER include the actual password in logs
   const sshCommand = `sshpass -p "${sshPassword}" ssh -o StrictHostKeyChecking=no -p ${sshPort} ${sshUser}@${sshHost} "${command}"`;
   
+  // Use a redacted log version that NEVER shows the password
   const logCommand = `sshpass -p "[REDACTED]" ssh -o StrictHostKeyChecking=no -p ${sshPort} ${sshUser}@${sshHost} "${command}"`;
   console.log(`Executing SSH command: ${logCommand}`);
   
-  // Execute the command
-  const result = await executeCommand(sshCommand, options);
+  // Execute the command but never log the actual command with password
+  const result = await executeCommand(sshCommand, {
+    ...options,
+    // Make sure the full command with password is never logged in error messages
+    onError: (err) => {
+      // Remove any trace of password from error messages
+      if (err.message && err.message.includes(sshPassword)) {
+        err.message = err.message.replace(sshPassword, '[REDACTED]');
+      }
+      if (err.stderr && err.stderr.includes(sshPassword)) {
+        err.stderr = err.stderr.replace(sshPassword, '[REDACTED]');
+      }
+      if (err.stdout && err.stdout.includes(sshPassword)) {
+        err.stdout = err.stdout.replace(sshPassword, '[REDACTED]');
+      }
+      if (options.onError) options.onError(err);
+    }
+  });
+  
+  // Make sure we don't accidentally log the password in the result
+  if (result.stdout && result.stdout.includes(sshPassword)) {
+    result.stdout = result.stdout.replace(sshPassword, '[REDACTED]');
+  }
+  if (result.stderr && result.stderr.includes(sshPassword)) {
+    result.stderr = result.stderr.replace(sshPassword, '[REDACTED]');
+  }
+  
   console.log(`Command result: ${result.stdout}`);
   
   return result;
@@ -293,21 +319,32 @@ async function executeRemoteBitcoinCommand(command, options = {}) {
     }
     
     // Add wallet if specified
-    if (config.bitcoin.walletName) {
+    if (process.env.BITCOIN_WALLET) {
+      fullCommand += ` -rpcwallet=${process.env.BITCOIN_WALLET}`;
+    } else if (config.bitcoin.walletName) {
       fullCommand += ` -rpcwallet=${config.bitcoin.walletName}`;
     }
     
-    // Add RPC connection parameters if provided
-    if (config.bitcoin.rpcUser && config.bitcoin.rpcPassword) {
-      fullCommand += ` -rpcuser=${config.bitcoin.rpcUser} -rpcpassword=${config.bitcoin.rpcPassword}`;
+    // Add RPC connection parameters if provided in environment or config
+    // Use environment variables first, then fall back to config
+    const rpcUser = process.env.BITCOIN_RPC_USER || config.bitcoin.rpcUser;
+    const rpcPassword = process.env.BITCOIN_RPC_PASSWORD || config.bitcoin.rpcPassword;
+    const rpcHost = process.env.BITCOIN_RPC_HOST || config.bitcoin.rpcHost;
+    const rpcPort = process.env.BITCOIN_RPC_PORT || config.bitcoin.rpcPort;
+    
+    if (rpcUser && rpcPassword) {
+      fullCommand += ` -rpcuser=${rpcUser} -rpcpassword=${rpcPassword}`;
     }
     
-    if (config.bitcoin.rpcHost && config.bitcoin.rpcPort) {
-      fullCommand += ` -rpcconnect=${config.bitcoin.rpcHost} -rpcport=${config.bitcoin.rpcPort}`;
-    }
+    // Always include RPC connection details to avoid defaulting to incorrect values
+    fullCommand += ` -rpcconnect=${rpcHost} -rpcport=${rpcPort}`;
     
     // Add the actual command
     fullCommand += ` ${command}`;
+    
+    // Log the command for debugging (without sensitive info)
+    const logCommand = fullCommand.replace(/-rpcpassword=\S+/g, '-rpcpassword=[REDACTED]');
+    console.log(`Remote Bitcoin command: ${logCommand}`);
     
     // Execute the command remotely
     const { stdout } = await executeSshPassCommand(fullCommand, options);
@@ -355,22 +392,33 @@ async function executeBitcoinCommand(command, options = {}) {
       fullCommand += ' -regtest';
     }
     
-    // Add wallet if specified
-    if (config.bitcoin.walletName) {
+    // Add wallet if specified - use environment variable first
+    if (process.env.BITCOIN_WALLET) {
+      fullCommand += ` -rpcwallet=${process.env.BITCOIN_WALLET}`;
+    } else if (config.bitcoin.walletName) {
       fullCommand += ` -rpcwallet=${config.bitcoin.walletName}`;
     }
     
-    // Add RPC connection parameters if provided
-    if (config.bitcoin.rpcUser && config.bitcoin.rpcPassword) {
-      fullCommand += ` -rpcuser=${config.bitcoin.rpcUser} -rpcpassword=${config.bitcoin.rpcPassword}`;
+    // Add RPC connection parameters if provided in environment or config
+    // Use environment variables first, then fall back to config
+    const rpcUser = process.env.BITCOIN_RPC_USER || config.bitcoin.rpcUser;
+    const rpcPassword = process.env.BITCOIN_RPC_PASSWORD || config.bitcoin.rpcPassword;
+    const rpcHost = process.env.BITCOIN_RPC_HOST || config.bitcoin.rpcHost;
+    const rpcPort = process.env.BITCOIN_RPC_PORT || config.bitcoin.rpcPort;
+    
+    if (rpcUser && rpcPassword) {
+      fullCommand += ` -rpcuser=${rpcUser} -rpcpassword=${rpcPassword}`;
     }
     
-    if (config.bitcoin.rpcHost && config.bitcoin.rpcPort) {
-      fullCommand += ` -rpcconnect=${config.bitcoin.rpcHost} -rpcport=${config.bitcoin.rpcPort}`;
-    }
+    // Always include RPC connection details to avoid defaulting to incorrect values
+    fullCommand += ` -rpcconnect=${rpcHost} -rpcport=${rpcPort}`;
     
     // Add the actual command
     fullCommand += ` ${command}`;
+    
+    // Log the command for debugging (without sensitive info)
+    const logCommand = fullCommand.replace(/-rpcpassword=\S+/g, '-rpcpassword=[REDACTED]');
+    console.log(`Bitcoin command: ${logCommand}`);
     
     // Execute the command with retry logic
     const { stdout } = await executeCommand(fullCommand, options);
@@ -394,15 +442,33 @@ async function executeBitcoinCommand(command, options = {}) {
  * @returns {string} Command with sensitive info masked
  */
 function maskSensitiveInfo(command) {
+  if (!command) return command;
+  
+  let maskedCommand = command;
+  
   // Mask passwords in RPC commands
-  if (command.includes('-rpcpassword=')) {
-    command = command.replace(/-rpcpassword=\S+/g, '-rpcpassword=[REDACTED]');
+  if (maskedCommand.includes('-rpcpassword=')) {
+    maskedCommand = maskedCommand.replace(/-rpcpassword=\S+/g, '-rpcpassword=[REDACTED]');
+  }
+  
+  // Mask SSH passwords in sshpass commands
+  if (maskedCommand.includes('sshpass -p')) {
+    maskedCommand = maskedCommand.replace(/sshpass -p ["'].*?["']/g, 'sshpass -p "[REDACTED]"');
   }
   
   // Mask private keys (assumes they are hex strings of 64 characters)
-  command = command.replace(/[a-f0-9]{64}/gi, '[REDACTED_KEY]');
+  maskedCommand = maskedCommand.replace(/[a-f0-9]{64}/gi, '[REDACTED_KEY]');
   
-  return command;
+  // Mask potential passwords in environment variables
+  if (process.env.ORDPI_SSH_PASSWORD && maskedCommand.includes(process.env.ORDPI_SSH_PASSWORD)) {
+    maskedCommand = maskedCommand.replace(new RegExp(process.env.ORDPI_SSH_PASSWORD, 'g'), '[REDACTED]');
+  }
+  
+  if (process.env.BITCOIN_RPC_PASSWORD && maskedCommand.includes(process.env.BITCOIN_RPC_PASSWORD)) {
+    maskedCommand = maskedCommand.replace(new RegExp(process.env.BITCOIN_RPC_PASSWORD, 'g'), '[REDACTED]');
+  }
+  
+  return maskedCommand;
 }
 
 module.exports = {

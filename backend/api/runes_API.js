@@ -18,6 +18,12 @@ const tradingService = require('./services/tradingService');
 // Import the UTXO service
 const utxoService = require('./services/utxoService');
 
+// Import util.promisify for exec
+const util = require('util');
+const { exec } = require('child_process');
+const execAsync = util.promisify(exec);
+const { executeSshPassCommand } = require('./services/commandExecutionService');
+
 // Add CORS support
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -258,11 +264,6 @@ const getRemoteLPInfo = async () => {
   return callRemoteAPIWithFallback('/ovt/lp-info', 'lpInfo');
 };
 
-// Import util.promisify for exec
-const util = require('util');
-const { exec } = require('child_process');
-const execAsync = util.promisify(exec);
-
 // Enhanced helper function to execute ord commands with proper configuration
 const execOrdCommand = (command) => {
   // Check if we should use fallback based on previous failures
@@ -302,33 +303,22 @@ const execOrdCommand = (command) => {
     // Update last attempt timestamp
     lastRemoteAttemptTimestamp = Date.now();
     
-    // Set up the command to execute via SSH on the OrdPi
-    const sshConnection = 'BTCPi@91.7.62.224';
-    const sshPort = '2211';
-    
-    // Get SSH password from environment variable
-    const sshPassword = process.env.ORDPI_SSH_PASSWORD;
-    
-    // Debug info (mask the actual password)
-    console.log(`SSH Password available: ${sshPassword ? 'Yes' : 'No'}`);
-    console.log(`SSH Password length: ${sshPassword ? sshPassword.length : 0}`);
-    
     // Ensure all ord commands use the correct configuration
     const ordCommand = `ord --config /home/BTCPi/.ord/ord.yaml --signet ${command}`;
     
-    // Build the sshpass command
-    const fullCommand = `sshpass -p "${sshPassword}" ssh -o StrictHostKeyChecking=no -p ${sshPort} ${sshConnection} "${ordCommand}"`;
+    // Use the command execution service to safely execute SSH commands
+    console.log(`Executing ord command: ${command}`);
     
-    // Execute the SSH command (log a redacted version)
-    console.log(`Executing SSH command: ${fullCommand.replace(sshPassword, '[REDACTED]')}`);
+    // Use the secure command execution service which handles password redaction
+    const result = executeSshPassCommand(ordCommand);
+    const stdout = result.stdout || '';
     
-    const result = execSync(fullCommand).toString();
-    console.log(`Command result: ${result}`);
+    console.log(`Command result: ${stdout}`);
     
     // Reset failure counter on success
     consecutiveRemoteFailures = 0;
     
-    return { success: true, result };
+    return { success: true, result: stdout };
   } catch (error) {
     console.error(`Error executing command: ${command}`, error);
     
@@ -1174,7 +1164,11 @@ app.post('/ovt/buy', async (req, res) => {
     
     // 5. Execute the buy order using the trading service
     // This will transfer OVT tokens from the LP wallet to the buyer
-    const orderResult = await tradingService.executeBuyOrder(fromAddress, amount, currentPrice);
+    const orderResult = await tradingService.executeBuyOrder({
+      address: fromAddress,
+      amount: amount,
+      price: currentPrice
+    });
     
     if (!orderResult.success) {
       return res.status(500).json({
@@ -1187,7 +1181,7 @@ app.post('/ovt/buy', async (req, res) => {
     res.json({
       success: true,
       transaction: {
-        txid: orderResult.trade.txid,
+        txid: orderResult.txid,
         type: 'BUY',
         amount: amount,
         price: currentPrice,
@@ -1197,7 +1191,7 @@ app.post('/ovt/buy', async (req, res) => {
         toAddress: LP_ADDRESS,
         timestamp: Date.now(),
         status: 'confirmed',
-        rawResult: orderResult.transaction.rawResult
+        rawResult: orderResult.transaction ? orderResult.transaction.rawResult : null
       },
       message: 'Buy transaction executed successfully'
     });
