@@ -514,6 +514,17 @@ app.get('/', (req, res) => {
       }
     },
     {
+      path: '/ovt/transfer',
+      method: 'POST',
+      description: 'Transfer OVT tokens to another address',
+      body: {
+        fromAddress: 'Sender wallet address',
+        toAddress: 'Recipient wallet address',
+        runeId: 'Rune ID (optional, defaults to OVT)',
+        amount: 'Amount of OVT to transfer'
+      }
+    },
+    {
       path: '/ovt/prepare-lp-distribution',
       method: 'POST',
       description: 'Prepare PSBTs for LP distribution',
@@ -1147,6 +1158,95 @@ app.post('/ovt/submit-transaction', async (req, res) => {
     });
   } catch (error) {
     console.error('Error submitting transaction:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.toString() 
+    });
+  }
+});
+
+// Add endpoint for token transfers
+app.post('/ovt/transfer', async (req, res) => {
+  try {
+    const { fromAddress, toAddress, runeId, amount } = req.body;
+    
+    if (!fromAddress || !toAddress || !amount || amount <= 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid parameters. Required: fromAddress, toAddress, amount' 
+      });
+    }
+    
+    const actualRuneId = runeId || OVT_RUNE_ID;
+    
+    console.log(`Processing transfer request: ${amount} OVT from ${fromAddress} to ${toAddress}`);
+    
+    // 1. Check for sufficient OVT balance
+    const balancesResult = await getRemoteWalletBalances();
+    const userBalances = balancesResult.success ? 
+      balancesResult.result.balances.filter(b => b.address === fromAddress) : 
+      [];
+    
+    const ovtBalance = userBalances.length > 0 ? userBalances[0].amount : 0;
+    
+    if (ovtBalance < amount) {
+      return res.status(400).json({
+        success: false,
+        error: `Insufficient OVT balance. Required: ${amount}, Available: ${ovtBalance}`
+      });
+    }
+    
+    // 2. Prepare a PSBT for the transfer
+    // In a real implementation, we would create a PSBT here
+    // For now, we'll simulate a prepared transaction
+    
+    // Generate a mock PSBT for simulation
+    const psbt = `simulated-psbt-${Date.now()}`;
+    
+    // Generate a temporary transaction ID for tracking
+    const txid = `tx-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
+    
+    // Simulated UTXO data - in a real implementation, we would fetch this from the Bitcoin Core node
+    // or from the Runes API that contains the actual UTXOs where the runes are stored
+    const mockUtxos = [
+      {
+        txid: `input-tx-${Date.now().toString(36)}`,
+        vout: 0,
+        value: amount + 1000, // Amount plus fee
+        scriptPubKey: `scriptpubkey-${fromAddress.substring(0, 8)}`,
+        confirmations: 5
+      }
+    ];
+    
+    // Information about the input where the rune is located
+    const inputDetails = {
+      txid: mockUtxos[0].txid,
+      vout: mockUtxos[0].vout,
+      runeId: actualRuneId,
+      amount
+    };
+    
+    // Return the transaction details
+    res.json({
+      success: true,
+      transaction: {
+        txid,
+        type: 'TRANSFER',
+        amount: amount,
+        fromAddress: fromAddress,
+        toAddress: toAddress,
+        runeId: actualRuneId,
+        timestamp: Date.now(),
+        status: 'pending',
+        confirmations: 0,
+        psbts: [psbt],
+        utxos: mockUtxos, // Include UTXO information
+        inputDetails // Include input details for rune tracking
+      },
+      message: 'Transfer prepared successfully'
+    });
+  } catch (error) {
+    console.error('Error preparing transfer:', error);
     res.status(500).json({ 
       success: false, 
       error: error.toString() 

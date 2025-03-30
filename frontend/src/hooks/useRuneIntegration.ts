@@ -48,6 +48,19 @@ export interface TransactionResult {
   totalCost?: number;
   totalReturn?: number;
   psbts?: string[];
+  utxos?: Array<{
+    txid: string;
+    vout: number;
+    value: number;
+    scriptPubKey: string;
+    confirmations: number;
+  }>;
+  inputDetails?: {
+    txid: string;
+    vout: number;
+    runeId: string;
+    amount: number;
+  };
 }
 
 // Transaction interface
@@ -479,6 +492,74 @@ export function useRuneIntegration() {
   }, [getBalance, getTransactionHistory, API_BASE_URL]);
 
   /**
+   * Transfer OVT tokens to another address
+   */
+  const transferRune = useCallback(async (
+    fromAddress: string,
+    toAddress: string,
+    runeId: string = OVT_RUNE_ID,
+    amount: number
+  ): Promise<TransactionResult> => {
+    if (!fromAddress) {
+      throw new Error('Sender address is required');
+    }
+    
+    if (!toAddress) {
+      throw new Error('Recipient address is required');
+    }
+    
+    if (amount <= 0) {
+      throw new Error('Amount must be greater than zero');
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // Call the API to prepare transfer transaction
+      const response = await axios.post(`${API_BASE_URL}/ovt/transfer`, {
+        fromAddress,
+        toAddress,
+        runeId,
+        amount
+      });
+      
+      if (!response.data.success) {
+        throw new Error(response.data.error || 'Failed to prepare transfer transaction');
+      }
+      
+      const txData = response.data.transaction;
+      
+      // In a production app, we would now:
+      // 1. Present the PSBT to the user for signing with their wallet
+      // 2. Submit the signed PSBT back to the API
+      // For now, we'll simulate a successful transaction
+      
+      // Refresh balance after transaction
+      setTimeout(() => getBalance(fromAddress), 1000);
+      
+      // Refresh transaction history
+      setTimeout(() => getTransactionHistory(fromAddress), 1500);
+      
+      return {
+        txid: txData.txid || 'mock-txid-' + Date.now(),
+        status: 'pending',
+        confirmations: 0,
+        timestamp: Date.now(),
+        psbts: txData.psbts,
+        utxos: txData.utxos || [], // Include UTXOs from the response
+        inputDetails: txData.inputDetails || null // Include input details for rune tracking
+      };
+    } catch (err) {
+      console.error('Error transferring OVT tokens:', err);
+      setError(err instanceof Error ? err.message : 'Failed to transfer tokens');
+      throw err;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [getBalance, getTransactionHistory, API_BASE_URL]);
+
+  /**
    * Get distribution statistics for OVT token
    */
   const getDistributionStats = useCallback(async (
@@ -563,6 +644,7 @@ export function useRuneIntegration() {
     getTransactionHistory,
     getDistributionStats,
     formatTokenAmount,
+    transferRune,
     
     // Constants
     OVT_RUNE_ID,
