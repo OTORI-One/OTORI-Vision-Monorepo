@@ -7,34 +7,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const crypto = require('crypto');
-
-// Configuration values
-const config = {
-  // Bitcoin network configuration
-  network: process.env.BITCOIN_NETWORK || 'testnet',
-  bitcoinCliPath: process.env.BITCOIN_CLI_PATH || 'bitcoin-cli',
-  walletName: process.env.WALLET_NAME || '',
-  
-  // Validation thresholds
-  confirmationThreshold: parseInt(process.env.CONFIRMATION_THRESHOLD || '1', 10),
-  dustLimit: 546, // Standard Bitcoin dust limit in satoshis
-  maxInputs: parseInt(process.env.MAX_TX_INPUTS || '100', 10),
-  maxOutputs: parseInt(process.env.MAX_TX_OUTPUTS || '100', 10),
-  
-  // Audit and logging
-  logDirectory: process.env.LOG_DIRECTORY || path.join(__dirname, '../../data/logs'),
-  auditTrailEnabled: process.env.AUDIT_TRAIL_ENABLED !== 'false',
-  logVerbosity: process.env.LOG_VERBOSITY || 'info', // error, warn, info, debug, trace
-  
-  // Circuit breaker configuration
-  circuitBreaker: {
-    failureThreshold: parseInt(process.env.CIRCUIT_BREAKER_THRESHOLD || '5', 10),
-    resetTimeout: parseInt(process.env.CIRCUIT_BREAKER_RESET || '300000', 10), // 5 minutes
-    halfOpenTimeout: parseInt(process.env.CIRCUIT_BREAKER_HALF_OPEN || '60000', 10) // 1 minute
-  }
-};
+const config = require('./configService');
+const commandService = require('./commandExecutionService');
 
 // Initialize circuit breaker state
 const circuitState = {
@@ -55,85 +30,8 @@ const validationStats = {
 };
 
 // Create log directory if it doesn't exist
-if (!fs.existsSync(config.logDirectory)) {
-  fs.mkdirSync(config.logDirectory, { recursive: true });
-}
-
-/**
- * Executes a bitcoin-cli command with proper error handling
- * @param {string} command - Command to execute
- * @returns {object} Command output (parsed if JSON) 
- */
-function executeBitcoinCommand(command) {
-  // Check circuit breaker state
-  if (circuitState.state === 'open') {
-    const now = Date.now();
-    const elapsed = now - circuitState.lastFailure;
-    
-    if (elapsed < config.circuitBreaker.resetTimeout) {
-      throw new Error('Circuit breaker open: Bitcoin node connection is currently unavailable');
-    }
-    
-    // Move to half-open state after timeout
-    circuitState.state = 'halfOpen';
-    console.log('Circuit breaker moved to half-open state');
-  }
-  
-  try {
-    let fullCommand = `${config.bitcoinCliPath}`;
-    
-    if (config.network === 'testnet') {
-      fullCommand += ' -testnet';
-    } else if (config.network === 'regtest') {
-      fullCommand += ' -regtest';
-    }
-    
-    if (config.walletName) {
-      fullCommand += ` -rpcwallet=${config.walletName}`;
-    }
-    
-    fullCommand += ` ${command}`;
-    
-    // Execute command and get output
-    const output = execSync(fullCommand).toString().trim();
-    
-    // Try to parse as JSON, return string if not valid JSON
-    try {
-      const result = JSON.parse(output);
-      
-      // If we get here, command succeeded - update circuit breaker
-      if (circuitState.state === 'halfOpen') {
-        circuitState.state = 'closed';
-        circuitState.failures = 0;
-        console.log('Circuit breaker closed: Bitcoin node connection restored');
-      }
-      
-      circuitState.lastSuccess = Date.now();
-      return result;
-    } catch (e) {
-      // Not JSON, return as string
-      if (circuitState.state === 'halfOpen') {
-        circuitState.state = 'closed';
-        circuitState.failures = 0;
-      }
-      circuitState.lastSuccess = Date.now();
-      return output;
-    }
-  } catch (error) {
-    // Update circuit breaker on failure
-    circuitState.failures++;
-    circuitState.lastFailure = Date.now();
-    
-    if (circuitState.failures >= config.circuitBreaker.failureThreshold) {
-      circuitState.state = 'open';
-      console.error(`Circuit breaker opened after ${circuitState.failures} failures`);
-    }
-    
-    console.error(`Error executing Bitcoin command: ${command}`, error);
-    logValidationFailure('bitcoinRPC', error.message);
-    
-    throw new Error(`Bitcoin RPC error: ${error.message}`);
-  }
+if (!fs.existsSync(config.paths.logDirectory)) {
+  fs.mkdirSync(config.paths.logDirectory, { recursive: true });
 }
 
 /**
@@ -142,7 +40,7 @@ function executeBitcoinCommand(command) {
  * @param {object} data - Event data 
  */
 function logValidationEvent(event, data) {
-  if (!config.auditTrailEnabled) return;
+  if (!config.validation.auditTrailEnabled) return;
   
   const timestamp = new Date().toISOString();
   const logEntry = {
@@ -153,7 +51,7 @@ function logValidationEvent(event, data) {
   
   // Write to daily audit log file
   const date = timestamp.split('T')[0];
-  const logFile = path.join(config.logDirectory, `validation-${date}.log`);
+  const logFile = path.join(config.paths.logDirectory, `validation-${date}.log`);
   
   try {
     fs.appendFileSync(logFile, JSON.stringify(logEntry) + '\n');
@@ -209,35 +107,71 @@ function logValidationFailure(validationType, reason, details = {}) {
  */
 async function verifyUtxoExistence(txid, vout) {
   try {
-    // Get transaction details
-    const tx = executeBitcoinCommand(`gettxout ${txid} ${vout}`);
-    
-    // If null, UTXO doesn't exist or is already spent
-    if (tx === null) {
-      logValidationFailure('input', `UTXO ${txid}:${vout} does not exist or is already spent`);
-      return { exists: false, error: 'UTXO does not exist or is already spent' };
+    // Check circuit breaker state
+    if (circuitState.state === 'open') {
+      const now = Date.now();
+      const elapsed = now - circuitState.lastFailure;
+      
+      if (elapsed < config.circuitBreaker.resetTimeout) {
+        throw new Error('Circuit breaker open: Bitcoin node connection is currently unavailable');
+      }
+      
+      // Move to half-open state after timeout
+      circuitState.state = 'halfOpen';
+      console.log('Circuit breaker moved to half-open state');
     }
     
-    // Check confirmations
-    if (tx.confirmations < config.confirmationThreshold) {
-      logValidationFailure('input', `UTXO ${txid}:${vout} has insufficient confirmations`, { 
-        required: config.confirmationThreshold, 
-        actual: tx.confirmations 
-      });
+    try {
+      // Get transaction details
+      const tx = await commandService.executeBitcoinCommand(`gettxout ${txid} ${vout}`);
+      
+      // If successful, update circuit breaker state
+      if (circuitState.state === 'halfOpen') {
+        circuitState.state = 'closed';
+        circuitState.failures = 0;
+        console.log('Circuit breaker closed: Bitcoin node connection restored');
+      }
+      circuitState.lastSuccess = Date.now();
+      
+      // If null, UTXO doesn't exist or is already spent
+      if (tx === null) {
+        logValidationFailure('input', `UTXO ${txid}:${vout} does not exist or is already spent`);
+        return { exists: false, error: 'UTXO does not exist or is already spent' };
+      }
+      
+      // Check confirmations
+      if (tx.confirmations < config.validation.confirmationThreshold) {
+        logValidationFailure('input', `UTXO ${txid}:${vout} has insufficient confirmations`, { 
+          required: config.validation.confirmationThreshold, 
+          actual: tx.confirmations 
+        });
+        return { 
+          exists: true, 
+          spendable: false, 
+          error: `Insufficient confirmations (${tx.confirmations}/${config.validation.confirmationThreshold})` 
+        };
+      }
+      
       return { 
         exists: true, 
-        spendable: false, 
-        error: `Insufficient confirmations (${tx.confirmations}/${config.confirmationThreshold})` 
+        spendable: true, 
+        value: Math.round(tx.value * 100000000), // Convert BTC to satoshis
+        scriptPubKey: tx.scriptPubKey,
+        confirmations: tx.confirmations
       };
+    } catch (error) {
+      // Update circuit breaker on failure
+      circuitState.failures++;
+      circuitState.lastFailure = Date.now();
+      
+      if (circuitState.failures >= config.circuitBreaker.failureThreshold) {
+        circuitState.state = 'open';
+        console.error(`Circuit breaker opened after ${circuitState.failures} failures`);
+      }
+      
+      logValidationFailure('input', `Error verifying UTXO ${txid}:${vout}`, { error: error.message });
+      throw error;
     }
-    
-    return { 
-      exists: true, 
-      spendable: true, 
-      value: Math.round(tx.value * 100000000), // Convert BTC to satoshis
-      scriptPubKey: tx.scriptPubKey,
-      confirmations: tx.confirmations
-    };
   } catch (error) {
     logValidationFailure('input', `Error verifying UTXO ${txid}:${vout}`, { error: error.message });
     throw error;
@@ -256,9 +190,9 @@ async function validateTransactionInputs(transaction) {
   }
   
   // Check if number of inputs is within limits
-  if (transaction.inputs.length > config.maxInputs) {
-    logValidationFailure('input', `Too many inputs: ${transaction.inputs.length}/${config.maxInputs}`);
-    return { valid: false, error: `Too many inputs: ${transaction.inputs.length}/${config.maxInputs}` };
+  if (transaction.inputs.length > config.validation.maxInputs) {
+    logValidationFailure('input', `Too many inputs: ${transaction.inputs.length}/${config.validation.maxInputs}`);
+    return { valid: false, error: `Too many inputs: ${transaction.inputs.length}/${config.validation.maxInputs}` };
   }
   
   if (transaction.inputs.length === 0) {
@@ -330,9 +264,9 @@ function validateTransactionOutputs(transaction, totalInputValue) {
   }
   
   // Check if number of outputs is within limits
-  if (transaction.outputs.length > config.maxOutputs) {
-    logValidationFailure('output', `Too many outputs: ${transaction.outputs.length}/${config.maxOutputs}`);
-    return { valid: false, error: `Too many outputs: ${transaction.outputs.length}/${config.maxOutputs}` };
+  if (transaction.outputs.length > config.validation.maxOutputs) {
+    logValidationFailure('output', `Too many outputs: ${transaction.outputs.length}/${config.validation.maxOutputs}`);
+    return { valid: false, error: `Too many outputs: ${transaction.outputs.length}/${config.validation.maxOutputs}` };
   }
   
   if (transaction.outputs.length === 0) {
@@ -352,10 +286,10 @@ function validateTransactionOutputs(transaction, totalInputValue) {
     }
     
     // Check for dust outputs
-    if (output.value < config.dustLimit) {
+    if (output.value < config.utxo.dustLimit) {
       return {
         valid: false,
-        error: `Output value below dust limit (${output.value} < ${config.dustLimit})`,
+        error: `Output value below dust limit (${output.value} < ${config.utxo.dustLimit})`,
         output
       };
     }
@@ -402,7 +336,7 @@ function validateTransactionOutputs(transaction, totalInputValue) {
     });
     return { 
       valid: false, 
-      error: 'Total output value exceeds input value (attempting to spend more than available)',
+      error: 'Total output value exceeds input value',
       totalInputValue,
       totalOutputValue
     };
@@ -411,19 +345,20 @@ function validateTransactionOutputs(transaction, totalInputValue) {
   // Calculate fee
   const fee = totalInputValue - totalOutputValue;
   
-  // Very basic fee validation - ensure fee is reasonable
-  // A more advanced implementation would validate fee based on tx size and market rates
-  if (fee < 0) {
-    logValidationFailure('output', 'Negative fee', { fee });
-    return { valid: false, error: 'Transaction fee cannot be negative' };
-  }
-  
-  if (fee > totalInputValue * 0.5 && fee > 100000) { // Over 50% of input and over 0.001 BTC
-    logValidationFailure('output', 'Excessive fee', { fee, totalInputValue });
+  // Check if fee is reasonable (e.g., not excessively high)
+  // This is a simple check - more sophisticated fee validation could be added
+  const feePercent = (fee / totalInputValue) * 100;
+  if (feePercent > 20) { // If fee is more than 20% of input value
+    logValidationFailure('output', 'Fee is excessively high', { 
+      fee, 
+      feePercent,
+      totalInputValue
+    });
     return { 
       valid: false, 
-      error: 'Transaction fee is excessive',
+      error: `Fee is excessively high (${feePercent.toFixed(2)}%)`,
       fee,
+      feePercent,
       totalInputValue
     };
   }
@@ -437,182 +372,208 @@ function validateTransactionOutputs(transaction, totalInputValue) {
 }
 
 /**
- * Very basic address format validation
+ * Validates Bitcoin address format
  * @param {string} address - Bitcoin address to validate
  * @returns {object} Validation result
  */
 function validateAddressFormat(address) {
+  // Basic validation for different address formats
   if (!address || typeof address !== 'string') {
     return { valid: false, error: 'Address must be a string' };
   }
   
-  // Basic format checks based on address type
-  // This is a simplified version - a full validator would use bitcoinjs-lib
-  
-  // Bech32 (segwit v0 and v1)
-  if (address.startsWith('bc1') || address.startsWith('tb1')) {
-    // Check length
-    if (address.length < 14 || address.length > 74) {
-      return { valid: false, error: 'Invalid Bech32 address length' };
-    }
-    return { valid: true, type: 'segwit' };
-  }
-  
-  // P2PKH
-  if (address.startsWith('1') || address.startsWith('m') || address.startsWith('n')) {
+  // P2PKH (legacy) addresses start with 1
+  if (address.startsWith('1')) {
     if (address.length !== 26 && address.length !== 34) {
       return { valid: false, error: 'Invalid P2PKH address length' };
     }
-    return { valid: true, type: 'p2pkh' };
+    return { valid: true, format: 'p2pkh' };
   }
   
-  // P2SH
-  if (address.startsWith('3') || address.startsWith('2')) {
+  // P2SH addresses start with 3
+  if (address.startsWith('3')) {
     if (address.length !== 34) {
       return { valid: false, error: 'Invalid P2SH address length' };
     }
-    return { valid: true, type: 'p2sh' };
+    return { valid: true, format: 'p2sh' };
   }
   
-  return { valid: false, error: 'Unknown address format' };
+  // Bech32 addresses (Segwit) start with bc1 (mainnet) or tb1 (testnet)
+  if (address.startsWith('bc1') || address.startsWith('tb1')) {
+    if (address.length < 42 || address.length > 62) {
+      return { valid: false, error: 'Invalid Bech32 address length' };
+    }
+    return { valid: true, format: 'bech32' };
+  }
+  
+  // Taproot addresses (P2TR) usually start with bc1p or tb1p
+  if (address.startsWith('bc1p') || address.startsWith('tb1p')) {
+    if (address.length < 62 || address.length > 80) {
+      return { valid: false, error: 'Invalid Taproot address length' };
+    }
+    return { valid: true, format: 'p2tr' };
+  }
+  
+  return { valid: false, error: 'Unsupported address format' };
 }
 
 /**
- * Validates transaction signature(s)
- * @param {object} transaction - Transaction with signature data
- * @returns {object} Validation result
+ * Validates transaction signature
+ * @param {object} transaction - Transaction object with PSBT
+ * @returns {Promise<object>} Validation result
  */
-function validateTransactionSignature(transaction) {
-  // For PSBT validation, we would use Bitcoin Core's analyzepsbt
-  // This is a simplified version
-  
-  if (!transaction.psbt && !transaction.rawHex) {
-    logValidationFailure('signature', 'Missing transaction data (psbt or rawHex)');
-    return { valid: false, error: 'Missing transaction data (psbt or rawHex)' };
+async function validateTransactionSignature(transaction) {
+  if (!transaction || !transaction.psbt) {
+    logValidationFailure('signature', 'Missing PSBT for signature validation');
+    return { valid: false, error: 'Missing PSBT for signature validation' };
   }
   
   try {
-    let result;
+    // Use Bitcoin Core's analyzepsbt to check signatures
+    const analysis = await commandService.executeBitcoinCommand(`analyzepsbt ${transaction.psbt}`);
     
-    if (transaction.psbt) {
-      // Use Bitcoin Core to analyze the PSBT
-      result = executeBitcoinCommand(`analyzepsbt ${transaction.psbt}`);
-      
-      if (result.error) {
-        logValidationFailure('signature', `PSBT analysis error: ${result.error}`);
-        return { valid: false, error: `PSBT analysis error: ${result.error}` };
-      }
-      
-      // Check if PSBT is complete
-      if (result.complete === true) {
-        return { valid: true, isComplete: true };
-      }
-      
-      // If not complete, check what's missing
-      if (result.next === 'signer') {
-        // Missing signatures
-        return { 
-          valid: true, 
-          isComplete: false, 
-          needsSignatures: true,
-          missingSignatures: result.missing || []
-        };
-      }
-      
-      return { valid: true, isComplete: false, nextAction: result.next };
+    // Check if the PSBT is complete (all signatures present)
+    const isComplete = analysis.complete === true;
+    
+    // For incomplete PSBTs, check signature status of each input
+    const missingSignatures = [];
+    
+    if (!isComplete && analysis.inputs) {
+      analysis.inputs.forEach((input, index) => {
+        if (input.missing && input.missing.signatures) {
+          missingSignatures.push({
+            inputIndex: index,
+            missing: input.missing.signatures
+          });
+        }
+      });
     }
     
-    if (transaction.rawHex) {
-      // For raw transaction hex, use testmempoolaccept
-      result = executeBitcoinCommand(`testmempoolaccept '["${transaction.rawHex}"]'`);
-      
-      if (!Array.isArray(result) || result.length === 0) {
-        logValidationFailure('signature', 'Invalid testmempoolaccept response');
-        return { valid: false, error: 'Invalid mempool test response' };
-      }
-      
-      if (result[0].allowed) {
-        return { valid: true, isComplete: true, allowedInMempool: true };
-      } else {
-        logValidationFailure('signature', `Transaction rejected by mempool: ${result[0].reject_reason}`);
-        return { 
-          valid: false, 
-          isComplete: true, 
-          allowedInMempool: false,
-          rejectReason: result[0].reject_reason
-        };
+    // For complete PSBTs, verify that they can be finalized
+    let isValidSignature = isComplete;
+    
+    if (isComplete) {
+      try {
+        // Verify that the PSBT can be finalized and extracted
+        const finalizationTest = await commandService.executeBitcoinCommand(`finalizepsbt ${transaction.psbt} false`);
+        isValidSignature = finalizationTest.complete === true;
+      } catch (error) {
+        logValidationFailure('signature', 'PSBT finalization failed', { error: error.message });
+        isValidSignature = false;
       }
     }
     
-    return { valid: false, error: 'Unsupported transaction format' };
+    if (!isValidSignature) {
+      logValidationFailure('signature', 'Signature validation failed', { 
+        isComplete,
+        missingSignatures
+      });
+      return { 
+        valid: false, 
+        error: 'Invalid or incomplete signatures',
+        isComplete,
+        missingSignatures,
+      };
+    }
+    
+    return { 
+      valid: true, 
+      isComplete,
+      nextAction: analysis.next || '',
+      estimatedVsize: analysis.estimated_vsize || 0,
+    };
   } catch (error) {
-    logValidationFailure('signature', `Signature validation error: ${error.message}`);
-    return { valid: false, error: `Signature validation error: ${error.message}` };
+    logValidationFailure('signature', 'Error during signature validation', { error: error.message });
+    
+    return { 
+      valid: false, 
+      error: `Signature validation error: ${error.message}`
+    };
   }
 }
 
 /**
- * Comprehensive transaction validation
- * @param {object} transaction - Transaction to validate
+ * Validates a complete transaction
+ * @param {object} transaction - Transaction object with inputs, outputs, and PSBT
  * @returns {Promise<object>} Validation result
  */
 async function validateTransaction(transaction) {
-  if (!transaction) {
-    logValidationFailure('transaction', 'No transaction provided');
-    return { valid: false, error: 'No transaction provided' };
+  // Log validation start
+  logValidationEvent('validationStart', {
+    transaction: {
+      inputs: transaction.inputs?.length,
+      outputs: transaction.outputs?.length,
+      hasPsbt: !!transaction.psbt
+    },
+    timestamp: Date.now()
+  });
+  
+  // Validate inputs first
+  const inputValidation = await validateTransactionInputs(transaction);
+  if (!inputValidation.valid) {
+    logValidationEvent('validationComplete', {
+      result: 'failed',
+      reason: 'input validation failed',
+      details: inputValidation.error,
+      timestamp: Date.now()
+    });
+    
+    return {
+      valid: false,
+      errorType: 'input',
+      error: inputValidation.error,
+      inputValidation
+    };
   }
   
-  try {
+  // Validate outputs next
+  const outputValidation = validateTransactionOutputs(transaction, inputValidation.totalInputValue);
+  if (!outputValidation.valid) {
+    logValidationEvent('validationComplete', {
+      result: 'failed',
+      reason: 'output validation failed',
+      details: outputValidation.error,
+      timestamp: Date.now()
+    });
+    
+    return {
+      valid: false,
+      errorType: 'output',
+      error: outputValidation.error,
+      inputValidation,
+      outputValidation
+    };
+  }
+  
+  // Validate signatures if PSBT is provided
+  if (transaction.psbt) {
+    const signatureValidation = await validateTransactionSignature(transaction);
+    if (!signatureValidation.valid) {
+      logValidationEvent('validationComplete', {
+        result: 'failed',
+        reason: 'signature validation failed',
+        details: signatureValidation.error,
+        timestamp: Date.now()
+      });
+      
+      return {
+        valid: false,
+        errorType: 'signature',
+        error: signatureValidation.error,
+        inputValidation,
+        outputValidation,
+        signatureValidation
+      };
+    }
+    
+    // All validations passed
+    logValidationEvent('validationComplete', {
+      result: 'success',
+      timestamp: Date.now()
+    });
+    
     validationStats.totalValidated++;
     
-    // Log the validation attempt
-    logValidationEvent('validationStart', {
-      transactionId: transaction.txid || 'unknown',
-      timestamp: Date.now()
-    });
-    
-    // Validate inputs
-    const inputValidation = await validateTransactionInputs(transaction);
-    if (!inputValidation.valid) {
-      return { 
-        valid: false, 
-        stage: 'input',
-        error: inputValidation.error,
-        details: inputValidation
-      };
-    }
-    
-    // Validate outputs using total input value from input validation
-    const outputValidation = validateTransactionOutputs(transaction, inputValidation.totalInputValue);
-    if (!outputValidation.valid) {
-      return { 
-        valid: false, 
-        stage: 'output',
-        error: outputValidation.error,
-        details: outputValidation
-      };
-    }
-    
-    // Validate signatures
-    const signatureValidation = validateTransactionSignature(transaction);
-    if (!signatureValidation.valid) {
-      return { 
-        valid: false, 
-        stage: 'signature',
-        error: signatureValidation.error,
-        details: signatureValidation
-      };
-    }
-    
-    // Log successful validation
-    logValidationEvent('validationSuccess', {
-      transactionId: transaction.txid || 'unknown',
-      fee: outputValidation.fee,
-      isComplete: signatureValidation.isComplete,
-      timestamp: Date.now()
-    });
-    
-    // Return comprehensive validation result
     return {
       valid: true,
       inputValidation,
@@ -621,23 +582,40 @@ async function validateTransaction(transaction) {
       fee: outputValidation.fee,
       isComplete: signatureValidation.isComplete
     };
-  } catch (error) {
-    logValidationFailure('transaction', `Validation error: ${error.message}`);
-    return { 
-      valid: false, 
-      error: `Validation error: ${error.message}`
-    };
   }
+  
+  // If no PSBT is provided, consider it a partial validation success
+  logValidationEvent('validationComplete', {
+    result: 'partial success',
+    reason: 'no PSBT provided for signature validation',
+    timestamp: Date.now()
+  });
+  
+  validationStats.totalValidated++;
+  
+  return {
+    valid: true,
+    inputValidation,
+    outputValidation,
+    fee: outputValidation.fee,
+    partialValidation: true,
+    message: 'PSBT not provided, signature validation skipped'
+  };
 }
 
 /**
- * Get validation statistics
- * @param {boolean} reset - Whether to reset stats after retrieval
+ * Gets validation statistics
+ * @param {boolean} reset - Whether to reset statistics after retrieval
  * @returns {object} Validation statistics
  */
 function getValidationStats(reset = false) {
   const stats = {
-    ...validationStats,
+    totalValidated: validationStats.totalValidated,
+    inputValidationFailures: validationStats.inputValidationFailures,
+    outputValidationFailures: validationStats.outputValidationFailures,
+    signatureValidationFailures: validationStats.signatureValidationFailures,
+    successRate: validationStats.successRate,
+    lastReset: validationStats.lastReset,
     circuitBreaker: {
       state: circuitState.state,
       failures: circuitState.failures,
@@ -645,14 +623,13 @@ function getValidationStats(reset = false) {
       lastSuccess: circuitState.lastSuccess
     },
     configuredThresholds: {
-      confirmationThreshold: config.confirmationThreshold,
-      dustLimit: config.dustLimit,
+      confirmationThreshold: config.validation.confirmationThreshold,
+      dustLimit: config.utxo.dustLimit,
       circuitBreakerThreshold: config.circuitBreaker.failureThreshold
     }
   };
   
   if (reset) {
-    // Reset statistics
     validationStats.totalValidated = 0;
     validationStats.inputValidationFailures = 0;
     validationStats.outputValidationFailures = 0;
@@ -665,37 +642,52 @@ function getValidationStats(reset = false) {
 }
 
 /**
- * Generate a validation report for a given time period
- * @param {string} period - Time period ('day', 'week', 'month')
+ * Generates a validation report for a specified period
+ * @param {string} period - Period to report on ('day', 'week', 'month')
  * @returns {Promise<object>} Validation report
  */
 async function generateValidationReport(period = 'day') {
-  let daysToAnalyze;
+  // Define date range based on period
+  const now = new Date();
+  let startDate = new Date(now);
+  
   switch (period) {
     case 'week':
-      daysToAnalyze = 7;
+      startDate.setDate(now.getDate() - 7);
       break;
     case 'month':
-      daysToAnalyze = 30;
+      startDate.setMonth(now.getMonth() - 1);
       break;
     case 'day':
     default:
-      daysToAnalyze = 1;
+      startDate.setDate(now.getDate() - 1);
       break;
   }
   
-  const endDate = new Date();
-  const startDate = new Date();
-  startDate.setDate(startDate.getDate() - daysToAnalyze);
+  // Format dates for log file matching
+  const startDateStr = startDate.toISOString().split('T')[0];
+  const endDateStr = now.toISOString().split('T')[0];
   
-  const report = {
-    period,
-    startDate: startDate.toISOString(),
-    endDate: endDate.toISOString(),
+  // Collect log files in the date range
+  const logFiles = [];
+  let currentDate = new Date(startDate);
+  
+  while (currentDate <= now) {
+    const dateStr = currentDate.toISOString().split('T')[0];
+    const logFile = path.join(config.paths.logDirectory, `validation-${dateStr}.log`);
+    
+    if (fs.existsSync(logFile)) {
+      logFiles.push(logFile);
+    }
+    
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+  
+  // Analyze log files
+  const stats = {
     validationCount: 0,
     successCount: 0,
     failureCount: 0,
-    successRate: 0,
     failuresByType: {
       input: 0,
       output: 0,
@@ -705,80 +697,66 @@ async function generateValidationReport(period = 'day') {
     dailyStats: []
   };
   
-  try {
-    // Collect logs for the period
-    const logEntries = [];
+  // Process each log file
+  for (const logFile of logFiles) {
+    const dateStr = path.basename(logFile).replace('validation-', '').replace('.log', '');
+    const dailyStat = { date: dateStr, validationCount: 0, successCount: 0, failureCount: 0 };
     
-    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0];
-      const logFile = path.join(config.logDirectory, `validation-${dateStr}.log`);
+    if (fs.existsSync(logFile)) {
+      const content = fs.readFileSync(logFile, 'utf8');
+      const lines = content.split('\n').filter(line => line.trim());
       
-      const dailyStat = {
-        date: dateStr,
-        validationCount: 0,
-        successCount: 0,
-        failureCount: 0
-      };
-      
-      // Check if log file exists
-      if (fs.existsSync(logFile)) {
+      for (const line of lines) {
         try {
-          const logContent = fs.readFileSync(logFile, 'utf8');
-          const lines = logContent.trim().split('\n');
+          const entry = JSON.parse(line);
           
-          for (const line of lines) {
-            try {
-              const entry = JSON.parse(line);
-              logEntries.push(entry);
+          if (entry.event === 'validationComplete') {
+            dailyStat.validationCount++;
+            stats.validationCount++;
+            
+            if (entry.data && entry.data.result === 'success') {
+              dailyStat.successCount++;
+              stats.successCount++;
+            } else {
+              dailyStat.failureCount++;
+              stats.failureCount++;
               
-              // Update daily stats
-              if (entry.event === 'validationStart') {
-                dailyStat.validationCount++;
-              } else if (entry.event === 'validationSuccess') {
-                dailyStat.successCount++;
-              } else if (entry.event === 'validationFailure') {
-                dailyStat.failureCount++;
+              // Count failure types
+              if (entry.data && entry.data.reason) {
+                if (entry.data.reason.includes('input')) {
+                  stats.failuresByType.input++;
+                } else if (entry.data.reason.includes('output')) {
+                  stats.failuresByType.output++;
+                } else if (entry.data.reason.includes('signature')) {
+                  stats.failuresByType.signature++;
+                } else {
+                  stats.failuresByType.other++;
+                }
               }
-            } catch (e) {
-              console.error(`Error parsing log entry: ${e.message}`);
             }
           }
-        } catch (e) {
-          console.error(`Error reading log file ${logFile}: ${e.message}`);
+        } catch (error) {
+          console.error(`Error parsing log entry: ${error.message}`);
         }
       }
-      
-      report.dailyStats.push(dailyStat);
     }
     
-    // Analyze logs
-    const validationStarts = logEntries.filter(entry => entry.event === 'validationStart');
-    const validationSuccesses = logEntries.filter(entry => entry.event === 'validationSuccess');
-    const validationFailures = logEntries.filter(entry => entry.event === 'validationFailure');
-    
-    report.validationCount = validationStarts.length;
-    report.successCount = validationSuccesses.length;
-    report.failureCount = validationFailures.length;
-    
-    if (report.validationCount > 0) {
-      report.successRate = (report.successCount / report.validationCount) * 100;
+    if (dailyStat.validationCount > 0) {
+      stats.dailyStats.push(dailyStat);
     }
-    
-    // Count failures by type
-    for (const failure of validationFailures) {
-      if (failure.data && failure.data.validationType) {
-        const type = failure.data.validationType;
-        report.failuresByType[type] = (report.failuresByType[type] || 0) + 1;
-      } else {
-        report.failuresByType.other++;
-      }
-    }
-    
-    return report;
-  } catch (error) {
-    console.error('Error generating validation report:', error);
-    throw new Error(`Report generation error: ${error.message}`);
   }
+  
+  // Calculate success rate
+  stats.successRate = stats.validationCount > 0 
+    ? parseFloat(((stats.successCount / stats.validationCount) * 100).toFixed(2))
+    : 0;
+  
+  return {
+    period,
+    startDate: startDateStr,
+    endDate: endDateStr,
+    ...stats
+  };
 }
 
 module.exports = {
@@ -786,9 +764,7 @@ module.exports = {
   validateTransactionInputs,
   validateTransactionOutputs,
   validateTransactionSignature,
+  validateAddressFormat,
   getValidationStats,
   generateValidationReport,
-  // Export some utilities for testing
-  validateAddressFormat,
-  verifyUtxoExistence
 }; 

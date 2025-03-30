@@ -7,54 +7,35 @@
  * particularly for transactions out of the Treasury address.
  */
 
-const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { secp256k1 } = require('@noble/curves/secp256k1');
+const config = require('./configService');
+const commandService = require('./commandExecutionService');
 const utxoService = require('./utxoService');
 const validationService = require('./transactionValidationService');
-const { secp256k1 } = require('@noble/curves/secp256k1');
-
-// Configuration values
-const config = {
-  // Admin configuration
-  requiredSignatures: parseInt(process.env.REQUIRED_SIGNATURES || '3', 10),
-  maxAdmins: parseInt(process.env.MAX_ADMINS || '5', 10),
-  
-  // Treasury addresses
-  treasuryAddresses: [
-    process.env.NEXT_PUBLIC_TREASURY_ADDRESS || 'tb1pglzcv7mg4xdy8nd2cdulsqgxc5yf35fxu5yvz27cf5gl6wcs4ktspjmytd',
-    process.env.NEXT_PUBLIC_TREASURY_ADDRESS_2 || 'tb1plpfgtre7sxxrrwjdpy4357qj2nr7ek06xqpdryxr4lzt5tck6x3qz07zd3'
-  ],
-  
-  // Bitcoin network configuration
-  network: process.env.BITCOIN_NETWORK || 'testnet',
-  bitcoinCliPath: process.env.BITCOIN_CLI_PATH || 'bitcoin-cli',
-  walletName: process.env.WALLET_NAME || '',
-  
-  // Logging and storage
-  logDirectory: process.env.LOG_DIRECTORY || path.join(__dirname, '../../data/logs'),
-  pendingActionsFile: path.join(__dirname, '../../data/pending-admin-actions.json')
-};
+const transactionFormatService = require('./transactionFormatService');
 
 // Initialize storage for pending admin actions
 let pendingAdminActions = [];
 
 // Load any existing pending admin actions
 try {
-  if (fs.existsSync(config.pendingActionsFile)) {
-    const data = fs.readFileSync(config.pendingActionsFile, 'utf8');
+  const pendingActionsFile = path.join(config.paths.dataDir, 'pending-admin-actions.json');
+  if (fs.existsSync(pendingActionsFile)) {
+    const data = fs.readFileSync(pendingActionsFile, 'utf8');
     pendingAdminActions = JSON.parse(data);
     console.log(`Loaded ${pendingAdminActions.length} pending admin actions`);
   } else {
     // Create the directory if it doesn't exist
-    const dir = path.dirname(config.pendingActionsFile);
+    const dir = path.dirname(pendingActionsFile);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
     
     // Create an empty file
-    fs.writeFileSync(config.pendingActionsFile, JSON.stringify([]));
+    fs.writeFileSync(pendingActionsFile, JSON.stringify([]));
     console.log('Created empty pending admin actions file');
   }
 } catch (error) {
@@ -115,7 +96,7 @@ class AdminAction {
    * @returns {boolean} - Whether the action is approved
    */
   isApproved() {
-    return this.signatures.length >= config.requiredSignatures;
+    return this.signatures.length >= config.admin.requiredSignatures;
   }
 
   /**
@@ -223,7 +204,7 @@ function addSignatureToAction(actionId, signature, publicKey) {
       success: true,
       isApproved: true,
       signaturesCount: action.signatures.length,
-      requiredSignatures: config.requiredSignatures
+      requiredSignatures: config.admin.requiredSignatures
     };
   }
   
@@ -231,7 +212,7 @@ function addSignatureToAction(actionId, signature, publicKey) {
     success: true,
     isApproved: false,
     signaturesCount: action.signatures.length,
-    requiredSignatures: config.requiredSignatures
+    requiredSignatures: config.admin.requiredSignatures
   };
 }
 
@@ -253,7 +234,7 @@ async function executeAdminAction(actionId) {
   if (!action.isApproved()) {
     return {
       success: false,
-      error: `Insufficient signatures: ${action.signatures.length}/${config.requiredSignatures}`
+      error: `Insufficient signatures: ${action.signatures.length}/${config.admin.requiredSignatures}`
     };
   }
   
@@ -326,18 +307,38 @@ async function executeTreasuryTransfer(action) {
   const isTreasuryTransaction = true; // This will be replaced with actual logic
   
   // For treasury transactions, we require multi-signature verification
-  if (isTreasuryTransaction && action.signatures.length < config.requiredSignatures) {
-    throw new Error(`Treasury transactions require at least ${config.requiredSignatures} signatures`);
+  if (isTreasuryTransaction && action.signatures.length < config.admin.requiredSignatures) {
+    throw new Error(`Treasury transactions require at least ${config.admin.requiredSignatures} signatures`);
   }
   
-  // Create the transaction (simplified for now)
-  // In a real implementation, this would create a PSBT
+  // Create the transaction PSBT
+  const psbtResult = await utxoService.createOptimizedPSBT(recipient, amount);
+  
+  // Create transaction metadata
+  const metadata = transactionFormatService.createTransactionMetadata({
+    type: transactionFormatService.TX_TYPE.TREASURY,
+    amount,
+    source: 'admin-service',
+    description: description || 'Treasury transfer',
+    outputs: [{
+      address: recipient,
+      value: amount
+    }]
+  });
+  
+  // Save the transaction to file for record-keeping
+  const filePath = transactionFormatService.saveTransactionToFile(psbtResult.psbt, metadata);
+  
+  // For simulation, just return the PSBT data without broadcasting
+  // In a real implementation, this would sign and broadcast the transaction
   const txid = 'simulated_treasury_transfer_' + Date.now();
   
   return {
     txid,
+    psbt: psbtResult.psbt,
     amount,
     recipient,
+    filePath,
     description: description || 'Treasury transfer',
     timestamp: Date.now()
   };
@@ -356,16 +357,37 @@ async function executeRuneMinting(action) {
     throw new Error('Invalid mint amount');
   }
   
-  // For this example, we're just simulating the minting
-  // In a real implementation, this would call ord to mint new runes
-  const txid = 'simulated_rune_mint_' + Date.now();
-  
-  return {
-    txid,
-    amount,
-    description: `Minted ${amount} OVT tokens`,
-    timestamp: Date.now()
-  };
+  // Create API call to runes service for minting
+  try {
+    // In a real implementation, this would call the Rune API
+    // For now, just simulate the API response
+    
+    // Create metadata for tracking
+    const metadata = transactionFormatService.createTransactionMetadata({
+      type: transactionFormatService.TX_TYPE.MINT,
+      amount,
+      source: 'admin-service',
+      description: `Minted ${amount} OVT tokens`,
+      runeData: {
+        runeId: config.lp.runeId
+      }
+    });
+    
+    // For simulation, just return a mock txid
+    const txid = 'simulated_rune_mint_' + Date.now();
+    
+    return {
+      txid,
+      amount,
+      runeId: config.lp.runeId,
+      description: `Minted ${amount} OVT tokens`,
+      timestamp: Date.now(),
+      metadata
+    };
+  } catch (error) {
+    console.error('Error minting rune:', error);
+    throw new Error(`Rune minting failed: ${error.message}`);
+  }
 }
 
 /**
@@ -381,15 +403,24 @@ async function executeLPRebalancing(action) {
     throw new Error('Invalid distributions data');
   }
   
-  // For this example, we're just simulating the rebalancing
-  // In a real implementation, this would redistribute funds between LP addresses
+  // In a real implementation, this would create PSBTs to redistribute funds
+  // For now, just create metadata for tracking
+  const metadata = transactionFormatService.createTransactionMetadata({
+    type: transactionFormatService.TX_TYPE.REBALANCE,
+    source: 'admin-service',
+    description: 'LP wallet rebalancing',
+    data: { distributions }
+  });
+  
+  // For simulation, just return a mock txid
   const txid = 'simulated_lp_rebalance_' + Date.now();
   
   return {
     txid,
     distributions,
     description: 'LP wallet rebalancing',
-    timestamp: Date.now()
+    timestamp: Date.now(),
+    metadata
   };
 }
 
@@ -423,7 +454,7 @@ function getPendingAdminActions(options = {}) {
  * @returns {boolean} - Whether the address is a treasury address
  */
 function isTreasuryAddress(address) {
-  return config.treasuryAddresses.includes(address);
+  return config.admin.treasuryAddresses.includes(address);
 }
 
 /**
@@ -431,8 +462,9 @@ function isTreasuryAddress(address) {
  */
 function savePendingActions() {
   try {
+    const pendingActionsFile = path.join(config.paths.dataDir, 'pending-admin-actions.json');
     const data = JSON.stringify(pendingAdminActions, null, 2);
-    fs.writeFileSync(config.pendingActionsFile, data);
+    fs.writeFileSync(pendingActionsFile, data);
   } catch (error) {
     console.error('Error saving pending admin actions:', error);
   }
@@ -462,7 +494,7 @@ function verifySignatureThreshold(transaction) {
     // For PSBTs, we would check the actual signatures
     // For now, we'll just check if the transaction has the required metadata
     return transaction.signatures && 
-           transaction.signatures.length >= config.requiredSignatures;
+           transaction.signatures.length >= config.admin.requiredSignatures;
   }
   
   // For non-treasury transactions, we don't require multi-signature verification
@@ -483,8 +515,8 @@ module.exports = {
   
   // Export configuration for reference
   config: {
-    requiredSignatures: config.requiredSignatures,
-    maxAdmins: config.maxAdmins,
-    treasuryAddresses: config.treasuryAddresses
+    requiredSignatures: config.admin.requiredSignatures,
+    maxAdmins: config.admin.maxAdmins,
+    treasuryAddresses: config.admin.treasuryAddresses
   }
 }; 

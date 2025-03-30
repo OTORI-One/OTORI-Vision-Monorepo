@@ -11,28 +11,35 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const axios = require('axios');
+const utxoService = require('./utxoService');
 
 // Load environment variables for accessing remote OrdPi
 const LP_ADDRESS = process.env.NEXT_PUBLIC_LP_ADDRESS || 'tb1p3vn6wc0dlud3tvckv95datu3stq4qycz7vj9mzpclfkrv9rh8jqsjrw38f';
 const OVT_RUNE_ID = process.env.NEXT_PUBLIC_OVT_RUNE_ID || '240249:101';
 
-// Mock orderbook - used only when orderMatchingService is unavailable
+// Mock data for development
 const mockOrderbook = {
   bids: [
-    { id: 'bid1', price: 300000, amount: 10000, address: 'mock-address-1' },
-    { id: 'bid2', price: 290000, amount: 15000, address: 'mock-address-2' },
-    { id: 'bid3', price: 280000, amount: 20000, address: 'mock-address-3' }
+    { price: 245, amount: 500 },
+    { price: 240, amount: 750 },
+    { price: 235, amount: 1000 }
   ],
   asks: [
-    { id: 'ask1', price: 310000, amount: 8000, address: 'mock-address-4' },
-    { id: 'ask2', price: 320000, amount: 12000, address: 'mock-address-5' },
-    { id: 'ask3', price: 330000, amount: 18000, address: 'mock-address-6' }
-  ],
-  lastUpdate: Date.now()
+    { price: 250, amount: 600 },
+    { price: 255, amount: 800 },
+    { price: 260, amount: 1200 }
+  ]
 };
 
-// Mock trades
-const mockRecentTrades = [];
+// Mock recent trades
+const mockRecentTrades = [
+  { price: 248, amount: 200, side: 'buy', timestamp: Date.now() - 1800000 },
+  { price: 252, amount: 300, side: 'sell', timestamp: Date.now() - 3600000 },
+  { price: 249, amount: 150, side: 'buy', timestamp: Date.now() - 7200000 },
+  { price: 250, amount: 400, side: 'sell', timestamp: Date.now() - 14400000 },
+  { price: 247, amount: 350, side: 'buy', timestamp: Date.now() - 28800000 }
+];
 
 // Check if orderMatchingService is available
 let orderMatchingServiceActive = false;
@@ -301,11 +308,210 @@ async function getStats() {
   };
 }
 
+/**
+ * Get recent trades
+ * @param {number} limit - Maximum number of trades to return
+ * @returns {Promise<Array>} Recent trades
+ */
+async function getRecentTrades(limit = 10) {
+  try {
+    // Try to get real trade data if available from order matching service
+    if (typeof orderMatchingService !== 'undefined' && orderMatchingService) {
+      try {
+        const realTrades = await orderMatchingService.getRecentTrades(limit);
+        if (realTrades && Array.isArray(realTrades) && realTrades.length > 0) {
+          console.log(`Retrieved ${realTrades.length} recent trades from order matching service`);
+          return realTrades;
+        }
+      } catch (serviceError) {
+        console.warn(`Error fetching trades from order matching service: ${serviceError.message}. Falling back to mock data.`);
+      }
+    }
+    
+    // If orderMatchingService isn't available or returned no data, try to fetch from API
+    try {
+      // Try fetching from remote Runes API if available
+      const runesApiUrl = process.env.REMOTE_RUNES_API || 'http://localhost:9001';
+      const response = await axios.get(`${runesApiUrl}/ovt/trades?limit=${limit}`, { 
+        timeout: 5000 // 5 second timeout
+      });
+      
+      if (response.data && response.data.success && 
+          Array.isArray(response.data.trades) && response.data.trades.length > 0) {
+        console.log(`Retrieved ${response.data.trades.length} recent trades from Runes API`);
+        return response.data.trades;
+      }
+    } catch (apiError) {
+      console.warn(`Error fetching trades from API: ${apiError.message}. Falling back to mock data.`);
+    }
+
+    // Fall back to mock data if all else fails
+    console.log(`No real trade data available. Using mock data (${limit} trades).`);
+    return mockRecentTrades.slice(0, limit);
+  } catch (error) {
+    console.error('Error in getRecentTrades:', error);
+    return mockRecentTrades.slice(0, limit);
+  }
+}
+
+/**
+ * Gets the current state of the order book
+ * @param {boolean} includeSummary - Whether to include summary statistics
+ * @returns {Promise<Object>} Order book data with bids and asks
+ */
+async function getOrderbook(includeSummary = false) {
+  try {
+    // Try to get real orderbook data if available from order matching service
+    if (typeof orderMatchingService !== 'undefined' && orderMatchingService) {
+      try {
+        const realOrderbook = await orderMatchingService.getOrderbook();
+        if (realOrderbook && realOrderbook.bids && realOrderbook.asks) {
+          console.log(`Retrieved orderbook from order matching service: ${realOrderbook.bids.length} bids, ${realOrderbook.asks.length} asks`);
+          
+          // Add summary data if requested
+          if (includeSummary) {
+            realOrderbook.summary = calculateOrderbookSummary(realOrderbook);
+          }
+          
+          return realOrderbook;
+        }
+      } catch (serviceError) {
+        console.warn(`Error fetching orderbook from order matching service: ${serviceError.message}. Falling back to mock data.`);
+      }
+    }
+    
+    // If orderMatchingService isn't available or returned no data, try to fetch from API
+    try {
+      // Try fetching from remote Runes API if available
+      const runesApiUrl = process.env.REMOTE_RUNES_API || 'http://localhost:9001';
+      const response = await axios.get(`${runesApiUrl}/ovt/orderbook`, { 
+        timeout: 5000 // 5 second timeout
+      });
+      
+      if (response.data && response.data.success && 
+          response.data.orderbook && response.data.orderbook.bids && response.data.orderbook.asks) {
+        console.log(`Retrieved orderbook from Runes API: ${response.data.orderbook.bids.length} bids, ${response.data.orderbook.asks.length} asks`);
+        
+        // Add summary data if requested
+        if (includeSummary) {
+          response.data.orderbook.summary = calculateOrderbookSummary(response.data.orderbook);
+        }
+        
+        return response.data.orderbook;
+      }
+    } catch (apiError) {
+      console.warn(`Error fetching orderbook from API: ${apiError.message}. Falling back to mock data.`);
+    }
+
+    // Fall back to mock data if all else fails
+    console.log('No real orderbook data available. Using mock data.');
+    
+    // Add summary data if requested
+    if (includeSummary) {
+      mockOrderbook.summary = calculateOrderbookSummary(mockOrderbook);
+    }
+    
+    return mockOrderbook;
+  } catch (error) {
+    console.error('Error in getOrderbook:', error);
+    return mockOrderbook;
+  }
+}
+
+/**
+ * Calculate summary statistics for an orderbook
+ * @param {Object} orderbook - Orderbook with bids and asks
+ * @returns {Object} Summary statistics
+ */
+function calculateOrderbookSummary(orderbook) {
+  const summary = {
+    bidCount: orderbook.bids.length,
+    askCount: orderbook.asks.length,
+    highestBid: 0,
+    lowestAsk: Infinity,
+    bidVolume: 0,
+    askVolume: 0,
+    spread: 0,
+    spreadPercent: 0
+  };
+  
+  // Calculate highest bid and total bid volume
+  if (orderbook.bids.length > 0) {
+    summary.highestBid = Math.max(...orderbook.bids.map(bid => bid.price));
+    summary.bidVolume = orderbook.bids.reduce((total, bid) => total + bid.amount, 0);
+  }
+  
+  // Calculate lowest ask and total ask volume
+  if (orderbook.asks.length > 0) {
+    summary.lowestAsk = Math.min(...orderbook.asks.map(ask => ask.price));
+    summary.askVolume = orderbook.asks.reduce((total, ask) => total + ask.amount, 0);
+  }
+  
+  // Calculate spread
+  if (summary.lowestAsk !== Infinity && summary.highestBid > 0) {
+    summary.spread = summary.lowestAsk - summary.highestBid;
+    summary.spreadPercent = (summary.spread / summary.lowestAsk) * 100;
+  }
+  
+  return summary;
+}
+
+// Export the synchronous version for backward compatibility
+function getOrderbookSync() {
+  console.log('Using synchronous orderbook getter (mock data only)');
+  return mockOrderbook;
+}
+
+/**
+ * Place a new order in the order book
+ * @param {Object} order - Order details
+ * @returns {Promise<Object>} Order placement result
+ */
+async function placeOrder(order) {
+  try {
+    // Validate the order parameters
+    if (!order || !order.side || !order.amount || !order.price) {
+      return { 
+        success: false, 
+        error: 'Invalid order parameters. Side, amount and price are required.'
+      };
+    }
+    
+    // Try to use the order matching service if available
+    if (typeof orderMatchingService !== 'undefined' && orderMatchingService) {
+      try {
+        const result = await orderMatchingService.placeOrder(order);
+        console.log(`Order placed with order matching service: ${JSON.stringify(result)}`);
+        return result;
+      } catch (serviceError) {
+        console.warn(`Error placing order with matching service: ${serviceError.message}. Falling back to direct execution.`);
+      }
+    }
+
+    // For buy orders, execute directly as a market order
+    if (order.side.toLowerCase() === 'buy') {
+      console.log(`Executing buy order directly: ${order.amount} tokens at ${order.price} sats`);
+      return executeBuyOrder(order);
+    }
+    
+    // For sell orders, just acknowledge without executing (would need LP integration)
+    return {
+      success: true,
+      orderId: `sell-${Date.now()}`,
+      message: 'Sell order acknowledged (mock implementation)',
+      order
+    };
+  } catch (error) {
+    console.error('Error placing order:', error);
+    return { success: false, error: error.message };
+  }
+}
+
 module.exports = {
   matchOrders,
   processMatches,
-  getOrderbook: async () => mockOrderbook, // For backward compatibility
-  getOrderbookSync: () => mockOrderbook, // For backward compatibility
+  getOrderbook,
+  getOrderbookSync,
   getRecentTrades,
   placeOrder,
   cancelOrder: async () => ({ success: true }), // Stub implementation

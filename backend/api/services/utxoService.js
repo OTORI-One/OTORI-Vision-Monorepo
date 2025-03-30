@@ -6,26 +6,10 @@
  * and user wallets when creating transactions.
  */
 
-const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-
-// Configuration constants
-const SMALL_UTXO_THRESHOLD = process.env.SMALL_UTXO_THRESHOLD ? 
-  parseInt(process.env.SMALL_UTXO_THRESHOLD) : 10000; // 10,000 sats threshold for "small" UTXOs
-
-const DUST_LIMIT = 546; // Bitcoin dust limit in satoshis
-const PREFER_SMALL_UTXOS = process.env.PREFER_SMALL_UTXOS !== 'false'; // Default to true
-const DEFAULT_FEE_RATE = parseInt(process.env.DEFAULT_FEE_RATE || '2'); // Default 2 sats/byte
-
-// Remote Bitcoin node configuration
-const BITCOIN_CLI_PATH = process.env.BITCOIN_CLI_PATH || 'bitcoin-cli';
-const BITCOIN_NETWORK = process.env.BITCOIN_NETWORK || 'signet';
-const BITCOIN_RPC_USER = process.env.BITCOIN_RPC_USER;
-const BITCOIN_RPC_PASSWORD = process.env.BITCOIN_RPC_PASSWORD;
-const BITCOIN_RPC_HOST = process.env.BITCOIN_RPC_HOST || 'localhost';
-const BITCOIN_RPC_PORT = process.env.BITCOIN_RPC_PORT || '38332';
-const WALLET_NAME = process.env.WALLET_NAME || '';
+const config = require('./configService');
+const commandService = require('./commandExecutionService');
 
 // Track statistics for reporting
 let utxoStats = {
@@ -40,105 +24,32 @@ let utxoStats = {
 };
 
 /**
- * Executes a bitcoin-cli command
- * @param {string} command - Command to execute
- * @returns {string} - Command output
- */
-function executeBitcoinCommand(command) {
-  try {
-    // Build the bitcoin-cli command with appropriate network and wallet parameters
-    let fullCommand = `${BITCOIN_CLI_PATH}`;
-    
-    // Add network flag
-    if (BITCOIN_NETWORK === 'testnet') {
-      fullCommand += ' -testnet';
-    } else if (BITCOIN_NETWORK === 'signet') {
-      fullCommand += ' -signet';
-    } else if (BITCOIN_NETWORK === 'regtest') {
-      fullCommand += ' -regtest';
-    }
-    
-    // Add wallet if specified
-    if (WALLET_NAME) {
-      fullCommand += ` -rpcwallet=${WALLET_NAME}`;
-    }
-    
-    // Add RPC connection parameters if provided
-    if (BITCOIN_RPC_USER && BITCOIN_RPC_PASSWORD) {
-      fullCommand += ` -rpcuser=${BITCOIN_RPC_USER} -rpcpassword=${BITCOIN_RPC_PASSWORD}`;
-    }
-    
-    if (BITCOIN_RPC_HOST && BITCOIN_RPC_PORT) {
-      fullCommand += ` -rpcconnect=${BITCOIN_RPC_HOST} -rpcport=${BITCOIN_RPC_PORT}`;
-    }
-    
-    // Add the actual command
-    fullCommand += ` ${command}`;
-    
-    // Log command with redacted password
-    const logCommand = BITCOIN_RPC_PASSWORD ? 
-      fullCommand.replace(BITCOIN_RPC_PASSWORD, '[REDACTED]') : 
-      fullCommand;
-    
-    console.log(`Executing Bitcoin command: ${logCommand}`);
-    
-    // Execute the command
-    const result = execSync(fullCommand).toString().trim();
-    
-    // Update statistics
-    utxoStats.totalQueriesCount++;
-    utxoStats.successfulQueriesCount++;
-    
-    return result;
-  } catch (error) {
-    console.error(`Error executing Bitcoin command: ${error.message}`);
-    
-    // Update statistics
-    utxoStats.totalQueriesCount++;
-    utxoStats.failedQueriesCount++;
-    
-    if (error.stderr) {
-      console.error(`stderr: ${error.stderr.toString()}`);
-    }
-    
-    throw error;
-  }
-}
-
-/**
  * Gets all UTXOs from a specified wallet
- * @param {string} walletName - Optional wallet name, defaults to WALLET_NAME
+ * @param {string} walletName - Optional wallet name, defaults to config.bitcoin.walletName
  * @returns {Promise<Object>} - Information about UTXOs
  */
 async function getWalletUtxos(walletName = null) {
   try {
     // Save current wallet name
-    const currentWallet = WALLET_NAME;
-    
-    // Temporarily set wallet name if provided
-    if (walletName) {
-      global.WALLET_NAME = walletName;
-    }
+    const currentWallet = walletName || config.bitcoin.walletName;
     
     // Execute listunspent command
     const listUnspentCmd = 'listunspent 0 9999999';
-    const utxoJson = executeBitcoinCommand(listUnspentCmd);
+    const utxos = await commandService.executeBitcoinCommand(listUnspentCmd, {
+      env: walletName ? { WALLET_NAME: walletName } : {}
+    });
     
-    // Parse the JSON response
-    const utxos = JSON.parse(utxoJson);
-    
-    console.log(`Found ${utxos.length} UTXOs in wallet ${walletName || WALLET_NAME}`);
+    console.log(`Found ${utxos.length} UTXOs in wallet ${currentWallet}`);
     
     // Group UTXOs by size for analysis
-    const smallUtxos = utxos.filter(u => u.amount * 100000000 < SMALL_UTXO_THRESHOLD);
-    const largeUtxos = utxos.filter(u => u.amount * 100000000 >= SMALL_UTXO_THRESHOLD);
+    const smallUtxos = utxos.filter(u => u.amount * 100000000 < config.utxo.smallUtxoThreshold);
+    const largeUtxos = utxos.filter(u => u.amount * 100000000 >= config.utxo.smallUtxoThreshold);
     
     console.log(`UTXO breakdown: ${smallUtxos.length} small, ${largeUtxos.length} large`);
     
-    // Restore original wallet name
-    if (walletName) {
-      global.WALLET_NAME = currentWallet;
-    }
+    // Update statistics
+    utxoStats.totalQueriesCount++;
+    utxoStats.successfulQueriesCount++;
     
     // Convert BTC amounts to satoshis for easier handling
     return {
@@ -158,6 +69,11 @@ async function getWalletUtxos(walletName = null) {
     };
   } catch (error) {
     console.error(`Error getting wallet UTXOs: ${error.message}`);
+    
+    // Update statistics
+    utxoStats.totalQueriesCount++;
+    utxoStats.failedQueriesCount++;
+    
     throw error;
   }
 }
@@ -228,10 +144,10 @@ function selectOptimalUtxos(availableUtxos, targetAmount, options = {}) {
   
   // Get options with defaults
   const preferSmallUtxos = options.preferSmallUtxos !== undefined ? 
-    options.preferSmallUtxos : PREFER_SMALL_UTXOS;
+    options.preferSmallUtxos : config.utxo.preferSmallUtxos;
   
   const smallUtxoThreshold = options.smallUtxoThreshold !== undefined ? 
-    options.smallUtxoThreshold : SMALL_UTXO_THRESHOLD;
+    options.smallUtxoThreshold : config.utxo.smallUtxoThreshold;
   
   // Filter to only spendable UTXOs
   const spendableUtxos = availableUtxos.filter(utxo => utxo.spendable);
@@ -302,7 +218,7 @@ function selectOptimalUtxos(availableUtxos, targetAmount, options = {}) {
  * @param {number} feeRate - Fee rate in satoshis per byte
  * @returns {number} - Estimated fee in satoshis
  */
-function calculateEstimatedFee(inputCount, outputCount, feeRate = DEFAULT_FEE_RATE) {
+function calculateEstimatedFee(inputCount, outputCount, feeRate = config.utxo.defaultFeeRate) {
   // Simple fee estimation based on typical input/output sizes
   const bytesPerInput = 140; // Approximate size of a typical input
   const bytesPerOutput = 34; // Approximate size of a typical output
@@ -328,8 +244,8 @@ async function createOptimizedPSBT(recipient, amount, options = {}) {
     utxoStats.optimizationCount++;
     
     // Get options with defaults
-    const feeRate = options.feeRate || DEFAULT_FEE_RATE;
-    const walletName = options.walletName || WALLET_NAME;
+    const feeRate = options.feeRate || config.utxo.defaultFeeRate;
+    const walletName = options.walletName || config.bitcoin.walletName;
     
     console.log(`Creating optimized PSBT: ${amount} satoshis to ${recipient}`);
     
@@ -363,7 +279,7 @@ async function createOptimizedPSBT(recipient, amount, options = {}) {
     console.log(`Change amount: ${changeAmount} satoshis`);
     
     // Determine if change is needed (above dust limit)
-    const needsChange = changeAmount > DUST_LIMIT;
+    const needsChange = changeAmount > config.utxo.dustLimit;
     
     // Create inputs array for createpsbt command
     const inputs = selection.utxos.map(utxo => (
@@ -375,16 +291,16 @@ async function createOptimizedPSBT(recipient, amount, options = {}) {
     
     if (needsChange) {
       // Get a change address from the wallet
-      const changeAddress = executeBitcoinCommand('getnewaddress "" "bech32"').trim();
+      const changeAddress = await commandService.executeBitcoinCommand('getnewaddress "" "bech32"');
       // Add change output
       outputs = `'{"${recipient}":${amount / 100000000},"${changeAddress}":${changeAmount / 100000000}}'`;
     }
     
     // Create the PSBT
     const createPsbtCmd = `createpsbt ${inputs} ${outputs}`;
-    const psbt = executeBitcoinCommand(createPsbtCmd).trim();
+    const psbt = await commandService.executeBitcoinCommand(createPsbtCmd);
     
-    console.log(`PSBT created successfully: ${psbt.substring(0, 20)}...`);
+    console.log(`PSBT created successfully: ${typeof psbt === 'string' ? psbt.substring(0, 20) : ''}...`);
     
     return {
       psbt,
@@ -405,14 +321,14 @@ async function createOptimizedPSBT(recipient, amount, options = {}) {
 }
 
 /**
- * Analyzes a PSBT to get details
- * @param {string} psbt - PSBT in base64 format
- * @returns {Object} - PSBT analysis
+ * Analyzes a PSBT to extract details
+ * @param {string} psbt - PSBT string
+ * @returns {Promise<Object>} - PSBT analysis
  */
-function analyzePSBT(psbt) {
+async function analyzePSBT(psbt) {
   try {
-    const result = executeBitcoinCommand(`analyzepsbt ${psbt}`);
-    return JSON.parse(result);
+    const analysis = await commandService.executeBitcoinCommand(`analyzepsbt ${psbt}`);
+    return analysis;
   } catch (error) {
     console.error(`Error analyzing PSBT: ${error.message}`);
     throw error;
@@ -421,33 +337,16 @@ function analyzePSBT(psbt) {
 
 /**
  * Signs a PSBT with the wallet
- * @param {string} psbt - PSBT in base64 format
+ * @param {string} psbt - PSBT string
  * @param {string} walletName - Optional wallet name
- * @returns {Object} - Signed PSBT information
+ * @returns {Promise<Object>} - Signed PSBT result
  */
 async function signPSBT(psbt, walletName = null) {
   try {
-    // Save current wallet name
-    const currentWallet = WALLET_NAME;
+    const options = walletName ? { env: { WALLET_NAME: walletName } } : {};
+    const signedPsbt = await commandService.executeBitcoinCommand(`walletprocesspsbt ${psbt}`, options);
     
-    // Temporarily set wallet name if provided
-    if (walletName) {
-      global.WALLET_NAME = walletName;
-    }
-    
-    // Sign the PSBT
-    const signedResult = executeBitcoinCommand(`walletprocesspsbt ${psbt}`);
-    const signedPsbtObj = JSON.parse(signedResult);
-    
-    // Restore original wallet name
-    if (walletName) {
-      global.WALLET_NAME = currentWallet;
-    }
-    
-    return {
-      psbt: signedPsbtObj.psbt,
-      isComplete: signedPsbtObj.complete
-    };
+    return signedPsbt;
   } catch (error) {
     console.error(`Error signing PSBT: ${error.message}`);
     throw error;
@@ -456,19 +355,15 @@ async function signPSBT(psbt, walletName = null) {
 
 /**
  * Finalizes and broadcasts a PSBT
- * @param {string} psbt - PSBT in base64 format
- * @returns {Object} - Transaction information
+ * @param {string} psbt - PSBT string
+ * @returns {Promise<Object>} - Transaction result
  */
 async function finalizePSBT(psbt) {
   try {
-    const finalizeResult = executeBitcoinCommand(`finalizepsbt ${psbt} true`);
-    const finalizeObj = JSON.parse(finalizeResult);
+    // Finalize the PSBT and broadcast it
+    const result = await commandService.executeBitcoinCommand(`finalizepsbt ${psbt} true`);
     
-    return {
-      txid: finalizeObj.txid,
-      hex: finalizeObj.hex,
-      complete: finalizeObj.complete
-    };
+    return result;
   } catch (error) {
     console.error(`Error finalizing PSBT: ${error.message}`);
     throw error;
@@ -476,18 +371,20 @@ async function finalizePSBT(psbt) {
 }
 
 /**
- * Get service statistics
+ * Gets UTXO service statistics
  * @returns {Object} - Service statistics
  */
 function getStats() {
   return {
     ...utxoStats,
-    uptime: process.uptime()
+    dustLimit: config.utxo.dustLimit,
+    smallUtxoThreshold: config.utxo.smallUtxoThreshold,
+    preferSmallUtxos: config.utxo.preferSmallUtxos
   };
 }
 
 /**
- * Reset service statistics
+ * Resets UTXO service statistics
  */
 function resetStats() {
   utxoStats = {
@@ -503,29 +400,15 @@ function resetStats() {
 }
 
 module.exports = {
-  // UTXO selection and fee calculation
-  selectOptimalUtxos,
-  calculateEstimatedFee,
-  
-  // UTXO retrieval
   getWalletUtxos,
   getAddressUtxos,
   getAddressBalance,
-  
-  // PSBT creation and management
+  selectOptimalUtxos,
+  calculateEstimatedFee,
   createOptimizedPSBT,
   analyzePSBT,
   signPSBT,
   finalizePSBT,
-  
-  // Utilities
-  executeBitcoinCommand,
-  
-  // Statistics
   getStats,
-  resetStats,
-  
-  // Configuration constants
-  DUST_LIMIT,
-  SMALL_UTXO_THRESHOLD
+  resetStats
 }; 
