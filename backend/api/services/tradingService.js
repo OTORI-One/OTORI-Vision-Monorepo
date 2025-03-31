@@ -75,11 +75,11 @@ function executeOrdCommand(command, options = {}) {
     const walletName = options.wallet || process.env.BITCOIN_WALLET || "ovt-LP-wallet";
     
     // Full ord command with config and wallet selection
-    // Including --wallet flag to ensure we're using the correct wallet
-    const ordCommand = `ord --config /home/BTCPi/.ord/ord.yaml --signet --wallet ${walletName} ${command}`;
+    // Wallet should be configured in the ord.yaml file, not passed as a parameter
+    const ordCommand = `ord --config /home/BTCPi/.ord/ord.yaml --signet ${command}`;
     
     // Execute the command using the secure service that handles password masking
-    console.log(`Trading: Executing ord command: ${command} (wallet: ${walletName})`);
+    console.log(`Trading: Executing ord command: ${command} (using default wallet from config)`);
     const result = executeSshPassCommand(ordCommand);
     
     // Properly handle promise result
@@ -238,33 +238,53 @@ async function getRuneBalance(address, runeId = OVT_RUNE_ID) {
     
     console.log('Rune balance command output:', result.result);
     
-    // Parse the result to find the balance of the specific rune
-    // The output format is typically:
-    // RUNE_NAME: X.XX ⊙
-    // We need to extract the numeric value
-    
-    const runeBalances = {};
-    const balanceLines = result.result.split('\n');
-    
-    for (const line of balanceLines) {
-      // Try to match the rune name and balance
-      // Format is typically "RUNE_NAME: X.XX ⊙"
-      const match = line.match(/([^:]+):\s+([0-9.]+)\s+⊙/);
-      if (match) {
-        const runeName = match[1].trim();
-        const amount = parseFloat(match[2]);
-        runeBalances[runeName] = amount;
+    // Try to parse as JSON first - this is the most common format from newer ord versions
+    try {
+      const jsonData = JSON.parse(result.result);
+      
+      // Check if it's an array - newer ord returns an array of outputs
+      if (Array.isArray(jsonData)) {
+        // Look for the OVT rune in each output
+        for (const item of jsonData) {
+          if (item.runes && OVT_RUNE_NAME in item.runes) {
+            const amount = parseInt(item.runes[OVT_RUNE_NAME]);
+            console.log(`Found rune balance for ${OVT_RUNE_NAME}: ${amount}`);
+            return amount;
+          }
+        }
+      } 
+      // Also handle if it's a direct object with runes property (some ord versions)
+      else if (jsonData.runes && OVT_RUNE_NAME in jsonData.runes) {
+        const amount = parseInt(jsonData.runes[OVT_RUNE_NAME]);
+        console.log(`Found rune balance for ${OVT_RUNE_NAME}: ${amount}`);
+        return amount;
+      }
+    } catch (jsonError) {
+      console.log(`JSON parsing failed: ${jsonError.message}, trying string parsing`);
+      
+      // If JSON parsing fails, try the original string parsing approach
+      const runeBalances = {};
+      const balanceLines = result.result.split('\n');
+      
+      for (const line of balanceLines) {
+        // Try to match the rune name and balance
+        // Format is typically "RUNE_NAME: X.XX ⊙"
+        const match = line.match(/([^:]+):\s+([0-9.]+)\s+⊙/);
+        if (match) {
+          const runeName = match[1].trim();
+          const amount = parseFloat(match[2]);
+          runeBalances[runeName] = amount;
+        }
+      }
+      
+      // Check if we have OVT_RUNE_NAME in the balances
+      if (OVT_RUNE_NAME in runeBalances) {
+        console.log(`Found rune balance for ${OVT_RUNE_NAME}: ${runeBalances[OVT_RUNE_NAME]}`);
+        return runeBalances[OVT_RUNE_NAME];
       }
     }
     
-    // Check if we have OVT_RUNE_NAME in the balances
-    if (OVT_RUNE_NAME in runeBalances) {
-      console.log(`Found rune balance for ${OVT_RUNE_NAME}: ${runeBalances[OVT_RUNE_NAME]}`);
-      return runeBalances[OVT_RUNE_NAME];
-    } 
-    
-    // If not found by name, try by ID
-    // This is a fallback in case the output format changes
+    // If not found in any format, log and return 0
     console.log(`Rune ${OVT_RUNE_NAME} not found in balances, returning 0`);
     return 0;
   } catch (error) {
@@ -687,7 +707,7 @@ async function getRecentTrades(limit = 10) {
     // If orderMatchingService isn't available or returned no data, try to fetch from API
     try {
       // Try fetching from remote Runes API if available
-      const runesApiUrl = process.env.REMOTE_RUNES_API || 'http://localhost:9001';
+      const runesApiUrl = process.env.REMOTE_RUNES_API || 'http://192.168.178.54:9191';
       const response = await axios.get(`${runesApiUrl}/ovt/trades?limit=${limit}`, { 
         timeout: 5000 // 5 second timeout
       });
@@ -739,7 +759,7 @@ async function getOrderbook(includeSummary = false) {
     // If orderMatchingService isn't available or returned no data, try to fetch from API
     try {
       // Try fetching from remote Runes API if available
-      const runesApiUrl = process.env.REMOTE_RUNES_API || 'http://localhost:9001';
+      const runesApiUrl = process.env.REMOTE_RUNES_API || 'http://192.168.178.54:9191';
       const response = await axios.get(`${runesApiUrl}/ovt/orderbook`, { 
         timeout: 5000 // 5 second timeout
       });
