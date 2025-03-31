@@ -48,7 +48,8 @@ let priceState = {
   priceHistory: {
     daily: {}, // Daily closing prices by position name
     hourly: {} // Hourly data points for more granular analysis
-  }
+  },
+  totalNAV: 0
 };
 
 // Track request frequency with rate limiting
@@ -613,10 +614,13 @@ async function updateOVTCirculatingSupply() {
   try {
     console.log('Updating OVT circulating supply...');
     
+    // Use API_BASE_URL from environment or default to localhost:3030
+    const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3030';
+    
     // Try to fetch circulating supply from the Runes API
     try {
-      // The Runes API should be running on the same server or accessible locally
-      const response = await axios.get('http://localhost:3030/ovt/distribution', {
+      // Call our own API endpoint, which handles the communication with the remote Runes API
+      const response = await axios.get(`${API_BASE_URL}/ovt/distribution`, {
         timeout: 5000
       });
       
@@ -668,9 +672,12 @@ function calculateOVTPrice() {
         return sum + current;
       }, 0);
     
-    // 2. Ensure total NAV is within reasonable bounds (max 100 million BTC in sats)
-    const maxNAV = 100 * 1000000 * SATS_PER_BTC; // 100M BTC in sats
+    // 2. Ensure total NAV is within reasonable bounds (max 100 million sats in 1 BTC)
+    const maxNAV = 100 * 1000000 * SATS_PER_BTC; // 100M sats in BTC
     const validatedNAV = Math.min(Math.max(totalNAVSats, 0), maxNAV);
+    
+    // Store the total NAV for reporting without per-token calculation
+    priceState.totalNAV = validatedNAV;
     
     // 3. Ensure we have a valid circulating supply (fallback to default if needed)
     const circulatingSupply = priceState.ovtCirculatingSupply || DEFAULT_OVT_CIRCULATING_SUPPLY;
@@ -681,39 +688,24 @@ function calculateOVTPrice() {
       return priceState.ovtPrice || 0; // Return existing price or 0
     }
     
-    // 5. Calculate OVT price in sats with validation
+    // 5. Calculate OVT price in sats - Direct calculation without momentum smoothing
+    // OVT price is simply NAV divided by circulating supply
     const ovtPriceInSats = validatedNAV / circulatingSupply;
     
     // 6. Ensure the price is within reasonable bounds (max 1M sats per token)
     const maxPrice = 1000000; // 1M sats = 0.01 BTC
-    const validatedPrice = Math.min(Math.max(ovtPriceInSats, 0), maxPrice);
+    const newPriceValue = Math.min(Math.max(ovtPriceInSats, 0), maxPrice);
     
-    // 7. For more realistic price movement, don't fully update price to this value
-    // Instead, move gradually towards it from the current price (momentum-based approach)
-    let newPriceValue;
+    // Log the NAV without the misleading per-token calculation
+    console.log(`NAV calculation: Total NAV ${validatedNAV} sats`);
     
-    if (priceState.ovtPrice) {
-      // Calculate the gap between current and target price
-      const priceDifference = validatedPrice - priceState.ovtPrice;
-      
-      // Move 5-20% of the way toward the new price (smoother transitions)
-      // Larger movements for larger price differences (more reactive to big changes)
-      const percentageToMove = Math.min(0.2, Math.abs(priceDifference) / priceState.ovtPrice / 5);
-      
-      // Calculate new price with momentum
-      newPriceValue = priceState.ovtPrice + (priceDifference * percentageToMove);
-    } else {
-      // No existing price, use the calculated one directly
-      newPriceValue = validatedPrice;
-    }
-    
-    // 8. Store new OVT price in state
+    // Store new OVT price in state
     priceState.ovtPrice = newPriceValue;
     
-    // 9. Update price history for OVT
+    // Update price history for OVT
     updatePriceHistory('ovt', newPriceValue);
     
-    // 10. Log the calculation for transparency
+    // Log the calculation for transparency
     console.log(`Calculated OVT price: ${newPriceValue} sats (NAV: ${validatedNAV} sats / Supply: ${circulatingSupply})`);
     
     return newPriceValue;
@@ -727,8 +719,13 @@ function calculateOVTPrice() {
 // Save price data to file
 function savePriceData() {
   try {
-    fs.writeFileSync(PRICE_DATA_FILE, JSON.stringify(priceState, null, 2));
-    console.log('Price data saved to file');
+    const dataService = require('./dataService');
+    const changed = dataService.saveDataIfChanged(PRICE_DATA_FILE, priceState, true);
+    if (changed) {
+      console.log('Price data changed and saved to file');
+    } else {
+      console.log('Price data unchanged, no file update needed');
+    }
     return true;
   } catch (error) {
     console.error('Error saving price data:', error);
@@ -888,11 +885,9 @@ async function updateBitcoinPrice() {
       // Update price state
       priceState.btcPrice = price;
       
-      // Save to cache file
-      fs.writeFileSync(
-        BTC_PRICE_FILE, 
-        JSON.stringify({ price, timestamp: now })
-      );
+      // Save to cache file using dataService
+      const dataService = require('./dataService');
+      dataService.saveDataIfChanged(BTC_PRICE_FILE, { price, timestamp: now });
       
       console.log('Updated Bitcoin price:', price);
       return price;
@@ -1263,9 +1258,8 @@ function getPriceHistory(positionName, timeframe = 'daily') {
  * Get NAV data
  */
 function getNAVData() {
-  // Sum all position current values
-  const totalValueSats = Object.values(priceState.positions)
-    .reduce((sum, position) => sum + position.current, 0);
+  // Use the stored totalNAV value calculated during price updates
+  const totalValueSats = priceState.totalNAV || 0;
   
   // Convert to USD
   const totalValueUSD = (totalValueSats / SATS_PER_BTC) * priceState.btcPrice;
@@ -1274,7 +1268,9 @@ function getNAVData() {
   const totalOriginalValue = Object.values(priceState.positions)
     .reduce((sum, position) => sum + position.value, 0);
   
-  const overallChangePercentage = ((totalValueSats - totalOriginalValue) / totalOriginalValue) * 100;
+  const overallChangePercentage = totalOriginalValue > 0 
+    ? ((totalValueSats - totalOriginalValue) / totalOriginalValue) * 100
+    : 0;
   
   // Format the values
   let formattedTotalValueSats;

@@ -58,12 +58,15 @@ const OVT_TREASURY_ADDRESS = process.env.NEXT_PUBLIC_TREASURY_ADDRESS || 'tb1pgl
 const OVT_TREASURY_ADDRESS_2 = process.env.NEXT_PUBLIC_TREASURY_ADDRESS_2 || 'tb1plpfgtre7sxxrrwjdpy4357qj2nr7ek06xqpdryxr4lzt5tck6x3qz07zd3';
 const LP_ADDRESS = process.env.NEXT_PUBLIC_LP_ADDRESS || 'tb1p3vn6wc0dlud3tvckv95datu3stq4qycz7vj9mzpclfkrv9rh8jqsjrw38f';
 const LP_ADDRESS_2 = process.env.NEXT_PUBLIC_LP_ADDRESS_2 || '';
+// Remote OrdPi API endpoint - when working remote via ssh tunnel
+// const REMOTE_RUNES_API = process.env.REMOTE_RUNES_API || 'http://localhost:9191';
+
 // WHEN DONE TESTING REMOTELY: Change the OrdPi endpoint to the local IP (and add ssh key authentication for comms.)
-// Remote OrdPi API endpoint - using the SSH tunnel for local development
-const REMOTE_RUNES_API = process.env.REMOTE_RUNES_API || 'http://localhost:9001';
+// Remote OrdPi API endpoint - using the public IP for direct connection
+const REMOTE_RUNES_API = process.env.REMOTE_RUNES_API || 'http://192.168.178.54:9191';
 
 // Add a DEBUG_MODE flag to force using mock data
-const DEBUG_MODE = process.env.DEBUG_MODE === 'true' || false; // Set to false to enable real connections
+const DEBUG_MODE = process.env.DEBUG_MODE === 'true' || true; // Set to true to force using fallback data
 
 // Fallback system configuration
 const FAILURE_THRESHOLD = 3; // Number of consecutive failures before switching to fallback mode
