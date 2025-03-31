@@ -84,4 +84,4 @@ scripts/archive/
 ~/electrsstart-electrs.sh
 
 # Backend data files
-backend/data/
+backend/data/**/.env.development
