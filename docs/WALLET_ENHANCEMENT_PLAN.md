@@ -1,6 +1,7 @@
 # OTORI Vision Wallet Enhancement Plan
 
-This document outlines the plan for enhancing the OTORI Vision wallet functionality, including implementing transaction confirmations, fixing network configuration issues, and ensuring proper balance display.
+This document outlines the plan for enhancing the OTORI Vision wallet functionality, including implementing transaction confirmations, fixing network configuration issues, and ensuring proper balance display. 
+**MIGRATION TO TESTNET4 PLAN**
 
 ## 1. Network Configuration Issues
 

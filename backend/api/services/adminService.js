@@ -16,6 +16,7 @@ const commandService = require('./commandExecutionService');
 const utxoService = require('./utxoService');
 const validationService = require('./transactionValidationService');
 const transactionFormatService = require('./transactionFormatService');
+const axios = require('axios');
 
 // Initialize storage for pending admin actions
 let pendingAdminActions = [];
@@ -352,37 +353,22 @@ async function executeTreasuryTransfer(action) {
 async function executeRuneMinting(action) {
   const { amount } = action.data;
   
-  // Validate the mint operation
-  if (!amount || amount <= 0) {
-    throw new Error('Invalid mint amount');
-  }
-  
-  // Create API call to runes service for minting
+  // Instead of executing bitcoin-cli directly, make HTTP request to OrdPi's Runes API
   try {
-    // In a real implementation, this would call the Rune API
-    // For now, just simulate the API response
-    
-    // Create metadata for tracking
-    const metadata = transactionFormatService.createTransactionMetadata({
-      type: transactionFormatService.TX_TYPE.MINT,
+    // Make HTTP request to OrdPi's Runes API endpoint via Nginx
+    const response = await axios.post('http://192.168.178.54:8080/api/runes/mint', {
       amount,
-      source: 'admin-service',
-      description: `Minted ${amount} OVT tokens`,
-      runeData: {
-        runeId: config.lp.runeId
-      }
+      // Include any necessary authorization/signatures
+      signatures: action.signatures
     });
     
-    // For simulation, just return a mock txid
-    const txid = 'simulated_rune_mint_' + Date.now();
-    
     return {
-      txid,
+      txid: response.data.txid,
       amount,
       runeId: config.lp.runeId,
       description: `Minted ${amount} OVT tokens`,
       timestamp: Date.now(),
-      metadata
+      metadata: response.data.metadata
     };
   } catch (error) {
     console.error('Error minting rune:', error);

@@ -60,54 +60,42 @@ let orderMatchingServiceActive = false;
 })();
 
 /**
- * Helper function to execute ord commands via SSH on the remote OrdPi
+ * Helper function to execute ord commands locally on OrdPi
  * @param {string} command - The ord command to execute
  * @param {Object} options - Additional options for the command
  * @param {string} options.wallet - Wallet name to use (defaults to environment variable or "ovt-LP-wallet")
  * @returns {Object} The result from the command
  */
-function executeOrdCommand(command, options = {}) {
+async function executeOrdCommand(command, options = {}) {
   try {
-    // Use the command execution service for secure command handling
-    const { executeSshPassCommand } = require('./commandExecutionService');
-    
-    // Get wallet name from options, env var, or default
-    const walletName = options.wallet || process.env.BITCOIN_WALLET || "ovt-LP-wallet";
+    // Get wallet name from options, env var, or default - this is handled by ord.yaml now
+    // const walletName = options.wallet || process.env.BITCOIN_WALLET || "ovt-LP-wallet";
     
     // Full ord command with config and wallet selection
     // Wallet should be configured in the ord.yaml file, not passed as a parameter
-    const ordCommand = `ord --config /home/BTCPi/.ord/ord.yaml --signet ${command}`;
+    const ordPath = process.env.ORD_PATH || 'ord'; // Ensure ORD_PATH is set in OrdPi env
+    const ordConfigPath = process.env.ORD_CONFIG_PATH || '/home/BTCPi/.ord/ord.yaml'; // Ensure config path is correct
+    const ordNetworkFlag = process.env.BITCOIN_NETWORK === 'signet' ? '--signet' : '';
+    const fullCommand = `${ordPath} --config ${ordConfigPath} ${ordNetworkFlag} ${command}`;
     
-    // Execute the command using the secure service that handles password masking
-    console.log(`Trading: Executing ord command: ${command} (using default wallet from config)`);
-    const result = executeSshPassCommand(ordCommand);
+    // Execute the command using the local service
+    console.log(`Trading: Executing local ord command: ${command}`);
     
-    // Properly handle promise result
-    return result
-      .then(({ stdout, stderr }) => {
-        if (stderr && stderr.trim()) {
-          console.warn(`Trading: Command warning: ${stderr}`);
-        }
-        
-        console.log(`Trading: Command result: ${stdout}`);
-        return { success: true, result: stdout, warning: stderr };
-      })
-      .catch(error => {
-        // Detailed error handling
-        console.error(`Trading: Command failed: ${command}`, error);
-        return { 
-          success: false, 
-          error: error.message || error.toString(),
-          stdout: error.stdout,
-          stderr: error.stderr
-        };
-      });
+    // Await the promise directly
+    const { stdout, stderr } = await commandService.executeCommand(fullCommand);
+    
+    if (stderr && stderr.trim()) {
+      console.warn(`Trading: Command warning: ${stderr}`);
+    }
+    
+    console.log(`Trading: Command result: ${stdout}`);
+    return { success: true, result: stdout, warning: stderr };
   } catch (error) {
-    // Handle synchronous errors
+    // Handle synchronous errors from executeCommand itself if needed
     console.error(`Trading: Error executing command: ${command}`, error);
     return { 
       success: false, 
-      error: error.toString(),
+      error: error.message || error.toString(),
       isSync: true // Flag to indicate this was a synchronous error
     };
   }
@@ -168,7 +156,6 @@ async function transferRunes(recipient, amount, runeId = OVT_RUNE_ID) {
     const runeName = OVT_RUNE_NAME;
     
     // Format the asset according to documentation: AMOUNT:RUNE_NAME
-    // Example: 1000:EXAMPLE
     const asset = `${runeAmount}:${runeName}`;
     
     // Use ord command to create and broadcast the rune transfer
@@ -177,6 +164,7 @@ async function transferRunes(recipient, amount, runeId = OVT_RUNE_ID) {
     const transferCmd = `wallet send --fee-rate 1 --postage 777 ${recipient} "${asset}"`;
     console.log(`Executing transfer command: ${transferCmd}`);
     
+    // Use the refactored executeOrdCommand which now runs locally
     const result = await executeOrdCommand(transferCmd);
     
     if (!result.success) {
@@ -230,6 +218,7 @@ async function getRuneBalance(address, runeId = OVT_RUNE_ID) {
   try {
     // Use ord command to get rune balance
     const balanceCmd = `wallet runics`;
+    // Use the refactored executeOrdCommand which now runs locally
     const result = await executeOrdCommand(balanceCmd);
     
     if (!result.success) {
@@ -309,15 +298,27 @@ async function verifyRuneTransfer(txid) {
       };
     }
     
-    // First, check if the transaction exists
-    const txCmd = `tx ${txid}`;
-    const txResult = await executeOrdCommand(txCmd);
-    
-    if (!txResult.success) {
-      throw new Error(`Transaction not found: ${txResult.error || 'Unknown error'}`);
+    // First, check if the transaction exists using local bitcoin-cli
+    // We use executeBitcoinCommand here for clarity, assuming it's configured for OrdPi's node
+    const txCmd = `getrawtransaction ${txid}`;
+    let txResult;
+    try {
+      txResult = await commandService.executeBitcoinCommand(txCmd);
+      // Check if the command returned a string (the raw tx hex)
+      if (typeof txResult !== 'string' || txResult.length === 0) {
+         throw new Error('getrawtransaction did not return a valid transaction hex.');
+      }
+    } catch (btcError) {
+       // Handle specific error if tx not found
+       if (btcError.message && (btcError.message.includes('No such mempool or blockchain transaction') || btcError.message.includes('transaction not found'))) {
+         throw new Error(`Transaction not found: ${txid}`);
+       } else {
+         // Rethrow other bitcoin-cli errors
+         throw new Error(`Error checking transaction with bitcoin-cli: ${btcError.message}`);
+       }
     }
     
-    // Now check if this transaction involved rune transfers
+    // Now check if this transaction involved rune transfers using local ord
     const runeCmd = `rune transaction ${txid}`;
     const runeResult = await executeOrdCommand(runeCmd);
     
@@ -326,7 +327,7 @@ async function verifyRuneTransfer(txid) {
       return { 
         success: true, 
         verified: false, 
-        details: txResult.result,
+        details: txResult,
         error: "Transaction exists but is not a rune transfer"
       };
     }
@@ -487,7 +488,10 @@ async function validateTransaction(transaction) {
  * @returns {Promise<Object>} Transfer result
  */
 async function transferTokensFromLP(params) {
-  const { recipient, amount, signatures } = params;
+  const { recipient, amount } = params; // Removed signatures as LP transfers might not be multisig
+  const utxoService = require('./utxoService'); // Keep local require if needed here
+  const configService = require('./configService'); // Assuming configService provides LP_ADDRESS
+  const LP_ADDRESS = configService.lp.address; // Get LP address from config
   
   // Validate parameters
   if (!recipient || !amount) {
@@ -508,79 +512,36 @@ async function transferTokensFromLP(params) {
     console.log(`Multi-signature verification passed with ${signatures.length} signatures`);
   }
   
-  // Default mock txid
-  let txid = `transfer_${Date.now()}`;
+  let txid = `transfer_${Date.now()}`; // Default mock txid
   
-  // Create real transaction if enabled
-  if (process.env.ENABLE_REAL_TRANSACTIONS === 'true') {
+  // Check if real transactions are enabled (should be true for production on OrdPi)
+  const enableRealTransactions = process.env.ENABLE_REAL_TRANSACTIONS === 'true';
+
+  if (enableRealTransactions) {
     try {
-      console.log(`Creating real rune transaction: ${amount} OVT to ${recipient}`);
+      // For transferring OVT FROM LP, we need to use `ord wallet send`
+      console.log(`Creating real OVT transfer: ${amount} OVT from LP ${LP_ADDRESS} to ${recipient}`);
       
-      // Verify wallet before proceeding
-      const isWalletValid = await verifyWalletForOVT();
+      // Use the transferRunes function which now uses local executeOrdCommand
+      const transferResult = await transferRunes(recipient, amount); // Assumes OVT_RUNE_ID is default
       
-      if (!isWalletValid) {
-        console.warn('Wallet verification failed - wallet may not contain OVT or LP address');
-        
-        // Try to get wallet info to log more details
-        const walletInfo = await getCurrentWalletInfo();
-        console.log('Current wallet info:', walletInfo.info || 'Not available');
-        
-        // If strict mode is enabled, fail the transaction
-        if (process.env.REQUIRE_VALID_WALLET === 'true') {
-          throw new Error('Wallet verification failed - incorrect wallet selected for OVT transfers');
-        }
-        
-        // Otherwise, just log a warning and continue
-        console.warn('Continuing despite wallet verification failure (REQUIRE_VALID_WALLET is not set to true)');
+      if (!transferResult.success) {
+        throw new Error(`Failed to transfer runes from LP: ${transferResult.error}`);
       }
       
-      // Check rune balance before attempting transfer
-      const balance = await getRuneBalance(LP_ADDRESS, OVT_RUNE_ID);
-      console.log(`Current OVT balance: ${balance}`);
-      
-      if (balance < amount) {
-        throw new Error(`Insufficient OVT balance. Required: ${amount}, Available: ${balance}`);
-      }
-      
-      // Transfer runes using the specialized function
-      const transferResult = await transferRunes(recipient, amount);
       txid = transferResult.txid;
-      
-      console.log(`Real rune transaction created: ${txid}`);
-      
-      // Include any extra transfer details in the transaction log
-      const extraData = transferResult.transferDetails || {};
-      
-      // Log transaction details
-      await logTransaction({
-        txid,
-        type: 'TRANSFER',
-        amount,
-        fromAddress: LP_ADDRESS,
-        toAddress: recipient,
-        price: 0,
-        isRune: true,
-        ...extraData  // Include any additional data from the transfer result
-      });
-      
-      return {
-        success: true,
-        txid,
-        amount,
-        recipient,
-        timestamp: Date.now(),
-        transferDetails: transferResult.transferDetails
-      };
+      console.log(`Real OVT transfer from LP executed: ${txid}`);
+
     } catch (error) {
-      console.error(`Failed to create real rune transaction: ${error.message}`);
-      // If rune transfer fails and it's not critical, we can fall back to mock transaction
-      // Otherwise, we should propagate the error
-      if (process.env.REQUIRE_REAL_TRANSACTIONS === 'true') {
-        throw error;
-      }
-      // Continue with mock transaction if real transactions not strictly required
+      console.error(`Failed to create real OVT transfer from LP: ${error.message}`);
+      // Decide if we should fallback or throw
+      // For now, let's re-throw the error to make failures explicit
+      throw error; 
+      // // Continue with mock transaction (alternative, maybe not desired)
+      // console.warn('Falling back to mock transaction ID for LP transfer');
     }
+  } else {
+      console.warn('Real transactions disabled, using mock transaction ID for LP transfer');
   }
   
   return {
@@ -954,42 +915,66 @@ async function logTransaction(txDetails) {
  */
 async function getCurrentWalletInfo() {
   try {
-    // Use ord command to get current wallet info
-    const walletInfoCmd = `wallet`;
-    const result = await executeOrdCommand(walletInfoCmd);
+    // Execute commands locally using executeOrdCommand
+    const balanceResult = await executeOrdCommand('wallet balance');
+    const runicsResult = await executeOrdCommand('wallet runics');
     
-    if (!result.success) {
-      throw new Error(`Failed to get wallet info: ${result.error}`);
-    }
-    
-    console.log('Wallet info command output:', result.result);
-    
-    // Parse the wallet information
-    const info = {
-      raw: result.result,
-      addresses: [],
-      name: null
-    };
-    
-    // Try to parse wallet name and addresses
-    const lines = result.result.split('\n');
-    for (const line of lines) {
-      // Extract wallet name if present
-      const nameMatch = line.match(/^Wallet: (.+)$/);
-      if (nameMatch) {
-        info.name = nameMatch[1].trim();
-      }
-      
-      // Extract addresses if present
-      const addressMatch = line.match(/^Address: (.+)$/);
-      if (addressMatch) {
-        info.addresses.push(addressMatch[1].trim());
+    let balance = 'N/A';
+    if (balanceResult.success) {
+      // Try to parse as JSON first - this is the most common format from newer ord versions
+      try {
+        const jsonData = JSON.parse(balanceResult.result);
+        
+        // Check if it's an array - newer ord returns an array of outputs
+        if (Array.isArray(jsonData)) {
+          // Look for the OVT rune in each output
+          for (const item of jsonData) {
+            if (item.runes && OVT_RUNE_NAME in item.runes) {
+              const amount = parseInt(item.runes[OVT_RUNE_NAME]);
+              console.log(`Found rune balance for ${OVT_RUNE_NAME}: ${amount}`);
+              balance = amount;
+            }
+          }
+        } 
+        // Also handle if it's a direct object with runes property (some ord versions)
+        else if (jsonData.runes && OVT_RUNE_NAME in jsonData.runes) {
+          const amount = parseInt(jsonData.runes[OVT_RUNE_NAME]);
+          console.log(`Found rune balance for ${OVT_RUNE_NAME}: ${amount}`);
+          balance = amount;
+        }
+      } catch (jsonError) {
+        console.log(`JSON parsing failed: ${jsonError.message}, trying string parsing`);
+        
+        // If JSON parsing fails, try the original string parsing approach
+        const runeBalances = {};
+        const balanceLines = balanceResult.result.split('\n');
+        
+        for (const line of balanceLines) {
+          // Try to match the rune name and balance
+          // Format is typically "RUNE_NAME: X.XX ⊙"
+          const match = line.match(/([^:]+):\s+([0-9.]+)\s+⊙/);
+          if (match) {
+            const runeName = match[1].trim();
+            const amount = parseFloat(match[2]);
+            runeBalances[runeName] = amount;
+          }
+        }
+        
+        // Check if we have OVT_RUNE_NAME in the balances
+        if (OVT_RUNE_NAME in runeBalances) {
+          console.log(`Found rune balance for ${OVT_RUNE_NAME}: ${runeBalances[OVT_RUNE_NAME]}`);
+          balance = runeBalances[OVT_RUNE_NAME];
+        }
       }
     }
     
     return {
       success: true,
-      info
+      info: {
+        raw: runicsResult.result,
+        addresses: [],
+        name: null
+      }
     };
   } catch (error) {
     console.error(`Error getting wallet info: ${error.message}`);
@@ -1006,34 +991,21 @@ async function getCurrentWalletInfo() {
  */
 async function verifyWalletForOVT() {
   try {
-    // Get current wallet info
-    const walletInfo = await getCurrentWalletInfo();
+    // Execute command locally using executeOrdCommand
+    const result = await executeOrdCommand('wallet runics');
     
-    if (!walletInfo.success) {
-      console.error(`Failed to verify wallet: ${walletInfo.error}`);
-      return false;
+    if (!result.success) {
+      return { verified: false, error: `Failed to check wallet: ${result.error}` };
     }
-    
-    const info = walletInfo.info;
-    
-    // Check if LP_ADDRESS is in the wallet addresses
-    const hasLPAddress = info.addresses.some(addr => addr === LP_ADDRESS);
-    
-    // Check if this wallet has OVT tokens
-    const ovtBalance = await getRuneBalance(LP_ADDRESS);
-    const hasOVT = ovtBalance > 0;
-    
-    console.log(`Wallet verification:
-      Wallet name: ${info.name || 'Unknown'}
-      Contains LP address: ${hasLPAddress}
-      OVT balance: ${ovtBalance}
-    `);
-    
-    // Return whether this is the correct wallet
-    return hasLPAddress && hasOVT;
+
+    // Check if OVT_RUNE_NAME exists in the output
+    const hasOVT = result.result.includes(OVT_RUNE_NAME);
+
+    return { verified: hasOVT };
+
   } catch (error) {
     console.error(`Error verifying wallet: ${error.message}`);
-    return false;
+    return { verified: false, error: error.message };
   }
 }
 

@@ -7,14 +7,20 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const axios = require('axios');
 
 // Initialize express app
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3030;
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const RUNES_API_URL = process.env.RUNES_API_URL || 'http://localhost:3030';
+
+// Log startup information
+console.log(`Starting OTORI Vision API in ${NODE_ENV} mode`);
+console.log(`Using Runes API URL: ${RUNES_API_URL}`);
 
 // Import API routes
-const runesAPI = require('./runes_API');
 const priceRoutes = require('./routes/priceRoutes');
 const tradingRoutes = require('./routes/tradingRoutes');
 const validationRoutes = require('./routes/validationRoutes');
@@ -29,9 +35,12 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // CORS middleware
-app.use(cors());
+const corsOrigin = process.env.CORS_ORIGIN || '*';
+app.use(cors({
+  origin: corsOrigin
+}));
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Origin', corsOrigin);
   res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   
@@ -64,9 +73,43 @@ app.use('/api/validation', validationRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/health', healthRoutes); // Mount new health check routes
 
-// Mount Runes API routes directly on the root path
-// This makes endpoints like /ovt/distribution available
-app.use('/', runesAPI);
+// Forward Runes API requests to the runesAPI service if we're not running it directly
+if (RUNES_API_URL !== `http://localhost:${PORT}`) {
+  console.log('Setting up Runes API proxy forwarding');
+  // Proxy for Runes API endpoints
+  app.use('/ovt', async (req, res) => {
+    try {
+      const url = `${RUNES_API_URL}${req.url}`;
+      console.log(`Proxying request to: ${url}`);
+      
+      const method = req.method.toLowerCase();
+      let response;
+      
+      if (method === 'get') {
+        response = await axios.get(url, { params: req.query });
+      } else if (method === 'post') {
+        response = await axios.post(url, req.body);
+      } else {
+        return res.status(405).json({ status: 'error', message: 'Method not allowed' });
+      }
+      
+      res.status(response.status).json(response.data);
+    } catch (error) {
+      console.error('Error proxying to Runes API:', error.message);
+      res.status(error.response?.status || 500).json({
+        status: 'error',
+        message: error.message || 'Internal Server Error',
+        origin: 'proxy'
+      });
+    }
+  });
+} else {
+  // Mount Runes API routes directly on the root path if we're running in combined mode
+  // This makes endpoints like /ovt/distribution available
+  const runesAPI = require('./runes_API');
+  app.use('/', runesAPI);
+  console.log('Running in combined mode with direct Runes API integration');
+}
 
 // Simple redirect from old health endpoint to new detailed health checks
 app.get('/api/health-check', (req, res) => {
@@ -306,6 +349,8 @@ app.get('/', (req, res) => {
   res.json({
     name: 'OTORI Vision API',
     version: '1.0.0',
+    environment: NODE_ENV,
+    runesApiUrl: RUNES_API_URL,
     endpoints
   });
 });
@@ -323,7 +368,8 @@ app.use((err, req, res, next) => {
 // Start server
 if (require.main === module) {
   server.listen(PORT, () => {
-    console.log(`OTORI Vision API server running on port ${PORT}`);
+    console.log(`OTORI Vision API server running on port ${PORT} in ${NODE_ENV} mode`);
+    console.log(`API documentation available at http://localhost:${PORT}/`);
   });
   
   // Set up a periodic task to match orders (every minute)
@@ -343,6 +389,5 @@ if (require.main === module) {
 // Export for potential programmatic usage
 module.exports = {
   app,
-  server,
-  runesAPI
+  server
 }; 

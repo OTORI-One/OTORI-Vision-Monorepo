@@ -22,7 +22,7 @@ const utxoService = require('./services/utxoService');
 const util = require('util');
 const { exec } = require('child_process');
 const execAsync = util.promisify(exec);
-const { executeSshPassCommand } = require('./services/commandExecutionService');
+const { executeCommand } = require('./services/commandExecutionService');
 
 // Add CORS support
 app.use((req, res, next) => {
@@ -267,8 +267,9 @@ const getRemoteLPInfo = async () => {
   return callRemoteAPIWithFallback('/ovt/lp-info', 'lpInfo');
 };
 
-// Enhanced helper function to execute ord commands with proper configuration
-const execOrdCommand = (command) => {
+// Helper function to execute ord commands with proper configuration
+// Refactored to use local executeCommand
+const execOrdCommand = async (command) => {
   // Check if we should use fallback based on previous failures
   if (shouldUseFallback()) {
     console.log(`[FALLBACK MODE] Simulating command: ${command}`);
@@ -307,13 +308,19 @@ const execOrdCommand = (command) => {
     lastRemoteAttemptTimestamp = Date.now();
     
     // Ensure all ord commands use the correct configuration
-    const ordCommand = `ord --config /home/BTCPi/.ord/ord.yaml --signet ${command}`;
+    // Get path from env or fallback - ensure this is correct for OrdPi
+    const ordPath = process.env.ORD_PATH || 'ord'; 
+    const ordConfigPath = process.env.ORD_CONFIG_PATH || '/home/BTCPi/.ord/ord.yaml';
+    const ordNetworkFlag = process.env.BITCOIN_NETWORK === 'signet' ? '--signet' : ''; // Add other networks if needed
     
-    // Use the command execution service to safely execute SSH commands
-    console.log(`Executing ord command: ${command}`);
+    // Construct the full command for local execution
+    const fullCommand = `${ordPath} --config ${ordConfigPath} ${ordNetworkFlag} ${command}`;
     
-    // Use the secure command execution service which handles password redaction
-    const result = executeSshPassCommand(ordCommand);
+    // Use the local command execution service
+    console.log(`Executing local ord command: ${command}`);
+    
+    // Execute the command locally
+    const result = await executeCommand(fullCommand); 
     const stdout = result.stdout || '';
     
     console.log(`Command result: ${stdout}`);
@@ -1482,37 +1489,49 @@ app.post('/ovt/transfer', async (req, res) => {
       });
     }
     
-    // 2. Prepare a PSBT for the transfer
-    // In a real implementation, we would create a PSBT here
-    // For now, we'll simulate a prepared transaction
-    
-    // Generate a mock PSBT for simulation
-    const psbt = `simulated-psbt-${Date.now()}`;
-    
-    // Generate a temporary transaction ID for tracking
-    const txid = `tx-${Date.now()}-${Math.random().toString(36).substring(2, 15)}`;
-    
-    // Simulated UTXO data - in a real implementation, we would fetch this from the Bitcoin Core node
-    // or from the Runes API that contains the actual UTXOs where the runes are stored
-    const mockUtxos = [
-      {
-        txid: `input-tx-${Date.now().toString(36)}`,
-        vout: 0,
-        value: amount + 1000, // Amount plus fee
-        scriptPubKey: `scriptpubkey-${fromAddress.substring(0, 8)}`,
-        confirmations: 5
+    // 2. Prepare and execute the ord wallet send command
+    let txid;
+    try {
+      // Get fee rate from environment or use a default
+      const feeRate = process.env.BITCOIN_FEE_RATE || 1; // Default to 1 sat/vB
+      
+      // Construct the specific 'wallet send' command
+      // Format: <ADDRESS> <AMOUNT>:<RUNE_ID>
+      const sendCommand = `wallet send --fee-rate ${feeRate} ${toAddress} ${amount}:${actualRuneId}`;
+      
+      // Execute the command using the refactored helper
+      const result = await execOrdCommand(sendCommand);
+      
+      if (!result.success || !result.result) {
+        throw new Error(result.error || 'Command execution failed or returned empty result');
       }
-    ];
+      
+      // Parse the transaction ID from the output
+      // Assuming ord wallet send outputs the TXID directly or within JSON
+      let parsedResult;
+      try {
+        parsedResult = JSON.parse(result.result);
+        txid = parsedResult.txid; 
+      } catch (e) {
+        // If not JSON, assume the output is the TXID itself
+        txid = result.result.trim(); 
+      }
+
+      if (!txid) {
+         throw new Error('Could not parse transaction ID from command output.');
+      }
+
+      console.log(`Real Rune transfer executed. TXID: ${txid}`);
+      
+    } catch (error) {
+      console.error(`Error executing ord wallet send: ${error.message}`);
+      return res.status(500).json({
+        success: false,
+        error: `Failed to execute transfer: ${error.message}`
+      });
+    }
     
-    // Information about the input where the rune is located
-    const inputDetails = {
-      txid: mockUtxos[0].txid,
-      vout: mockUtxos[0].vout,
-      runeId: actualRuneId,
-      amount
-    };
-    
-    // Return the transaction details
+    // 3. Return the transaction details
     res.json({
       success: true,
       transaction: {
@@ -1523,13 +1542,14 @@ app.post('/ovt/transfer', async (req, res) => {
         toAddress: toAddress,
         runeId: actualRuneId,
         timestamp: Date.now(),
-        status: 'pending',
+        status: 'submitted', // Mark as submitted, confirmation needs separate tracking
         confirmations: 0,
-        psbts: [psbt],
-        utxos: mockUtxos, // Include UTXO information
-        inputDetails // Include input details for rune tracking
+        // Remove mock PSBT/UTXO data
+        // psbts: [psbt],
+        // utxos: mockUtxos,
+        // inputDetails
       },
-      message: 'Transfer prepared successfully'
+      message: 'Transfer submitted successfully'
     });
   } catch (error) {
     console.error('Error preparing transfer:', error);

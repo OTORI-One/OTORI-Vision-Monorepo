@@ -85,3 +85,4 @@ scripts/archive/
 
 # Backend data files
 backend/data/**/.env.development
+backend/.env.development

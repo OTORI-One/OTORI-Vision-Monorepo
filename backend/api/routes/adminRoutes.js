@@ -9,6 +9,7 @@ const express = require('express');
 const router = express.Router();
 const adminService = require('../services/adminService');
 const validationService = require('../services/transactionValidationService');
+const remoteApiService = require('../services/remoteApiService');
 
 /**
  * @route GET /api/admin/actions
@@ -273,7 +274,7 @@ router.post('/treasury-transfer', (req, res) => {
  * @description Create a rune minting action and optionally sign it
  * @access Private (Admin only)
  */
-router.post('/mint-rune', (req, res) => {
+router.post('/mint-rune', async (req, res) => {
   try {
     const { amount, signature, publicKey } = req.body;
     
@@ -297,18 +298,21 @@ router.post('/mint-rune', (req, res) => {
       signatureResult = adminService.addSignatureToAction(action.id, signature, publicKey);
     }
     
+    // Instead of direct execution, the executeAdminAction will now
+    // use remoteApiService to communicate with OrdPi
+    const result = await adminService.executeAdminAction(action.id);
+    
     res.status(201).json({
       success: true,
-      action,
-      signatureResult,
-      message: 'Rune minting action created successfully',
+      action: result,
+      message: 'Rune minting action created and executed',
       timestamp: Date.now()
     });
   } catch (error) {
-    console.error('Error creating rune minting action:', error);
+    console.error('Error in rune minting:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to create rune minting action'
+      error: 'Failed to process rune minting'
     });
   }
 });
