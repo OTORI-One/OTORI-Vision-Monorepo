@@ -86,3 +86,11 @@ scripts/archive/
 # Backend data files
 backend/data/**/.env.development
 backend/.env.development
+
+
+# NGINX Configuration Files
+*.nginx.conf
+nginx.conf
+nginx/*.conf
+/nginx/
+nginx.conf.d/
