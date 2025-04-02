@@ -6,9 +6,10 @@ import { getPriceStore, NAVData } from '../services/priceService';
 
 interface NAVHookResult {
   nav: NAVResult;
-  loading: boolean;
-  error: string | null;
-  refreshNAV: () => void;
+  loading: boolean; // True if WebSocket is connecting or initial data hasn't arrived
+  error: string | null; // Connection errors or data issues
+  isConnected: boolean; // Expose WebSocket connection status
+  // refreshNAV: () => void; // Removed - updates are pushed via WebSocket
   formattedNAV: string;
 }
 
@@ -26,118 +27,103 @@ const defaultNAV: NAVResult = {
 
 /**
  * Hook for accessing NAV data with automatic currency formatting,
- * using the centralized PriceStore for updates via polling.
+ * using the centralized PriceStore updated via WebSockets.
  */
 export function useNAV(): NAVHookResult {
-  // Get the singleton PriceStore instance
   const priceStore = useMemo(() => getPriceStore(), []);
 
-  // Initialize state from PriceStore's current data or default
+  // Initialize state from PriceStore's current cached data or default
   const [navData, setNavData] = useState<NAVResult>(() => {
     const currentStoreData = priceStore.navData;
     if (currentStoreData) {
-      // Map store data (NAVData) to hook data (NAVResult)
-      return {
-        navSats: currentStoreData.totalValueSats,
-        navUsd: currentStoreData.totalValueUSD,
-        formattedNavSats: currentStoreData.formattedTotalValueSats,
-        formattedNavUsd: currentStoreData.formattedTotalValueUSD,
-        pricePerToken: currentStoreData.ovtPrice,
-        pricePerTokenUsd: currentStoreData.btcPrice ? (currentStoreData.ovtPrice / SATS_PER_BTC) * currentStoreData.btcPrice : 0,
-        totalTokenSupply: currentStoreData.circulatingSupply || 2100000,
-        changePercentage: currentStoreData.changePercentage || 0
-      };
+      return mapStoreDataToNavResult(currentStoreData);
     }
     return defaultNAV;
   });
 
-  // Loading is true initially if the store doesn't have data yet
-  const [loading, setLoading] = useState<boolean>(!priceStore.navData);
+  // Loading state is derived from connection status and whether we have initial data
+  const [isConnected, setIsConnected] = useState<boolean>(priceStore.isConnected);
+  const [loading, setLoading] = useState<boolean>(!priceStore.isConnected || !priceStore.navData);
   const [error, setError] = useState<string | null>(null);
-  
-  // Get the currency context
+
   const { currency } = useCurrencyToggle();
-  
-  // Manual refresh function - uses the store's fetch method
-  const refreshNAV = useCallback(() => {
-    // Only allow manual refresh if not currently loading
-    if (loading) return;
 
-    console.log('Manual NAV refresh triggered via PriceStore...');
-    setLoading(true);
-    priceStore.fetchNAVData(true) // Use force=true for manual refresh
-      .then(data => {
-         // The subscription listener below will handle updating the state
-         // We just need to reset loading/error here if needed, but the listener does that too.
-         // setError(null); 
-      })
-      .catch(err => {
-        console.error('Error during manual NAV refresh:', err);
-        setError('Failed to manually refresh NAV data');
-        // If refresh fails, stop loading
-        setLoading(false); 
-      });
-      // setLoading(false) will be handled by the subscription callback upon successful update or error during fetch
-  }, [priceStore, loading]); 
-  
-  // Effect for subscribing to PriceStore updates
+  // REMOVED: refreshNAV function - no longer needed
+  /*
+  const refreshNAV = useCallback(() => { ... }, [priceStore, loading]);
+  */
+
+  // Effect for subscribing to PriceStore updates (data and connection status)
   useEffect(() => {
-    // Skip in SSR context
-    if (typeof window === 'undefined') return;
-
     let isMounted = true;
 
-    // Callback when PriceStore updates its NAV data
+    // 1. Subscribe to NAV data updates
     const handleNavUpdate = (storeData: NAVData) => {
-        if (isMounted) {
-          console.log('Received NAV update from PriceStore subscription.');
-          // Map store data (NAVData) to hook data (NAVResult)
-          const newNavResult: NAVResult = {
-            navSats: storeData.totalValueSats,
-            navUsd: storeData.totalValueUSD,
-            formattedNavSats: storeData.formattedTotalValueSats,
-            formattedNavUsd: storeData.formattedTotalValueUSD,
-            pricePerToken: storeData.ovtPrice,
-            pricePerTokenUsd: storeData.btcPrice ? (storeData.ovtPrice / SATS_PER_BTC) * storeData.btcPrice : 0,
-            totalTokenSupply: storeData.circulatingSupply || 2100000,
-            changePercentage: storeData.changePercentage || 0
-          };
-          setNavData(newNavResult);
-          setError(null); 
-          setLoading(false); // Data has arrived, no longer loading
-        }
+      if (isMounted) {
+        // console.log('useNAV: Received NAV update via subscription.');
+        setNavData(mapStoreDataToNavResult(storeData));
+        setError(null); // Clear previous errors on successful update
+        // Loading is false if we have data, even if temporarily disconnected
+        setLoading(false); 
+      }
     };
+    const unsubscribeNav = priceStore.subscribeToNavUpdates(handleNavUpdate);
 
-    // Subscribe to updates from the PriceStore
-    const unsubscribe = priceStore.subscribeToNavUpdates(handleNavUpdate);
+    // 2. Subscribe to WebSocket connection status changes
+    const handleConnectionChange = (status: boolean) => {
+      if (isMounted) {
+        // console.log(`useNAV: Connection status changed: ${status}`);
+        setIsConnected(status);
+        if (!status) {
+          // If disconnected, set loading true *only if* we don't have any data yet
+          if (!priceStore.navData) {
+              setLoading(true);
+              setError("Connecting to real-time updates..."); // Informative message
+          } else {
+              // We have stale data, but show disconnected state
+               setError("Real-time connection lost. Displaying last known data.");
+               setLoading(false); // Not strictly loading, just potentially stale
+          }
+        } else {
+          // Connected: clear connection errors, loading depends on data arrival
+          setError(null);
+          setLoading(!priceStore.navData); // Loading if connected but no data yet
+        }
+      }
+    };
+    const unsubscribeConnection = priceStore.subscribeToConnectionChange(handleConnectionChange);
 
-    // Trigger initial fetch *if* the store doesn't have data upon mount
-    // The store's internal logic prevents duplicate requests.
+    // Initial state check after subscriptions are set up
+    if (isMounted) {
+       setIsConnected(priceStore.isConnected);
+       setLoading(!priceStore.isConnected || !priceStore.navData);
+       if (!priceStore.isConnected && !priceStore.navData) {
+          setError("Connecting to real-time updates...");
+       }
+       // If store already had data when mounting, apply it immediately
+       if (priceStore.navData) {
+           setNavData(mapStoreDataToNavResult(priceStore.navData));
+           setLoading(false);
+       }
+    }
+
+    // REMOVED: Initial fetch logic - PriceStore handles its initialization
+    /*
     if (!priceStore.navData) {
         console.log('useNAV: Initializing NAV fetch via PriceStore.');
         setLoading(true);
-        priceStore.fetchNAVData(false)
-            .catch(err => {
-                // Error handling for the initial fetch
-                if (isMounted) {
-                    console.error('useNAV: Initial NAV fetch failed:', err);
-                    setError('Failed to load initial NAV data');
-                    setLoading(false); // Stop loading on error
-                }
-            });
-    } else {
-        // If store already had data, we are not loading
-        setLoading(false);
+        priceStore.fetchNAVData(false) ...
     }
+    */
 
-    // Clean up subscription on unmount
+    // Clean up subscriptions on unmount
     return () => {
       isMounted = false;
-      unsubscribe();
+      unsubscribeNav();
+      unsubscribeConnection();
     };
-  // IMPORTANT: priceStore is stable due to useMemo, so this effect runs only once on mount
-  }, [priceStore]); 
-  
+  }, [priceStore]); // priceStore is stable
+
   // Memoized formatted NAV calculation (no changes needed)
   const getFormattedNAV = useCallback((navResult: NAVResult, activeCurrency: Currency): string => {
     if (!navResult) return activeCurrency === 'usd' ? '$0.00' : '₿0.00';
@@ -150,14 +136,33 @@ export function useNAV(): NAVHookResult {
   const formattedNAV = useMemo(() => {
     return getFormattedNAV(navData, currency);
   }, [getFormattedNAV, navData, currency]);
-  
+
   return {
     nav: navData,
     loading,
     error,
-    refreshNAV,
+    isConnected,
+    // refreshNAV, // Removed
     formattedNAV,
   };
+}
+
+// Helper function to map store data to hook data structure
+function mapStoreDataToNavResult(storeData: NAVData): NAVResult {
+    const pricePerTokenUsd = storeData.btcPrice && storeData.ovtPrice
+        ? (storeData.ovtPrice / SATS_PER_BTC) * storeData.btcPrice
+        : 0;
+        
+    return {
+        navSats: storeData.totalValueSats,
+        navUsd: storeData.totalValueUSD,
+        formattedNavSats: storeData.formattedTotalValueSats,
+        formattedNavUsd: storeData.formattedTotalValueUSD,
+        pricePerToken: storeData.ovtPrice, // Assuming ovtPrice in store is per token in sats
+        pricePerTokenUsd: pricePerTokenUsd, 
+        totalTokenSupply: storeData.circulatingSupply || 2100000, // Fallback if needed
+        changePercentage: storeData.changePercentage || 0
+    };
 }
 
 export default useNAV; 

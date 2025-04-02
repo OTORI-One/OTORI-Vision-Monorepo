@@ -12,15 +12,8 @@ import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { usePortfolio } from '../src/hooks/usePortfolio';
 import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
-import priceService from '../src/services/priceService';
 import TransactionConfirmationModal from '../components/TransactionConfirmationModal';
 import { useTradingModule } from '../src/hooks/useTradingModule';
-
-// Ensure NAV data is loaded before rendering
-if (typeof window !== 'undefined') {
-  // Immediately trigger a fetch - don't wait for it to complete
-  priceService.getPriceStore().fetchNAVData();
-}
 
 // Import components that depend on client-side data with dynamic import and SSR disabled
 const DynamicTradingContent = dynamic(
