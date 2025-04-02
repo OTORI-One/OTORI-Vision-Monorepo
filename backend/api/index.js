@@ -14,16 +14,26 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3031;
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const RUNES_API_URL = process.env.REMOTE_RUNES_API_URL || process.env.RUNES_API_URL || 'http://localhost:9191';
+const SERVICE_TYPE = process.env.SERVICE_TYPE || 'all'; // Default to 'all' if not specified
 
-// Similarly update other service URL lookups if needed elsewhere
-const TRADING_API_URL = process.env.REMOTE_TRADING_API_URL || process.env.TRADING_API_URL || 'http://localhost:3032';
-const PRICE_API_URL = process.env.REMOTE_PRICE_API_URL || process.env.PRICE_API_URL || 'http://localhost:3033';
-const VALIDATION_API_URL = process.env.REMOTE_VALIDATION_API_URL || process.env.VALIDATION_API_URL || 'http://localhost:3034';
+// Determine base URLs based on environment
+const ORDPI_GATEWAY_BASE = process.env.ORDPI_GATEWAY_URL || 'http://192.168.178.54:8080'; // Use gateway for external access
+const LOCAL_RUNES_API_URL = process.env.RUNES_API_URL || 'http://localhost:9191'; // Direct local URL
+
+// Choose Runes API URL based on context (local or remote via gateway)
+// If running on WebPi (admin), use gateway. If on OrdPi, use local.
+// We might need a more robust way to determine this, but SERVICE_TYPE can help.
+const RUNES_API_URL = SERVICE_TYPE === 'admin' ? `${ORDPI_GATEWAY_BASE}/api/runes` : LOCAL_RUNES_API_URL;
+
+// Define service URLs (primarily for reference or potential future direct calls)
+const TRADING_API_URL = `${ORDPI_GATEWAY_BASE}/api/trading`;
+const PRICE_API_URL = `${ORDPI_GATEWAY_BASE}/api/price`;
+const VALIDATION_API_URL = `${ORDPI_GATEWAY_BASE}/api/validation`;
 
 // Log startup information
-console.log(`Starting OTORI Vision API in ${NODE_ENV} mode`);
+console.log(`Starting OTORI Vision API [${SERVICE_TYPE}] in ${NODE_ENV} mode on port ${PORT}`);
 console.log(`Using Runes API URL: ${RUNES_API_URL}`);
+console.log(`Gateway URL: ${ORDPI_GATEWAY_BASE}`);
 
 // Import API routes
 const priceRoutes = require('./routes/priceRoutes');
@@ -31,6 +41,7 @@ const tradingRoutes = require('./routes/tradingRoutes');
 const validationRoutes = require('./routes/validationRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const healthRoutes = require('./routes/healthRoutes');
+const runesAPI = require('./runes_API'); // For direct mounting if SERVICE_TYPE=runes
 
 // Import error monitoring middleware
 const { createErrorMonitoringMiddleware } = require('./services/errorMonitoringService');
@@ -71,49 +82,104 @@ if (!fs.existsSync(logsDir)) {
   console.log('Created logs directory:', logsDir);
 }
 
-// Mount API routes
-app.use('/api/price', priceRoutes);
-app.use('/api/trading', tradingRoutes);
-app.use('/api/validation', validationRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/health', healthRoutes); // Mount new health check routes
+// Mount API routes conditionally based on SERVICE_TYPE
+console.log(`Mounting routes for service type: ${SERVICE_TYPE}`);
 
-// Forward Runes API requests to the runesAPI service if we're not running it directly
-if (RUNES_API_URL !== `http://localhost:${PORT}`) {
-  console.log('Setting up Runes API proxy forwarding');
-  // Proxy for Runes API endpoints
-  app.use('/ovt', async (req, res) => {
+// Health routes are always mounted
+app.use('/api/health', healthRoutes);
+
+if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'price') {
+  console.log('Mounting /api/price routes');
+  app.use('/api/price', priceRoutes);
+}
+
+if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'trading') {
+  console.log('Mounting /api/trading routes');
+  app.use('/api/trading', tradingRoutes);
+}
+
+if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'validation') {
+  console.log('Mounting /api/validation routes');
+  app.use('/api/validation', validationRoutes);
+}
+
+if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'admin') {
+  console.log('Mounting /api/admin routes');
+  app.use('/api/admin', adminRoutes);
+}
+
+if (SERVICE_TYPE === 'runes') {
+  console.log('Mounting / (root) routes for Runes API Facade');
+  // Mount Runes API routes directly on the root path
+  // This makes endpoints like /ovt/distribution available
+  app.use('/', runesAPI);
+} else if (SERVICE_TYPE === 'all') {
+  // If running in 'all' mode (e.g., local dev), mount runes directly too
+  console.log('Mounting / (root) routes for Runes API (all mode)');
+  app.use('/', runesAPI);
+} else {
+  // If we are NOT the runes service AND NOT in 'all' mode,
+  // we might need to proxy requests if a component expects to call runes via the *same* port.
+  // However, current setup seems to rely on explicit URLs (RUNES_API_URL),
+  // so direct proxying might not be needed here unless a specific use case arises.
+  console.log('Runes API routes are NOT mounted directly for this service type.');
+  // The existing proxy logic below handles forwarding if needed based on RUNES_API_URL vs current port.
+}
+
+// Forward Runes API requests to the runesAPI service IF the RUNES_API_URL is different
+// This logic remains relevant for services that need to call the runes API via a different host/port
+if (RUNES_API_URL !== `http://localhost:${PORT}` && RUNES_API_URL !== `http://127.0.0.1:${PORT}`) {
+  console.log(`Setting up Runes API proxy forwarding to ${RUNES_API_URL}`);
+  // Proxy for Runes API endpoints expected at the root or /ovt
+  // Note: Adjust prefix if needed, '/ovt' was used before, but runesAPI mounts at '/'
+  const runesProxyPrefix = ''; // Proxy requests like /distribution, /mint etc.
+  app.use(runesProxyPrefix, async (req, res) => {
     try {
-      const url = `${RUNES_API_URL}${req.url}`;
-      console.log(`Proxying request to: ${url}`);
-      
+      // Construct the target URL carefully
+      const targetPath = req.originalUrl.startsWith(runesProxyPrefix)
+        ? req.originalUrl.substring(runesProxyPrefix.length)
+        : req.originalUrl;
+      const url = `${RUNES_API_URL}${targetPath}`;
+      console.log(`Proxying [${req.method}] request to: ${url}`);
+
       const method = req.method.toLowerCase();
       let response;
-      
-      if (method === 'get') {
-        response = await axios.get(url, { params: req.query });
-      } else if (method === 'post') {
-        response = await axios.post(url, req.body);
-      } else {
-        return res.status(405).json({ status: 'error', message: 'Method not allowed' });
-      }
-      
-      res.status(response.status).json(response.data);
+      const headers = { ...req.headers };
+      // Remove host header to avoid conflicts
+      delete headers.host;
+      // Add other headers if necessary, e.g., 'Content-Type'
+
+      const axiosConfig = {
+        method: method,
+        url: url,
+        headers: headers,
+        params: req.query, // Pass query params
+        data: req.body, // Pass request body
+        validateStatus: function (status) {
+          return status >= 200 && status < 500; // Accept any status code below 500
+        }
+      };
+
+      response = await axios(axiosConfig);
+
+      // Forward the status code and response data
+      res.status(response.status).set(response.headers).json(response.data);
+
     } catch (error) {
       console.error('Error proxying to Runes API:', error.message);
-      res.status(error.response?.status || 500).json({
+      const status = error.response?.status || 503; // Use 503 Service Unavailable for proxy errors
+      res.status(status).json({
         status: 'error',
-        message: error.message || 'Internal Server Error',
-        origin: 'proxy'
+        message: `Failed to proxy request to Runes API: ${error.message}`,
+        origin: 'proxy',
+        targetUrl: RUNES_API_URL, // Show where it tried to connect
+        errorDetails: error.code // Include details like ECONNREFUSED if available
       });
     }
   });
-} else {
-  // Mount Runes API routes directly on the root path if we're running in combined mode
-  // This makes endpoints like /ovt/distribution available
-  const runesAPI = require('./runes_API');
-  app.use('/', runesAPI);
-  console.log('Running in combined mode with direct Runes API integration');
+} else if (SERVICE_TYPE !== 'runes' && SERVICE_TYPE !== 'all') {
+     // If we are the same host/port as RUNES_API_URL, but not the runes service itself, log that we're not proxying.
+    console.log(`Runes API URL (${RUNES_API_URL}) matches local address, no proxy needed.`);
 }
 
 // Simple redirect from old health endpoint to new detailed health checks
@@ -126,7 +192,9 @@ app.use(createErrorMonitoringMiddleware());
 
 // Home route for API documentation
 app.get('/', (req, res) => {
-  const endpoints = [
+  // Filter endpoints based on SERVICE_TYPE
+  let availableEndpoints = [];
+  const allEndpoints = [
     {
       path: '/',
       method: 'GET',
@@ -305,13 +373,48 @@ app.get('/', (req, res) => {
     },
   ];
 
-  // Format the response as HTML for better readability in browsers
+  // Always include basic health and documentation endpoints
+  availableEndpoints.push(allEndpoints.find(e => e.path === '/'));
+  availableEndpoints.push(allEndpoints.find(e => e.path === '/api/health'));
+  // Add detailed health endpoints too
+  availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/api/health/')));
+
+  // Add endpoints based on SERVICE_TYPE
+  if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'price') {
+    availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/api/price')));
+  }
+  if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'trading') {
+    availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/api/trading')));
+  }
+  if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'validation') {
+    availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/api/validation')));
+  }
+  if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'admin') {
+    availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/api/admin')));
+  }
+  if (SERVICE_TYPE === 'runes' || SERVICE_TYPE === 'all') {
+     // Assuming runes API endpoints start with /ovt or similar root paths defined in runesAPI
+     // Filter based on common patterns or add specific endpoints if needed
+     // Example: adding endpoints starting with /ovt/
+     availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/ovt/')));
+     // You might need a more robust way to identify runes endpoints if they don't share a common prefix
+  }
+
+  // Remove duplicates if any (e.g., from 'all' adding routes already added)
+  availableEndpoints = availableEndpoints.filter((endpoint, index, self) =>
+    endpoint && index === self.findIndex((e) => (e && e.path === endpoint.path && e.method === endpoint.method))
+  );
+
+  // Sort endpoints for consistency
+  availableEndpoints.sort((a, b) => a.path.localeCompare(b.path) || a.method.localeCompare(b.method));
+
+  // Format the response as HTML or JSON
   if (req.headers.accept && req.headers.accept.includes('text/html')) {
     let html = `
       <!DOCTYPE html>
       <html>
       <head>
-        <title>OTORI Vision API</title>
+        <title>OTORI Vision API (${SERVICE_TYPE})</title>
         <style>
           body { font-family: Arial, sans-serif; margin: 20px; }
           h1 { color: #333; }
@@ -322,7 +425,7 @@ app.get('/', (req, res) => {
         </style>
       </head>
       <body>
-        <h1>OTORI Vision API Endpoints</h1>
+        <h1>OTORI Vision API Endpoints (${SERVICE_TYPE})</h1>
         <table>
           <tr>
             <th>Path</th>
@@ -330,33 +433,35 @@ app.get('/', (req, res) => {
             <th>Description</th>
           </tr>
     `;
-    
-    endpoints.forEach(endpoint => {
-      html += `
-        <tr>
-          <td><code>${endpoint.path}</code></td>
-          <td>${endpoint.method}</td>
-          <td>${endpoint.description}</td>
-        </tr>
-      `;
+
+    availableEndpoints.forEach(endpoint => {
+       if (endpoint) { // Add check in case filtering resulted in undefined entries
+        html += `
+          <tr>
+            <td><code>${endpoint.path}</code></td>
+            <td>${endpoint.method}</td>
+            <td>${endpoint.description}</td>
+          </tr>
+        `;
+       }
     });
-    
+
     html += `
         </table>
-        <p>For more detailed API documentation, visit <a href="/api-docs">API Documentation</a>.</p>
-      </body>
+         </body>
       </html>
     `;
-    
+
     return res.send(html);
   }
 
   res.json({
-    name: 'OTORI Vision API',
+    name: `OTORI Vision API (${SERVICE_TYPE})`,
     version: '1.0.0',
     environment: NODE_ENV,
+    serviceType: SERVICE_TYPE, // Add service type to JSON response
     runesApiUrl: RUNES_API_URL,
-    endpoints
+    endpoints: availableEndpoints // Use the filtered list
   });
 });
 
@@ -373,22 +478,35 @@ app.use((err, req, res, next) => {
 // Start server
 if (require.main === module) {
   server.listen(PORT, () => {
-    console.log(`OTORI Vision API server running on port ${PORT} in ${NODE_ENV} mode`);
+    console.log(`OTORI Vision API server (${SERVICE_TYPE}) running on port ${PORT} in ${NODE_ENV} mode`);
     console.log(`API documentation available at http://localhost:${PORT}/`);
   });
-  
-  // Set up a periodic task to match orders (every minute)
-  setInterval(() => {
-    try {
-      const tradingService = require('./services/tradingService');
-      const matches = tradingService.matchOrders();
-      if (matches.length > 0) {
-        console.log(`Matched ${matches.length} orders`);
+
+  // Only run periodic tasks relevant to the service type
+  if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'trading') {
+    console.log('Setting up periodic order matching task for trading service.');
+    setInterval(() => {
+      try {
+        // Ensure tradingService is required only when needed
+        const tradingService = require('./services/tradingService');
+        const matches = tradingService.matchOrders();
+        if (matches.length > 0) {
+          console.log(`Matched ${matches.length} orders`);
+        }
+      } catch (error) {
+        console.error('Error in order matching task:', error);
       }
-    } catch (error) {
-      console.error('Error in order matching task:', error);
-    }
-  }, 60000);
+    }, 60000); // Adjust interval as needed
+  }
+
+   if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'price') {
+     console.log('Initializing price service periodic updates.');
+     // Assuming priceService initialization handles its own timers/intervals
+     // If not, add setInterval calls here for price updates, OVT supply checks, etc.
+     // e.g., require('./services/priceService').startPeriodicUpdates();
+   }
+
+   // Add other service-specific periodic tasks here
 }
 
 // Export for potential programmatic usage
