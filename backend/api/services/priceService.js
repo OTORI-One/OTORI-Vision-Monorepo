@@ -9,8 +9,8 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-// Import the correctly configured API URLs from index.js
-const { RUNES_API_URL } = require('../index.js');
+// REMOVE the import from index.js to break circular dependency
+// const { RUNES_API_URL } = require('../index.js'); 
 
 // Constants
 const PRICE_DATA_FILE = path.join(__dirname, '../../data/price-data.json');
@@ -616,18 +616,24 @@ async function updateOVTCirculatingSupply() {
   try {
     console.log('Updating OVT circulating supply...');
 
-    // Use the imported RUNES_API_URL which correctly handles remote/local resolution
-    if (!RUNES_API_URL) {
-      console.error('RUNES_API_URL is not configured. Cannot update OVT supply.');
+    // Read the appropriate environment variable directly.
+    // Prioritize REMOTE_RUNES_API_URL (set for admin service on WebPi)
+    // Fallback to RUNES_API_URL (set for services on OrdPi)
+    const runesApiUrl = process.env.REMOTE_RUNES_API_URL || process.env.RUNES_API_URL;
+
+    if (!runesApiUrl) {
+      console.error('REMOTE_RUNES_API_URL or RUNES_API_URL is not configured. Cannot update OVT supply.');
+      // Fallback to default supply to prevent breaking NAV calculation
+      if (!priceState.ovtCirculatingSupply) {
+          priceState.ovtCirculatingSupply = DEFAULT_OVT_CIRCULATING_SUPPLY;
+      }
       return false;
     }
     
     // Try to fetch circulating supply from the Runes API endpoint
     try {
-      // The /ovt/distribution endpoint might actually be part of the main API, 
-      // not the runes_API.js script. Let's assume it should call the Runes API for now.
-      // If /ovt/distribution lives elsewhere, this URL needs adjustment.
-      const targetUrl = `${RUNES_API_URL}/ovt/distribution`; // Construct the target URL
+      // Use the /ovt/distribution endpoint on the determined Runes API URL
+      const targetUrl = `${runesApiUrl}/ovt/distribution`; 
       console.log(`Attempting to fetch OVT distribution from: ${targetUrl}`);
       
       const response = await axios.get(targetUrl, {
@@ -656,22 +662,36 @@ async function updateOVTCirculatingSupply() {
       }
     } catch (error) {
       // Log the specific URL that failed
-      console.error(`Error fetching OVT distribution data from ${RUNES_API_URL}/ovt/distribution:`, error.message);
+      const failedUrl = `${runesApiUrl}/ovt/distribution`; // Reconstruct for logging
+      console.error(`Error fetching OVT distribution data from ${failedUrl}:`, error.message);
       if (error.response) {
         console.error('Response Status:', error.response.status);
         console.error('Response Data:', error.response.data);
       }
       console.log('Using default or previous supply value');
+      // Fallback to default supply on error
+      if (!priceState.ovtCirculatingSupply) {
+          priceState.ovtCirculatingSupply = DEFAULT_OVT_CIRCULATING_SUPPLY;
+      }
     }
     
     // If we couldn't fetch from the API, ensure we have at least the default value
     if (!priceState.ovtCirculatingSupply) {
       priceState.ovtCirculatingSupply = DEFAULT_OVT_CIRCULATING_SUPPLY;
     }
+    // Recalculate price even if API failed, using the default/last known supply
+    calculateOVTPrice();
+    savePriceData(); // Save state regardless of API success
     
-    return false;
+    return false; // Indicate API fetch failed
   } catch (error) {
-    console.error('Error updating OVT circulating supply:', error);
+    console.error('Error in updateOVTCirculatingSupply function:', error);
+    // Fallback to default supply on unexpected error
+      if (!priceState.ovtCirculatingSupply) {
+          priceState.ovtCirculatingSupply = DEFAULT_OVT_CIRCULATING_SUPPLY;
+      }
+    calculateOVTPrice();
+    savePriceData();
     return false;
   }
 }

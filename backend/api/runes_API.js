@@ -1051,30 +1051,6 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start the server if this file is run directly
-if (require.main === module) {
-  const PORT = process.env.PORT || 3030;
-  const HOST = process.env.HOST || '0.0.0.0'; // Listen on all network interfaces
-  
-  // Check if we can connect to bitcoind and ord before starting
-  console.log("Checking dependencies...");
-  const ordInstalled = checkOrdInstallation();
-  const bitcoinCliInstalled = checkBitcoinCliInstallation();
-  const ordConfigExists = checkOrdConfig();
-  
-  if (!ordInstalled || !bitcoinCliInstalled || !ordConfigExists) {
-    console.error("Some dependencies are missing. Check the logs above for details.");
-    console.error("Starting the server anyway, but some functions may not work correctly.");
-  }
-  
-  app.listen(PORT, HOST, () => {
-    console.log(`OTORI Vision Runes API running on http://${HOST}:${PORT}`);
-    console.log(`IMPORTANT: If this server is exposed to the internet, ensure proper security measures are in place.`);
-    console.log(`OVT Rune ID: ${OVT_RUNE_ID}`);
-    console.log(`Treasury Address: ${OVT_TREASURY_ADDRESS}`);
-    console.log(`LP Address: ${LP_ADDRESS}`);
-  });
-}
 // Simple IP-based rate limiting
 const rateLimit = {};
 const RATE_LIMIT_WINDOW = 60000; // 1 minute
@@ -1543,11 +1519,7 @@ app.post('/ovt/transfer', async (req, res) => {
         runeId: actualRuneId,
         timestamp: Date.now(),
         status: 'submitted', // Mark as submitted, confirmation needs separate tracking
-        confirmations: 0,
-        // Remove mock PSBT/UTXO data
-        // psbts: [psbt],
-        // utxos: mockUtxos,
-        // inputDetails
+        confirmations: 0
       },
       message: 'Transfer submitted successfully'
     });
@@ -1617,5 +1589,32 @@ app.get('/ovt/transactions', async (req, res) => {
   }
 });
 
-// Export the Express app for use in other modules
+// Start the server if this file is run directly
+// Use process.env.PORT provided by PM2 ecosystem config
+const PORT = process.env.PORT; 
+const HOST = process.env.HOST || '0.0.0.0'; // Listen on all network interfaces
+
+if (PORT) {
+  // Check dependencies before starting
+  console.log("Checking dependencies for Runes API facade...");
+  const ordInstalled = checkOrdInstallation();
+  const bitcoinCliInstalled = checkBitcoinCliInstallation();
+  const ordConfigExists = checkOrdConfig();
+  
+  if (!ordInstalled || !bitcoinCliInstalled || !ordConfigExists) {
+    console.warn("Some dependencies might be missing. Check logs.");
+  }
+
+  app.listen(PORT, HOST, () => {
+    console.log(`OTORI Vision Custom Runes API facade running on http://${HOST}:${PORT}`);
+    console.log(`This service provides custom endpoints and interacts with ord server/CLI.`);
+    console.log(`OVT Rune ID: ${OVT_RUNE_ID}`);
+  });
+} else {
+  // This case should ideally not happen if run via PM2 with PORT set
+  console.error("ERROR: PORT environment variable not set. Runes API facade server cannot start.");
+}
+
+// Export the Express app and potentially useful functions 
+// Ensure this is the final export
 module.exports = app;
