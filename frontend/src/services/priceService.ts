@@ -448,7 +448,7 @@ class PriceStore {
     let lastSuccessfulFetch = Date.now();
     
     // Much more aggressive throttling to avoid rate limiting
-    const MIN_INTERVAL = 30000;    // Minimum time between requests (30s)
+    const MIN_INTERVAL = 60000;    // Minimum time between requests (60s)
     const MAX_INTERVAL = 300000;   // Maximum time between requests (5 minutes)
     const BACKOFF_FACTOR = 4;      // More aggressive exponential backoff
     const QUEUE_PROCESS_DELAY = 5000; // Time between processing queue items
