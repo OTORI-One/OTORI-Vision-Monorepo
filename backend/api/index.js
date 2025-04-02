@@ -36,12 +36,7 @@ console.log(`Using Runes API URL: ${RUNES_API_URL}`);
 console.log(`Gateway URL: ${ORDPI_GATEWAY_BASE}`);
 
 // Import API routes
-const priceRoutes = require('./routes/priceRoutes');
-const tradingRoutes = require('./routes/tradingRoutes');
-const validationRoutes = require('./routes/validationRoutes');
-const adminRoutes = require('./routes/adminRoutes');
 const healthRoutes = require('./routes/healthRoutes');
-const runesAPI = require('./runes_API'); // For direct mounting if SERVICE_TYPE=runes
 
 // Import error monitoring middleware
 const { createErrorMonitoringMiddleware } = require('./services/errorMonitoringService');
@@ -88,42 +83,56 @@ console.log(`Mounting routes for service type: ${SERVICE_TYPE}`);
 // Health routes are always mounted
 app.use('/api/health', healthRoutes);
 
+// --- Conditionally require route modules based on SERVICE_TYPE ---
+let priceRoutes, tradingRoutes, validationRoutes, adminRoutes, runesAPI;
+
 if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'price') {
+  priceRoutes = require('./routes/priceRoutes');
+}
+if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'trading') {
+  tradingRoutes = require('./routes/tradingRoutes');
+}
+if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'validation') {
+  validationRoutes = require('./routes/validationRoutes');
+}
+if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'admin') {
+  adminRoutes = require('./routes/adminRoutes');
+}
+if (SERVICE_TYPE === 'runes' || SERVICE_TYPE === 'all') {
+  runesAPI = require('./runes_API');
+}
+
+// --- Mount API routes conditionally based on SERVICE_TYPE ---
+if (priceRoutes) {
   console.log('Mounting /api/price routes');
   app.use('/api/price', priceRoutes);
 }
 
-if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'trading') {
+if (tradingRoutes) {
   console.log('Mounting /api/trading routes');
   app.use('/api/trading', tradingRoutes);
 }
 
-if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'validation') {
+if (validationRoutes) {
   console.log('Mounting /api/validation routes');
   app.use('/api/validation', validationRoutes);
 }
 
-if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'admin') {
+if (adminRoutes) {
   console.log('Mounting /api/admin routes');
   app.use('/api/admin', adminRoutes);
 }
 
-if (SERVICE_TYPE === 'runes') {
-  console.log('Mounting / (root) routes for Runes API Facade');
+if (runesAPI) {
   // Mount Runes API routes directly on the root path
-  // This makes endpoints like /ovt/distribution available
+  if (SERVICE_TYPE === 'runes') {
+    console.log('Mounting / (root) routes for Runes API Facade');
+  } else { // SERVICE_TYPE === 'all'
+    console.log('Mounting / (root) routes for Runes API (all mode)');
+  }
   app.use('/', runesAPI);
-} else if (SERVICE_TYPE === 'all') {
-  // If running in 'all' mode (e.g., local dev), mount runes directly too
-  console.log('Mounting / (root) routes for Runes API (all mode)');
-  app.use('/', runesAPI);
-} else {
-  // If we are NOT the runes service AND NOT in 'all' mode,
-  // we might need to proxy requests if a component expects to call runes via the *same* port.
-  // However, current setup seems to rely on explicit URLs (RUNES_API_URL),
-  // so direct proxying might not be needed here unless a specific use case arises.
+} else if (SERVICE_TYPE !== 'all') {
   console.log('Runes API routes are NOT mounted directly for this service type.');
-  // The existing proxy logic below handles forwarding if needed based on RUNES_API_URL vs current port.
 }
 
 // Forward Runes API requests to the runesAPI service IF the RUNES_API_URL is different
@@ -380,24 +389,20 @@ app.get('/', (req, res) => {
   availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/api/health/')));
 
   // Add endpoints based on SERVICE_TYPE
-  if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'price') {
+  if (priceRoutes) {
     availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/api/price')));
   }
-  if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'trading') {
+  if (tradingRoutes) {
     availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/api/trading')));
   }
-  if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'validation') {
+  if (validationRoutes) {
     availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/api/validation')));
   }
-  if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'admin') {
+  if (adminRoutes) {
     availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/api/admin')));
   }
-  if (SERVICE_TYPE === 'runes' || SERVICE_TYPE === 'all') {
-     // Assuming runes API endpoints start with /ovt or similar root paths defined in runesAPI
-     // Filter based on common patterns or add specific endpoints if needed
-     // Example: adding endpoints starting with /ovt/
-     availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/ovt/')));
-     // You might need a more robust way to identify runes endpoints if they don't share a common prefix
+  if (runesAPI) {
+    availableEndpoints.push(...allEndpoints.filter(e => e.path.startsWith('/ovt/')));
   }
 
   // Remove duplicates if any (e.g., from 'all' adding routes already added)
@@ -483,11 +488,11 @@ if (require.main === module) {
   });
 
   // Only run periodic tasks relevant to the service type
-  if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'trading') {
+  if (tradingRoutes) {
     console.log('Setting up periodic order matching task for trading service.');
     setInterval(() => {
       try {
-        // Ensure tradingService is required only when needed
+        // Now it's safer to require tradingService here as it's only done for relevant SERVICE_TYPEs
         const tradingService = require('./services/tradingService');
         const matches = tradingService.matchOrders();
         if (matches.length > 0) {
@@ -499,11 +504,11 @@ if (require.main === module) {
     }, 60000); // Adjust interval as needed
   }
 
-   if (SERVICE_TYPE === 'all' || SERVICE_TYPE === 'price') {
+   if (priceRoutes) {
      console.log('Initializing price service periodic updates.');
-     // Assuming priceService initialization handles its own timers/intervals
-     // If not, add setInterval calls here for price updates, OVT supply checks, etc.
-     // e.g., require('./services/priceService').startPeriodicUpdates();
+     // If priceService needs explicit start, do it here
+     // const priceService = require('./services/priceService');
+     // priceService.startPeriodicUpdates(); 
    }
 
    // Add other service-specific periodic tasks here
