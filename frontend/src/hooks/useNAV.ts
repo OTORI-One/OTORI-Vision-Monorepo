@@ -1,16 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { 
-  calculateNAV, 
-  updateNAV,
-  addNAVUpdateListener,
-  removeNAVUpdateListener,
-  NAVResult, 
-  NAV_UPDATE_EVENT 
-} from '../lib/navCalculator';
-import { PortfolioPosition, getPortfolioFromLocalStorage } from '../utils/priceMovement';
+import type { NAVResult } from '../lib/navCalculator';
 import { useCurrencyToggle, Currency } from './useCurrencyToggle';
 import { formatValue, SATS_PER_BTC } from '../lib/formatting';
-import priceService from '../services/priceService';
+import { getPriceStore, NAVData } from '../services/priceService';
 
 interface NAVHookResult {
   nav: NAVResult;
@@ -32,175 +24,121 @@ const defaultNAV: NAVResult = {
   changePercentage: 0
 };
 
-// Add a global cache at the module level to store NAV data across component instances
-const navDataCache = {
-  data: null as NAVResult | null,
-  timestamp: 0,
-  subscribers: new Set<(data: NAVResult) => void>()
-};
-
-// Central update function that updates all subscribers
-const updateNavSubscribers = (data: NAVResult) => {
-  navDataCache.data = data;
-  navDataCache.timestamp = Date.now();
-  
-  // Notify all subscribers
-  navDataCache.subscribers.forEach(callback => {
-    try {
-      callback(data);
-    } catch (err) {
-      console.error('Error in NAV subscriber callback:', err);
-    }
-  });
-};
-
-// Helper function to determine if cache is still fresh
-const isCacheFresh = (maxAge: number = 5000): boolean => {
-  return (
-    navDataCache.data !== null && 
-    Date.now() - navDataCache.timestamp < maxAge
-  );
-};
-
 /**
- * Hook for accessing NAV data with automatic currency formatting
+ * Hook for accessing NAV data with automatic currency formatting,
+ * using the centralized PriceStore for updates via polling.
  */
 export function useNAV(): NAVHookResult {
-  const [navData, setNavData] = useState<NAVResult>(() => 
-    navDataCache.data || defaultNAV
-  );
-  const [loading, setLoading] = useState<boolean>(!navDataCache.data);
+  // Get the singleton PriceStore instance
+  const priceStore = useMemo(() => getPriceStore(), []);
+
+  // Initialize state from PriceStore's current data or default
+  const [navData, setNavData] = useState<NAVResult>(() => {
+    const currentStoreData = priceStore.navData;
+    if (currentStoreData) {
+      // Map store data (NAVData) to hook data (NAVResult)
+      return {
+        navSats: currentStoreData.totalValueSats,
+        navUsd: currentStoreData.totalValueUSD,
+        formattedNavSats: currentStoreData.formattedTotalValueSats,
+        formattedNavUsd: currentStoreData.formattedTotalValueUSD,
+        pricePerToken: currentStoreData.ovtPrice,
+        pricePerTokenUsd: currentStoreData.btcPrice ? (currentStoreData.ovtPrice / SATS_PER_BTC) * currentStoreData.btcPrice : 0,
+        totalTokenSupply: currentStoreData.circulatingSupply || 2100000,
+        changePercentage: currentStoreData.changePercentage || 0
+      };
+    }
+    return defaultNAV;
+  });
+
+  // Loading is true initially if the store doesn't have data yet
+  const [loading, setLoading] = useState<boolean>(!priceStore.navData);
   const [error, setError] = useState<string | null>(null);
-  const [lastUpdateTime, setLastUpdateTime] = useState<number>(navDataCache.timestamp);
   
   // Get the currency context
   const { currency } = useCurrencyToggle();
   
-  // Access the centralized price store for consistency
-  const priceStore = useMemo(() => {
-    return typeof window !== 'undefined' ? priceService.getPriceStore() : null;
-  }, []);
-  
-  // Refresh portfolio data and recalculate NAV
+  // Manual refresh function - uses the store's fetch method
   const refreshNAV = useCallback(() => {
+    // Only allow manual refresh if not currently loading
+    if (loading) return;
+
+    console.log('Manual NAV refresh triggered via PriceStore...');
     setLoading(true);
-    
-    // Use the store method which has built-in rate limiting
-    priceStore?.fetchNAVData(true)
+    priceStore.fetchNAVData(true) // Use force=true for manual refresh
       .then(data => {
-        // Map from API format to NAV format
-        const navResult: NAVResult = {
-          navSats: data.totalValueSats,
-          navUsd: data.totalValueUSD,
-          formattedNavSats: data.formattedTotalValueSats,
-          formattedNavUsd: data.formattedTotalValueUSD,
-          pricePerToken: data.ovtPrice,
-          pricePerTokenUsd: data.btcPrice ? (data.ovtPrice / SATS_PER_BTC) * data.btcPrice : 0,
-          totalTokenSupply: data.circulatingSupply || 2100000,
-          changePercentage: data.changePercentage || 0
-        };
-        
-        // Update module-level cache for all components
-        updateNavSubscribers(navResult);
-        
-        // Update local state
-        setNavData(navResult);
-        setError(null);
-        setLastUpdateTime(Date.now());
+         // The subscription listener below will handle updating the state
+         // We just need to reset loading/error here if needed, but the listener does that too.
+         // setError(null); 
       })
       .catch(err => {
-        console.error('Error refreshing NAV:', err);
-        setError('Failed to refresh NAV data');
-      })
-      .finally(() => {
-        setLoading(false);
+        console.error('Error during manual NAV refresh:', err);
+        setError('Failed to manually refresh NAV data');
+        // If refresh fails, stop loading
+        setLoading(false); 
       });
-  }, [priceStore]);
+      // setLoading(false) will be handled by the subscription callback upon successful update or error during fetch
+  }, [priceStore, loading]); 
   
-  // Subscribe to global NAV updates
+  // Effect for subscribing to PriceStore updates
   useEffect(() => {
     // Skip in SSR context
     if (typeof window === 'undefined') return;
-    
-    // Callback when NAV data is updated
-    const handleNavUpdate = (data: NAVResult) => {
-      setNavData(data);
-      setLoading(false);
-      setError(null);
-      setLastUpdateTime(Date.now());
-    };
-    
-    // Add subscription to global updates
-    navDataCache.subscribers.add(handleNavUpdate);
-    
-    // Track last fetch time in a module-level variable to prevent multiple components
-    // from triggering parallel requests
-    let lastFetchAttempt = 0;
-    
-    // Initial data fetch if cache is stale or empty
-    if (!isCacheFresh(10000)) {
-      // Only fetch if no other component has requested data in the last 5 seconds
-      const now = Date.now();
-      if (now - lastFetchAttempt > 5000) {
-        lastFetchAttempt = now;
-        
-        // Try to use price store API data first
-        if (priceStore) {
-          // Don't use force=true to respect cache and rate limits
-          priceStore.fetchNAVData(false)
-            .then(data => {
-              // Map from API format to NAV format
-              const navResult: NAVResult = {
-                navSats: data.totalValueSats,
-                navUsd: data.totalValueUSD,
-                formattedNavSats: data.formattedTotalValueSats,
-                formattedNavUsd: data.formattedTotalValueUSD,
-                pricePerToken: data.ovtPrice,
-                pricePerTokenUsd: data.btcPrice ? (data.ovtPrice / SATS_PER_BTC) * data.btcPrice : 0,
-                totalTokenSupply: data.circulatingSupply || 2100000,
-                changePercentage: data.changePercentage || 0
-              };
-              
-              // Update module-level cache for all components
-              updateNavSubscribers(navResult);
-            })
-            .catch(err => {
-              console.warn('Could not fetch initial NAV data from API:', err);
-              // Use fallback local calculation if API fails
-              try {
-                const portfolioPositions = getPortfolioFromLocalStorage();
-                const initialNav = calculateNAV(portfolioPositions);
-                
-                // Update module-level cache
-                updateNavSubscribers(initialNav);
-              } catch (calcErr) {
-                console.error('Error with fallback NAV calculation:', calcErr);
-                setError('Failed to load NAV data');
-              }
-            });
-        } else {
-          // No price store available, use local calculation
-          try {
-            const portfolioPositions = getPortfolioFromLocalStorage();
-            const initialNav = calculateNAV(portfolioPositions);
-            
-            // Update module-level cache
-            updateNavSubscribers(initialNav);
-          } catch (err) {
-            console.error('Error calculating local NAV:', err);
-            setError('Failed to load NAV data');
-          }
+
+    let isMounted = true;
+
+    // Callback when PriceStore updates its NAV data
+    const handleNavUpdate = (storeData: NAVData) => {
+        if (isMounted) {
+          console.log('Received NAV update from PriceStore subscription.');
+          // Map store data (NAVData) to hook data (NAVResult)
+          const newNavResult: NAVResult = {
+            navSats: storeData.totalValueSats,
+            navUsd: storeData.totalValueUSD,
+            formattedNavSats: storeData.formattedTotalValueSats,
+            formattedNavUsd: storeData.formattedTotalValueUSD,
+            pricePerToken: storeData.ovtPrice,
+            pricePerTokenUsd: storeData.btcPrice ? (storeData.ovtPrice / SATS_PER_BTC) * storeData.btcPrice : 0,
+            totalTokenSupply: storeData.circulatingSupply || 2100000,
+            changePercentage: storeData.changePercentage || 0
+          };
+          setNavData(newNavResult);
+          setError(null); 
+          setLoading(false); // Data has arrived, no longer loading
         }
-      }
+    };
+
+    // Subscribe to updates from the PriceStore
+    const unsubscribe = priceStore.subscribeToNavUpdates(handleNavUpdate);
+
+    // Trigger initial fetch *if* the store doesn't have data upon mount
+    // The store's internal logic prevents duplicate requests.
+    if (!priceStore.navData) {
+        console.log('useNAV: Initializing NAV fetch via PriceStore.');
+        setLoading(true);
+        priceStore.fetchNAVData(false)
+            .catch(err => {
+                // Error handling for the initial fetch
+                if (isMounted) {
+                    console.error('useNAV: Initial NAV fetch failed:', err);
+                    setError('Failed to load initial NAV data');
+                    setLoading(false); // Stop loading on error
+                }
+            });
+    } else {
+        // If store already had data, we are not loading
+        setLoading(false);
     }
-    
+
     // Clean up subscription on unmount
     return () => {
-      navDataCache.subscribers.delete(handleNavUpdate);
+      isMounted = false;
+      unsubscribe();
     };
-  }, [priceStore]);
+  // IMPORTANT: priceStore is stable due to useMemo, so this effect runs only once on mount
+  }, [priceStore]); 
   
-  // Get formatted NAV based on current currency - memoize to prevent unnecessary calculations
+  // Memoized formatted NAV calculation (no changes needed)
   const getFormattedNAV = useCallback((navResult: NAVResult, activeCurrency: Currency): string => {
     if (!navResult) return activeCurrency === 'usd' ? '$0.00' : '₿0.00';
     
@@ -209,7 +147,6 @@ export function useNAV(): NAVHookResult {
       : navResult.formattedNavSats;
   }, []);
   
-  // Memoize formatted NAV to prevent unnecessary recalculations
   const formattedNAV = useMemo(() => {
     return getFormattedNAV(navData, currency);
   }, [getFormattedNAV, navData, currency]);
@@ -219,7 +156,7 @@ export function useNAV(): NAVHookResult {
     loading,
     error,
     refreshNAV,
-    formattedNAV
+    formattedNAV,
   };
 }
 
