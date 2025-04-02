@@ -9,6 +9,8 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+// Import the correctly configured API URLs from index.js
+const { RUNES_API_URL } = require('../index.js');
 
 // Constants
 const PRICE_DATA_FILE = path.join(__dirname, '../../data/price-data.json');
@@ -613,15 +615,23 @@ async function updatePrices() {
 async function updateOVTCirculatingSupply() {
   try {
     console.log('Updating OVT circulating supply...');
+
+    // Use the imported RUNES_API_URL which correctly handles remote/local resolution
+    if (!RUNES_API_URL) {
+      console.error('RUNES_API_URL is not configured. Cannot update OVT supply.');
+      return false;
+    }
     
-    // Use API_BASE_URL from environment or default to localhost:3030
-    const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3030';
-    
-    // Try to fetch circulating supply from the Runes API
+    // Try to fetch circulating supply from the Runes API endpoint
     try {
-      // Call our own API endpoint, which handles the communication with the remote Runes API
-      const response = await axios.get(`${API_BASE_URL}/ovt/distribution`, {
-        timeout: 5000
+      // The /ovt/distribution endpoint might actually be part of the main API, 
+      // not the runes_API.js script. Let's assume it should call the Runes API for now.
+      // If /ovt/distribution lives elsewhere, this URL needs adjustment.
+      const targetUrl = `${RUNES_API_URL}/ovt/distribution`; // Construct the target URL
+      console.log(`Attempting to fetch OVT distribution from: ${targetUrl}`);
+      
+      const response = await axios.get(targetUrl, {
+        timeout: 10000 // Increased timeout slightly
       });
       
       if (response.data && response.data.success && response.data.distributionStats) {
@@ -642,10 +652,15 @@ async function updateOVTCirculatingSupply() {
         
         return true;
       } else {
-        console.log('Invalid response from Runes API, using default or previous supply');
+        console.log(`Invalid response received from ${targetUrl}, using default or previous supply`);
       }
     } catch (error) {
-      console.error('Error fetching OVT distribution data:', error);
+      // Log the specific URL that failed
+      console.error(`Error fetching OVT distribution data from ${RUNES_API_URL}/ovt/distribution:`, error.message);
+      if (error.response) {
+        console.error('Response Status:', error.response.status);
+        console.error('Response Data:', error.response.data);
+      }
       console.log('Using default or previous supply value');
     }
     

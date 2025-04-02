@@ -12,9 +12,14 @@ const axios = require('axios');
 // Initialize express app
 const app = express();
 const server = http.createServer(app);
-const PORT = process.env.PORT || 3030;
+const PORT = process.env.PORT || 3031;
 const NODE_ENV = process.env.NODE_ENV || 'development';
-const RUNES_API_URL = process.env.RUNES_API_URL || 'http://localhost:3030';
+const RUNES_API_URL = process.env.REMOTE_RUNES_API_URL || process.env.RUNES_API_URL || 'http://localhost:9191';
+
+// Similarly update other service URL lookups if needed elsewhere
+const TRADING_API_URL = process.env.REMOTE_TRADING_API_URL || process.env.TRADING_API_URL || 'http://localhost:3032';
+const PRICE_API_URL = process.env.REMOTE_PRICE_API_URL || process.env.PRICE_API_URL || 'http://localhost:3033';
+const VALIDATION_API_URL = process.env.REMOTE_VALIDATION_API_URL || process.env.VALIDATION_API_URL || 'http://localhost:3034';
 
 // Log startup information
 console.log(`Starting OTORI Vision API in ${NODE_ENV} mode`);
@@ -389,5 +394,9 @@ if (require.main === module) {
 // Export for potential programmatic usage
 module.exports = {
   app,
-  server
+  server,
+  RUNES_API_URL,
+  TRADING_API_URL,
+  PRICE_API_URL,
+  VALIDATION_API_URL
 }; 

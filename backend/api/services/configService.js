@@ -82,7 +82,10 @@ const baseConfig = {
   
   // API settings
   api: {
-    baseUrl: process.env.API_BASE_URL || 'http://localhost:3030',
+    // Use REMOTE_RUNES_API_URL first if available (for WebPi admin calls)
+    // Then standard RUNES_API_URL (for OrdPi services)
+    // Finally fallback to OrdPi's default Nginx port if nothing else is defined
+    baseUrl: process.env.REMOTE_RUNES_API_URL || process.env.RUNES_API_URL || 'http://localhost:8080', 
     timeout: parseInt(process.env.API_TIMEOUT || '30000', 10),
   }
 };
