@@ -6,110 +6,59 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import priceService, { OVTPrice } from '../services/priceService';
+import priceService, { getPriceStore, OVTPrice } from '../services/priceService';
 
-export function useOVTPrice() {
-  // Create a stable, consistent initial state for SSR
-  const initialPrice = useMemo(() => ({
-    price: 550000, // Fixed value for SSR
+// Define the hook result interface
+interface OVTPriceHookResult {
+  price: number;
+  btcPriceSats: number;
+  btcPriceFormatted: string;
+  usdPrice: number;
+  usdPriceFormatted: string;
+  dailyChange: number;
+  dailyChangeFormatted: string;
+  isPositiveChange: boolean;
+  lastUpdate: number;
+  circulatingSupply: number;
+  isLoading: boolean; // True if WebSocket is connecting or initial data hasn't arrived
+  error: string | null; // Connection errors or data issues
+  isConnected: boolean; // Expose WebSocket connection status
+  // refreshPrice: () => Promise<boolean>; // Removed - updates are pushed
+  timestamp: number;
+}
+
+export function useOVTPrice(): OVTPriceHookResult {
+  const priceStore = useMemo(() => getPriceStore(), []);
+
+  // SSR initial state remains the same
+  const initialPriceSsr = useMemo(() => ({
+    price: 550000,
     btcPriceSats: 550000,
     btcPriceFormatted: '550,000 sats',
     usdPrice: 3.30,
     usdPriceFormatted: '$3.30',
-    dailyChange: 0, // Always start with 0 for SSR
+    dailyChange: 0,
     lastUpdate: Date.now(),
     circulatingSupply: 1000000,
     timestamp: Date.now()
   }), []);
 
-  const [ovtPrice, setOvtPrice] = useState<OVTPrice | null>(initialPrice);
-  const [isLoading, setIsLoading] = useState(false); // Start with not loading for SSR
+  // Initialize state from store cache or SSR default
+  const [ovtPrice, setOvtPrice] = useState<OVTPrice | null>(() => {
+      // In SSR, always use initialPriceSsr
+      if (typeof window === 'undefined') return initialPriceSsr;
+      // On client, try store first, then SSR default
+      return priceStore.ovtPrice || initialPriceSsr;
+  });
+  
+  const [isConnected, setIsConnected] = useState<boolean>(priceStore.isConnected);
+  const [isLoading, setIsLoading] = useState<boolean>(() => {
+      if (typeof window === 'undefined') return false; // Not loading in SSR
+      return !priceStore.isConnected || !priceStore.ovtPrice;
+  });
   const [error, setError] = useState<string | null>(null);
-  
-  // We'll use the price store for synchronized data
-  const priceStore = priceService.getPriceStore();
-  
-  // Function to force refresh (can be called by components)
-  const refreshPrice = useCallback(async () => {
-    // Exit early in SSR context
-    if (typeof window === 'undefined') return false;
-    
-    try {
-      // Show loading state
-      setIsLoading(true);
-      
-      // Trigger an update with optimized request handling
-      await priceService.triggerOVTPriceUpdate();
-      
-      // Then fetch the updated price through the store with force=true to bypass cache
-      const freshData = await priceStore.fetchOVTPrice(true); // Force refresh
-      
-      // Save valid data for 24h change
-      if (typeof freshData.dailyChange === 'number' && isFinite(freshData.dailyChange)) {
-        try {
-          // Store the valid change percentage to localStorage for resilience
-          localStorage.setItem('ovt-daily-change', String(freshData.dailyChange));
-          localStorage.setItem('ovt-daily-change-timestamp', String(Date.now()));
-        } catch (err) {
-          console.error('Error saving OVT daily change to localStorage:', err);
-        }
-      }
-      
-      setIsLoading(false);
-      return true;
-    } catch (err) {
-      console.error('Error manually refreshing OVT price:', err);
-      setIsLoading(false);
-      return false;
-    }
-  }, [priceStore]);
 
-  // Set up subscription to the price store - only in client side
-  useEffect(() => {
-    // Skip in SSR context
-    if (typeof window === 'undefined') return;
-    
-    // Initially check if store already has data
-    if (priceStore.ovtPrice) {
-      setOvtPrice(priceStore.ovtPrice);
-    }
-    
-    // Set up listener for updates from the store
-    const unsubscribe = priceStore.subscribeToOvtUpdates((data) => {
-      // Save valid data for 24h change
-      if (typeof data.dailyChange === 'number' && isFinite(data.dailyChange)) {
-        try {
-          // Store the valid change percentage to localStorage for resilience
-          localStorage.setItem('ovt-daily-change', String(data.dailyChange));
-          localStorage.setItem('ovt-daily-change-timestamp', String(Date.now()));
-        } catch (err) {
-          console.error('Error saving OVT daily change to localStorage:', err);
-        }
-      }
-      
-      setOvtPrice(data);
-      setError(null);
-    });
-    
-    // Always fetch fresh data on mount, regardless of cache state
-    // This ensures we have the latest data when the component mounts
-    setIsLoading(true);
-    priceStore.fetchOVTPrice(false) // Use cached data first for faster initial render
-      .catch(err => {
-        console.error('Error in initial OVT price fetch:', err);
-        setError('Failed to fetch initial OVT price data');
-      })
-      .finally(() => {
-        setIsLoading(false);
-      });
-    
-    // Cleanup
-    return () => {
-      unsubscribe();
-    };
-  }, [priceStore]);
-
-  // Get cached daily change value if available
+  // Get cached daily change value if available (keep this utility)
   const getCachedDailyChange = useCallback(() => {
     try {
       if (typeof window === 'undefined') return null;
@@ -131,73 +80,113 @@ export function useOVTPrice() {
     }
   }, []);
 
-  // Calculate the formatted daily change safely
-  const dailyChangeFormatted = useMemo(() => {
-    // Use data from API if available
-    if (ovtPrice && typeof ovtPrice.dailyChange === 'number' && isFinite(ovtPrice.dailyChange)) {
-      const change = ovtPrice.dailyChange;
-      return `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
-    }
-    
-    // Try to get from localStorage cache
-    const cachedChange = getCachedDailyChange();
-    if (cachedChange !== null) {
-      return `${cachedChange >= 0 ? '+' : ''}${cachedChange.toFixed(2)}%`;
-    }
-    
-    // Default to consistent value for SSR
-    return '+0.00%';
-  }, [ovtPrice, getCachedDailyChange]);
-
-  // Determine if change is positive (for styling)
-  const isPositiveChange = useMemo(() => {
-    if (ovtPrice && typeof ovtPrice.dailyChange === 'number' && isFinite(ovtPrice.dailyChange)) {
-      return ovtPrice.dailyChange >= 0;
-    }
-    
-    // Try to get from localStorage cache
-    const cachedChange = getCachedDailyChange();
-    if (cachedChange !== null) {
-      return cachedChange >= 0;
-    }
-    
-    // Default to neutral/positive
-    return true;
-  }, [ovtPrice, getCachedDailyChange]);
-
-  // Debug log for troubleshooting - only on client side
+  // Effect for subscribing to PriceStore updates (data and connection)
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    
-    if (process.env.NODE_ENV !== 'production') {
-      if (!ovtPrice) {
-        console.debug('useOVTPrice hook: No price data available');
-      } else if (typeof ovtPrice.dailyChange !== 'number' || !isFinite(ovtPrice.dailyChange)) {
-        console.debug('useOVTPrice hook: Invalid dailyChange value:', ovtPrice.dailyChange);
-      }
-    }
-  }, [ovtPrice]);
+    if (typeof window === 'undefined') return; // Client-side only
 
-  // Return a complete object with consistent values for SSR and client
-  return {
-    price: (ovtPrice?.price && isFinite(ovtPrice.price)) ? ovtPrice.price : 550000,
-    btcPriceSats: (ovtPrice?.btcPriceSats && isFinite(ovtPrice.btcPriceSats)) ? ovtPrice.btcPriceSats : 550000,
-    btcPriceFormatted: ovtPrice?.btcPriceFormatted || '550,000 sats',
-    usdPrice: (ovtPrice?.usdPrice && isFinite(ovtPrice.usdPrice)) ? ovtPrice.usdPrice : 3.30,
-    usdPriceFormatted: ovtPrice?.usdPriceFormatted || '$3.30',
-    dailyChange: (ovtPrice?.dailyChange && isFinite(ovtPrice.dailyChange)) 
+    let isMounted = true;
+
+    // 1. Subscribe to OVT price data updates
+    const handleOvtUpdate = (data: OVTPrice) => {
+      if (isMounted) {
+        // Cache the daily change value locally if valid
+        if (typeof data.dailyChange === 'number' && isFinite(data.dailyChange)) {
+          try {
+            localStorage.setItem('ovt-daily-change', String(data.dailyChange));
+            localStorage.setItem('ovt-daily-change-timestamp', String(Date.now()));
+          } catch (err) {
+            console.error('Error saving OVT daily change to localStorage:', err);
+          }
+        }
+        setOvtPrice(data);
+        setError(null); // Clear error on successful data update
+        setIsLoading(false); // Data arrived
+      }
+    };
+    const unsubscribeOvt = priceStore.subscribeToOvtUpdates(handleOvtUpdate);
+
+    // 2. Subscribe to connection status changes
+    const handleConnectionChange = (status: boolean) => {
+      if (isMounted) {
+        setIsConnected(status);
+        if (!status) {
+           if (!priceStore.ovtPrice) { // Only loading if no data at all
+              setIsLoading(true);
+              setError("Connecting to real-time updates...");
+           } else {
+               setError("Real-time connection lost. Displaying last known data.");
+               setIsLoading(false);
+           }
+        } else {
+          setError(null);
+          setIsLoading(!priceStore.ovtPrice); // Loading if connected but no data yet
+        }
+      }
+    };
+    const unsubscribeConnection = priceStore.subscribeToConnectionChange(handleConnectionChange);
+
+    // Initial state check after subscriptions
+    if (isMounted) {
+        setIsConnected(priceStore.isConnected);
+        const currentStorePrice = priceStore.ovtPrice;
+        setOvtPrice(currentStorePrice || initialPriceSsr); // Use cache or SSR default
+        setIsLoading(!priceStore.isConnected || !currentStorePrice);
+        if (!priceStore.isConnected && !currentStorePrice) {
+            setError("Connecting to real-time updates...");
+        }
+    }
+
+    // Cleanup
+    return () => {
+      isMounted = false;
+      unsubscribeOvt();
+      unsubscribeConnection();
+    };
+  }, [priceStore, initialPriceSsr]); // Include initialPriceSsr in deps for safety
+
+  // Memoized calculations for formatted daily change and positive status (keep)
+  const dailyChangeFormatted = useMemo(() => {
+      // Prioritize live data, then cache, then default
+      const currentChange = (ovtPrice?.dailyChange !== undefined && isFinite(ovtPrice.dailyChange)) 
+          ? ovtPrice.dailyChange 
+          : getCachedDailyChange();
+
+      if (currentChange !== null) {
+          return `${currentChange >= 0 ? '+' : ''}${currentChange.toFixed(2)}%`;
+      }
+      return '+0.00%'; // Default
+  }, [ovtPrice, getCachedDailyChange]);
+
+  const isPositiveChange = useMemo(() => {
+      const currentChange = (ovtPrice?.dailyChange !== undefined && isFinite(ovtPrice.dailyChange)) 
+          ? ovtPrice.dailyChange 
+          : getCachedDailyChange();
+      
+      return currentChange === null ? true : currentChange >= 0; // Default to true if unknown
+  }, [ovtPrice, getCachedDailyChange]);
+
+  // Return hook result, ensuring fallbacks for potentially null ovtPrice
+  // Use live data if available, otherwise fallback gracefully (using cached daily change where appropriate)
+  const finalPriceData = ovtPrice || initialPriceSsr;
+  const liveDailyChange = (ovtPrice?.dailyChange !== undefined && isFinite(ovtPrice.dailyChange)) 
       ? ovtPrice.dailyChange 
-      : getCachedDailyChange() || 0,
+      : getCachedDailyChange() ?? 0; // Fallback to cache or 0
+
+  return {
+    price: finalPriceData.price,
+    btcPriceSats: finalPriceData.btcPriceSats,
+    btcPriceFormatted: finalPriceData.btcPriceFormatted,
+    usdPrice: finalPriceData.usdPrice,
+    usdPriceFormatted: finalPriceData.usdPriceFormatted,
+    dailyChange: liveDailyChange,
     dailyChangeFormatted,
     isPositiveChange,
-    lastUpdate: ovtPrice?.lastUpdate || 0,
-    circulatingSupply: (ovtPrice?.circulatingSupply && isFinite(ovtPrice.circulatingSupply)) 
-      ? ovtPrice.circulatingSupply 
-      : 1000000,
+    lastUpdate: finalPriceData.lastUpdate,
+    circulatingSupply: finalPriceData.circulatingSupply,
     isLoading,
-    setIsLoading, // Expose loading state setter for component control
     error,
-    refreshPrice, // Expose the refresh function
-    timestamp: ovtPrice?.timestamp || 0
+    isConnected,
+    // refreshPrice, // Removed
+    timestamp: finalPriceData.timestamp,
   };
 } 

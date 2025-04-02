@@ -94,3 +94,7 @@ nginx.conf
 nginx/*.conf
 /nginx/
 nginx.conf.d/
+
+# PM2 ecosystem Config files
+ecosystem.ordpi.config.js
+ecosystem.webpi.config.js

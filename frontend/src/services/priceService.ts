@@ -7,11 +7,18 @@
  */
 
 import axios from 'axios';
+import { w3cwebsocket as W3CWebSocket, IMessageEvent, ICloseEvent } from "websocket"; // Use websocket library and import types
 
 // API base URL - can be overridden via environment variables
 const API_BASE_URL = process.env.NEXT_PUBLIC_PRICE_API_URL || 'http://localhost:3030/api/price';
-const CACHE_TTL = 10000; // Cache time-to-live: 10 seconds
+// Determine WebSocket URL from API URL or specific env var
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || API_BASE_URL.replace(/^http/, 'ws');
+
+const CACHE_TTL = 10000; // Cache time-to-live: 10 seconds (Keep for potential fallback)
 const SATS_PER_BTC = 100000000; // 100M sats per BTC
+const MAX_RECONNECT_ATTEMPTS = 10;
+const INITIAL_RECONNECT_DELAY = 1000; // 1 second
+const MAX_RECONNECT_DELAY = 30000; // 30 seconds
 
 // Central data storage - this is the single source of truth
 class PriceStore {
@@ -22,7 +29,7 @@ class PriceStore {
   private _ovtPrice: OVTPrice | null = null;
   private _btcPrice: BitcoinPrice | null = null;
   
-  // Track when data was last fetched
+  // Track when data was last fetched (still useful for cache validity)
   private _navLastFetched: number = 0;
   private _ovtLastFetched: number = 0;
   private _btcLastFetched: number = 0;
@@ -32,19 +39,31 @@ class PriceStore {
   private _ovtListeners: Set<(data: OVTPrice) => void> = new Set();
   private _btcListeners: Set<(data: BitcoinPrice) => void> = new Set();
   
-  // Pending promises to prevent duplicate requests
+  // WebSocket State
+  private ws: W3CWebSocket | null = null; // Use W3CWebSocket type
+  private wsUrl: string = WS_URL;
+  private _isConnected: boolean = false;
+  private connectionListeners: Set<(status: boolean) => void> = new Set();
+  private reconnectTimeout: NodeJS.Timeout | null = null;
+  private reconnectAttempts: number = 0;
+  
+  // Pending promises might still be useful for initial load before WS connects
   private _pendingNavPromise: Promise<NAVData> | null = null;
   private _pendingOvtPromise: Promise<OVTPrice> | null = null;
   private _pendingBtcPromise: Promise<BitcoinPrice> | null = null;
   
-  // Centralized queue for API requests to prevent 429 errors
+  // Rate limiting/Queueing might be removed if purely WS, but keep for now if HTTP calls remain
   private requestQueue: Map<string, number> = new Map();
   private QUEUE_DELAY = 1500; // 1.5 seconds between requests of the same type
   private MAX_CONCURRENT_REQUESTS = 1; // Limit concurrent requests
   private activeRequests = 0;
   
   // Constructor is private for singleton pattern
-  private constructor() {}
+  private constructor() {
+    // Load initial data from cache immediately
+    this.loadInitialCache();
+    // Don't connect immediately, wait for initialize call
+  }
   
   // Get the singleton instance
   public static getInstance(): PriceStore {
@@ -54,22 +73,184 @@ class PriceStore {
     return PriceStore.instance;
   }
   
+  // --- WebSocket Connection Management ---
+  
+  private connectWebSocket(): void {
+    if (this.ws || typeof window === 'undefined') {
+      // Avoid connecting if already connected or in SSR
+      return;
+    }
+
+    console.log(`Attempting to connect WebSocket to ${this.wsUrl}...`);
+    // Use W3CWebSocket constructor
+    this.ws = new W3CWebSocket(this.wsUrl);
+    this.setupWebSocketListeners();
+  }
+  
+  private disconnectWebSocket(): void {
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
+    if (this.ws) {
+      console.log('Disconnecting WebSocket...');
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
+      this.ws.onerror = null;
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
+    this._isConnected = false;
+    this.notifyConnectionListeners();
+     this.reconnectAttempts = 0; // Reset attempts on manual disconnect
+  }
+  
+  private setupWebSocketListeners(): void {
+    if (!this.ws) return;
+
+    this.ws.onopen = () => {
+      console.log('WebSocket connected successfully.');
+      this._isConnected = true;
+      this.reconnectAttempts = 0; // Reset attempts on successful connection
+      if (this.reconnectTimeout) {
+        clearTimeout(this.reconnectTimeout); // Clear any pending reconnect timer
+        this.reconnectTimeout = null;
+      }
+      this.notifyConnectionListeners();
+      // Optional: Send a ping or subscription message if required by backend
+      // this.ws.send(JSON.stringify({ type: 'subscribe', topics: ['nav', 'ovt', 'btc'] }));
+    };
+
+    this.ws.onmessage = (event: IMessageEvent) => {
+      try {
+        const message = JSON.parse(event.data.toString());
+        // console.log('WebSocket message received:', message); // Verbose logging
+
+        switch (message.type) {
+          case 'NAV_UPDATE':
+            if (message.payload && !this.hasInfinityValues(message.payload)) {
+               // console.log('Updating NAV data from WS:', message.payload);
+               this.navData = message.payload as NAVData; // Use setter to notify listeners
+            } else {
+                console.warn('Received invalid NAV_UPDATE payload:', message.payload);
+            }
+            break;
+          case 'OVT_PRICE_UPDATE':
+            if (message.payload && !this.hasInfinityValues(message.payload)) {
+                // console.log('Updating OVT price from WS:', message.payload);
+                this.ovtPrice = message.payload as OVTPrice; // Use setter
+            } else {
+                console.warn('Received invalid OVT_PRICE_UPDATE payload:', message.payload);
+            }
+            break;
+          case 'BTC_PRICE_UPDATE':
+            if (message.payload && !this.hasInfinityValues(message.payload)) {
+               // console.log('Updating BTC price from WS:', message.payload);
+               this.btcPrice = message.payload as BitcoinPrice; // Use setter
+            } else {
+                console.warn('Received invalid BTC_PRICE_UPDATE payload:', message.payload);
+            }
+            break;
+           case 'PONG': // Handle potential ping/pong
+             // console.log('Received pong from server');
+             break;
+          default:
+            console.warn('Received unknown WebSocket message type:', message.type);
+        }
+      } catch (error) {
+        console.error('Error processing WebSocket message:', error, 'Raw data:', event.data);
+      }
+    };
+
+    this.ws.onerror = (error: Error) => {
+      console.error('WebSocket error:', error);
+      // The 'onclose' event will likely follow, triggering reconnection logic
+    };
+
+    this.ws.onclose = (event: ICloseEvent) => {
+      console.log(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason}. Clean close: ${event.wasClean}`);
+      this._isConnected = false;
+      this.ws = null; // Ensure ws instance is cleared
+      this.notifyConnectionListeners();
+      if (!event.wasClean) { // Only attempt reconnect on unclean close
+          this.scheduleReconnect();
+      } else {
+           console.log("WebSocket closed cleanly, not attempting reconnect.");
+      }
+    };
+  }
+
+  private scheduleReconnect(): void {
+      if (this.reconnectTimeout) { // Prevent scheduling multiple reconnects
+         // console.log("Reconnect already scheduled.");
+          return;
+      }
+    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.error(`Max WebSocket reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Giving up.`);
+      this.reconnectAttempts = 0; // Reset for potential future manual connect
+      return;
+    }
+
+    this.reconnectAttempts++;
+    // Exponential backoff with jitter
+    const delay = Math.min(
+        INITIAL_RECONNECT_DELAY * Math.pow(2, this.reconnectAttempts -1) + Math.random() * 1000,
+        MAX_RECONNECT_DELAY
+    );
+
+
+    console.log(`WebSocket disconnected. Attempting reconnect #${this.reconnectAttempts} in ${(delay / 1000).toFixed(1)}s...`);
+
+    this.reconnectTimeout = setTimeout(() => {
+        this.reconnectTimeout = null; // Clear the timeout handle before attempting connection
+        this.connectWebSocket();
+    }, delay);
+  }
+
+  private notifyConnectionListeners(): void {
+    this.connectionListeners.forEach(listener => {
+      try { listener(this._isConnected); } catch (e) { console.error('Error in connection listener:', e); }
+    });
+  }
+
+  // Public method to subscribe to connection status changes
+  public subscribeToConnectionChange(callback: (status: boolean) => void): () => void {
+    this.connectionListeners.add(callback);
+    // Immediately call with current status
+    callback(this._isConnected);
+    // Return unsubscribe function
+    return () => {
+      this.connectionListeners.delete(callback);
+    };
+  }
+
+  // Public property to check connection status
+  public get isConnected(): boolean {
+    return this._isConnected;
+  }
+
+  // --- Data Accessors & Handling (Mostly Unchanged, but rely on WS updates) ---
+  
   // NAV data accessors
   public get navData(): NAVData | null {
     return this._navData;
   }
   
   public set navData(data: NAVData | null) {
-    // Only update if data is valid
+    // Only update if data is valid and different enough
     if (data && !this.hasInfinityValues(data)) {
-      this._navData = data;
-      this._navLastFetched = Date.now();
-      // Notify all listeners
-      this._navListeners.forEach(listener => {
-        try { listener(data); } catch (e) { console.error('Error in NAV listener:', e); }
-      });
-      // Also store in local storage for faster page loads
-      this.cacheData('nav-data-cache', data);
+      const changed = !this._navData || this.hasDataChanged(this._navData, data);
+      if(changed) {
+          this._navData = data;
+          this._navLastFetched = Date.now(); // Still track last update time
+          // Notify all listeners
+          this._navListeners.forEach(listener => {
+            try { listener(data); } catch (e) { console.error('Error in NAV listener:', e); }
+          });
+          // Still cache in local storage for initial load speed
+          this.cacheData('nav-data-cache', data);
+      }
     }
   }
   
@@ -79,16 +260,19 @@ class PriceStore {
   }
   
   public set ovtPrice(data: OVTPrice | null) {
-    // Only update if data is valid
+     // Only update if data is valid and different enough
     if (data && !this.hasInfinityValues(data)) {
-      this._ovtPrice = data;
-      this._ovtLastFetched = Date.now();
-      // Notify all listeners
-      this._ovtListeners.forEach(listener => {
-        try { listener(data); } catch (e) { console.error('Error in OVT listener:', e); }
-      });
-      // Store in local storage
-      this.cacheData('ovt-price-data', data);
+       const changed = !this._ovtPrice || this.hasDataChanged(this._ovtPrice, data);
+       if(changed) {
+          this._ovtPrice = data;
+          this._ovtLastFetched = Date.now();
+          // Notify all listeners
+          this._ovtListeners.forEach(listener => {
+            try { listener(data); } catch (e) { console.error('Error in OVT listener:', e); }
+          });
+          // Store in local storage
+          this.cacheData('ovt-price-data', data);
+       }
     }
   }
   
@@ -98,25 +282,30 @@ class PriceStore {
   }
   
   public set btcPrice(data: BitcoinPrice | null) {
-    // Only update if data is valid
+    // Only update if data is valid and different enough
     if (data && !this.hasInfinityValues(data)) {
-      this._btcPrice = data;
-      this._btcLastFetched = Date.now();
-      // Notify all listeners
-      this._btcListeners.forEach(listener => {
-        try { listener(data); } catch (e) { console.error('Error in BTC listener:', e); }
-      });
-      // Store in local storage
-      this.cacheData('btc-price-data', data);
+        const changed = !this._btcPrice || this.hasDataChanged(this._btcPrice, data);
+        if (changed) {
+            this._btcPrice = data;
+            this._btcLastFetched = Date.now();
+            // Notify all listeners
+            this._btcListeners.forEach(listener => {
+                try { listener(data); } catch (e) { console.error('Error in BTC listener:', e); }
+            });
+            // Store in local storage
+            this.cacheData('btc-price-data', data);
+        }
     }
   }
+  
+  // --- Data Subscriptions (Unchanged) ---
   
   // Subscribe to NAV updates
   public subscribeToNavUpdates(callback: (data: NAVData) => void): () => void {
     this._navListeners.add(callback);
     // Immediately call with current data if available
     if (this._navData) {
-      callback(this._navData);
+        try { callback(this._navData); } catch (e) { console.error('Error in initial NAV callback:', e); }
     }
     // Return unsubscribe function
     return () => {
@@ -129,7 +318,7 @@ class PriceStore {
     this._ovtListeners.add(callback);
     // Immediately call with current data if available
     if (this._ovtPrice) {
-      callback(this._ovtPrice);
+        try { callback(this._ovtPrice); } catch (e) { console.error('Error in initial OVT callback:', e); }
     }
     // Return unsubscribe function
     return () => {
@@ -142,7 +331,7 @@ class PriceStore {
     this._btcListeners.add(callback);
     // Immediately call with current data if available
     if (this._btcPrice) {
-      callback(this._btcPrice);
+        try { callback(this._btcPrice); } catch (e) { console.error('Error in initial BTC callback:', e); }
     }
     // Return unsubscribe function
     return () => {
@@ -150,17 +339,22 @@ class PriceStore {
     };
   }
   
+  // --- Helper Methods (Mostly Unchanged) ---
+  
   // Helper to check for Infinity/NaN values in an object
   private hasInfinityValues(obj: any): boolean {
     for (const key in obj) {
-      if (typeof obj[key] === 'number' && !isFinite(obj[key])) {
-        console.warn(`Detected non-finite value in price data: ${key} = ${obj[key]}`);
-        return true;
-      }
-      if (typeof obj[key] === 'object' && obj[key] !== null) {
-        if (this.hasInfinityValues(obj[key])) {
-          return true;
-        }
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+          const value = obj[key];
+          if (typeof value === 'number' && !isFinite(value)) {
+            console.warn(`Detected non-finite value in price data: ${key} = ${value}`);
+            return true;
+          }
+          if (typeof value === 'object' && value !== null) {
+            if (this.hasInfinityValues(value)) {
+              return true;
+            }
+          }
       }
     }
     return false;
@@ -172,7 +366,7 @@ class PriceStore {
     try {
       localStorage.setItem(key, JSON.stringify({
         data,
-        timestamp: Date.now()
+        timestamp: Date.now() // Timestamp the cache entry
       }));
     } catch (e) {
       console.error(`Error caching ${key}:`, e);
@@ -180,21 +374,35 @@ class PriceStore {
   }
   
   // Helper to load data from localStorage
-  private loadCachedData<T>(key: string, maxAge: number = 5 * 60 * 1000): T | null {
+  private loadCachedData<T>(key: string, maxAge: number = 5 * 60 * 1000): T | null { // Default 5 min max age
     if (typeof window === 'undefined') return null;
     try {
-      const cachedData = localStorage.getItem(key);
-      if (!cachedData) return null;
-      
-      const parsed = JSON.parse(cachedData);
+      const cachedItem = localStorage.getItem(key);
+      if (!cachedItem) return null;
+
+      const parsed = JSON.parse(cachedItem);
+      if (!parsed.timestamp || !parsed.data) return null; // Validate structure
+
       if (Date.now() - parsed.timestamp < maxAge) {
-        return parsed.data as T;
+          // console.log(`Using fresh cached data for ${key}`);
+          return parsed.data as T;
+      } else {
+          // console.log(`Cached data for ${key} is stale.`);
+          localStorage.removeItem(key); // Remove stale cache
+          return null;
       }
     } catch (e) {
       console.error(`Error loading cached ${key}:`, e);
+      localStorage.removeItem(key); // Remove potentially corrupted cache
     }
     return null;
   }
+  
+  // --- HTTP Fetching (Keep as fallback or for initial load?) ---
+  // Decide if these HTTP methods are still needed. If WS is reliable,
+  // they might only be needed for an initial fetch before WS connects,
+  // or as a fallback mechanism. For now, keep the structure but remove
+  // the automatic polling logic.
   
   // Helper method to handle API requests with rate limiting and retry logic
   private async executeRateLimitedRequest<T>(
@@ -206,399 +414,249 @@ class PriceStore {
     const lastRequestTime = this.requestQueue.get(endpoint) || 0;
     const now = Date.now();
     const timeSinceLastRequest = now - lastRequestTime;
-    
+
     // If too recent, wait before making the request
     if (timeSinceLastRequest < this.QUEUE_DELAY) {
       // Wait for the remaining time plus a small buffer
       const waitTime = this.QUEUE_DELAY - timeSinceLastRequest + Math.random() * 500;
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
-    
+
     // Wait if we have too many active requests globally
     while (this.activeRequests >= this.MAX_CONCURRENT_REQUESTS) {
       await new Promise(resolve => setTimeout(resolve, 500));
     }
-    
+
     // Update the queue with current timestamp
     this.requestQueue.set(endpoint, Date.now());
-    
+
     try {
       // Track active request count
       this.activeRequests++;
-      
+
       // Execute the actual API request
       return await requestFn();
     } catch (error) {
       if (retries > 0) {
-        console.warn(`Request to ${endpoint} failed, retrying... (${retries} attempts left)`);
+        console.warn(`HTTP Request to ${endpoint} failed, retrying... (${retries} attempts left)`);
         // Exponential backoff: wait longer for each retry
-        const backoffTime = (3 - retries) * 3000 + Math.random() * 2000;
+        const backoffTime = (3 - retries) * 1500 + Math.random() * 1000; // Shorter backoff for fallback HTTP
         await new Promise(resolve => setTimeout(resolve, backoffTime));
-        return this.executeRateLimitedRequest(endpoint, requestFn, retries - 1);
+        // Ensure correct recursive call signature
+        return this.executeRateLimitedRequest<T>(endpoint, requestFn, retries - 1);
       }
+       console.error(`All HTTP request attempts to ${endpoint} failed.`);
       throw error;
     } finally {
       // Decrease active request count when done
       this.activeRequests--;
     }
   }
-  
-  // Method to fetch NAV data with automatic caching and retry
+
+  // Method to fetch NAV data via HTTP (potential fallback/initial load)
   public async fetchNAVData(force: boolean = false): Promise<NAVData> {
     const now = Date.now();
-    const CACHE_TTL = 10000; // 10 seconds TTL
-    
-    // If we have recent data and this isn't a forced refresh, return cached data
-    if (!force && this._navData && (now - this._navLastFetched < CACHE_TTL)) {
+    const HTTP_CACHE_TTL = 60000; // Longer TTL for HTTP fallback (60s)
+
+    // Use existing data if fresh and not forcing
+    if (!force && this._navData && (now - this._navLastFetched < HTTP_CACHE_TTL)) {
       return this._navData;
     }
-    
-    // Rate limiting - prevent too many requests
+
+    // Use pending promise if available
     if (this._pendingNavPromise) {
       return this._pendingNavPromise;
     }
-    
-    // Mark fetch time
-    this._navLastFetched = now;
-    
-    // Use the rate-limited request helper
+
+    console.log('Fetching NAV data via HTTP...');
     this._pendingNavPromise = this.executeRateLimitedRequest<NAVData>(
       'nav',
-      () => getNAVData(),
-      3 // Three retries for NAV data since it's critical
+      () => getNAVData(), // Assumes getNAVData still makes the HTTP call
+      2 // Fewer retries for fallback
     )
     .then(data => {
-      // Update cache with valid data
-      if (!this._navData || this.hasDataChanged(this._navData, data)) {
-        this.navData = data; // This will trigger listeners
+      // Update store only if data is newer or significantly different
+      if (!this._navData || data.timestamp > this._navLastFetched || this.hasDataChanged(this._navData, data, 0.5)) {
+          this.navData = data; // Use setter to notify/cache
       }
       this._pendingNavPromise = null;
-      return data;
+      return this.navData!; // Return the potentially updated store data
     })
     .catch(err => {
-      console.error('All NAV data fetch attempts failed:', err);
+      console.error('HTTP fetchNAVData failed:', err);
       this._pendingNavPromise = null;
-      
-      // Use cached data if we have it
-      if (this._navData) {
-        console.log('Using cached NAV data from memory');
-        return this._navData;
-      }
-      
-      // Try to load from localStorage
-      const cachedData = this.loadCachedData<NAVData>('nav-data');
-      if (cachedData) {
-        console.log('Using cached NAV data from localStorage');
-        this._navData = cachedData;
-        return cachedData;
-      }
-      
-      // If we have nothing else, throw the error
-      throw new Error('Failed to fetch NAV data and no cache available');
+      // Return existing data if available, otherwise throw
+      if (this._navData) return this._navData;
+      throw new Error('Failed to fetch NAV data via HTTP and no cache available');
     });
-    
+
     return this._pendingNavPromise;
   }
-  
-  // Method to fetch OVT price with automatic caching and retry
+
+  // Method to fetch OVT price via HTTP (potential fallback/initial load)
   public async fetchOVTPrice(force: boolean = false): Promise<OVTPrice> {
     const now = Date.now();
-    const CACHE_TTL = 10000; // 10 seconds TTL
-    
-    // If not forcing refresh and data is still fresh, use cached data
-    if (!force && this._ovtPrice && (now - this._ovtLastFetched < CACHE_TTL)) {
+    const HTTP_CACHE_TTL = 60000; // 60 seconds TTL
+
+    if (!force && this._ovtPrice && (now - this._ovtLastFetched < HTTP_CACHE_TTL)) {
       return this._ovtPrice;
     }
-    
-    // Rate limiting - prevent too many requests
     if (this._pendingOvtPromise) {
       return this._pendingOvtPromise;
     }
-    
-    // Mark fetch time
-    this._ovtLastFetched = now;
-    
-    // Use the rate-limited request helper
+
+     console.log('Fetching OVT price via HTTP...');
     this._pendingOvtPromise = this.executeRateLimitedRequest<OVTPrice>(
       'ovt',
       () => getOVTPrice(),
-      3 // Three retries for OVT price data since it's critical
+      2
     )
     .then(data => {
-      // Ensure dailyChange is a valid number
-      if (typeof data.dailyChange !== 'number' || !isFinite(data.dailyChange)) {
-        // Use zero instead of a random number for transparency
-        data.dailyChange = 0;
-        console.warn('Server returned invalid dailyChange value, using 0');
-      }
-      
-      // Update cache with valid data
-      if (!this._ovtPrice || this.hasDataChanged(this._ovtPrice, data)) {
-        this.ovtPrice = data; // This will trigger listeners
-      }
-      this._pendingOvtPromise = null;
-      return data;
+        if (!this._ovtPrice || data.timestamp > this._ovtLastFetched || this.hasDataChanged(this._ovtPrice, data, 0.5)) {
+           // Ensure dailyChange is valid
+           if (typeof data.dailyChange !== 'number' || !isFinite(data.dailyChange)) {
+               data.dailyChange = this._ovtPrice?.dailyChange ?? 0; // Fallback to previous or 0
+               console.warn('Server returned invalid dailyChange via HTTP, using fallback.');
+           }
+           this.ovtPrice = data;
+        }
+        this._pendingOvtPromise = null;
+        return this.ovtPrice!;
     })
     .catch(err => {
-      console.error('All OVT price fetch attempts failed:', err);
+      console.error('HTTP fetchOVTPrice failed:', err);
       this._pendingOvtPromise = null;
-      
-      // Use cached data if we have it
-      if (this._ovtPrice) {
-        console.log('Using cached OVT price data from memory');
-        return this._ovtPrice;
-      }
-      
-      // Try to load from localStorage
-      const cachedData = this.loadCachedData<OVTPrice>('ovt-price-data');
-      if (cachedData) {
-        console.log('Using cached OVT price data from localStorage');
-        this._ovtPrice = cachedData;
-        return cachedData;
-      }
-      
-      // If we have nothing else, throw the error
-      throw new Error('Failed to fetch OVT price data and no cache available');
+      if (this._ovtPrice) return this._ovtPrice;
+      throw new Error('Failed to fetch OVT price via HTTP and no cache available');
     });
-    
+
     return this._pendingOvtPromise;
   }
-  
-  // Method to fetch BTC price with automatic caching
+
+  // Method to fetch BTC price via HTTP (potential fallback/initial load)
   public async fetchBTCPrice(force: boolean = false): Promise<BitcoinPrice> {
-    // If we have recent data and this isn't a forced refresh, return cached data
-    const now = Date.now();
-    const CACHE_TTL = 30000; // BTC price changes less frequently, use 30 seconds
-    
-    if (!force && this._btcPrice && (now - this._btcLastFetched < CACHE_TTL)) {
-      return this._btcPrice;
-    }
-    
-    // If we have a pending request, return that promise
-    if (this._pendingBtcPromise) {
-      return this._pendingBtcPromise;
-    }
-    
-    // Mark fetch time
-    this._btcLastFetched = now;
-    
-    // Use the rate-limited request helper
-    this._pendingBtcPromise = this.executeRateLimitedRequest<BitcoinPrice>(
-      'bitcoin',
-      () => getBitcoinPrice(),
-      2 // Two retries for BTC price
-    )
-    .then(data => {
-      // Update cache with valid data
-      if (!this._btcPrice || this.hasDataChanged(this._btcPrice, data)) {
-        this.btcPrice = data; // This will trigger listeners
-      }
-      this._pendingBtcPromise = null;
-      return data;
-    })
-    .catch(err => {
-      console.error('All BTC price fetch attempts failed:', err);
-      this._pendingBtcPromise = null;
-      
-      // Use cached data if we have it
-      if (this._btcPrice) {
-        console.log('Using cached BTC price data from memory');
-        return this._btcPrice;
-      }
-      
-      // Try to load from localStorage
-      const cachedData = this.loadCachedData<BitcoinPrice>('btc-price-data');
-      if (cachedData) {
-        console.log('Using cached BTC price data from localStorage');
-        this._btcPrice = cachedData;
-        return cachedData;
-      }
-      
-      // If we have nothing else, throw the error
-      throw new Error('Failed to fetch BTC price data and no cache available');
-    });
-    
-    return this._pendingBtcPromise;
-  }
-  
-  // Initialize store with cached data
-  public initialize(): void {
-    // Try to load cached data
-    const cachedNav = this.loadCachedData<NAVData>('nav-data-cache');
-    if (cachedNav) this._navData = cachedNav;
-    
-    const cachedOvt = this.loadCachedData<OVTPrice>('ovt-price-data');
-    if (cachedOvt) this._ovtPrice = cachedOvt;
-    
-    const cachedBtc = this.loadCachedData<BitcoinPrice>('btc-price-data');
-    if (cachedBtc) this._btcPrice = cachedBtc;
-    
-    // Start data refresh
-    this.startPeriodicUpdates();
-  }
-  
-  // Start periodic updates for all data
-  public startPeriodicUpdates(): void {
-    // Skip in SSR context
-    if (typeof window === 'undefined') return;
-    
-    // Track API health
-    let isApiHealthy = true;
-    let consecutiveErrors = 0;
-    let lastSuccessfulFetch = Date.now();
-    
-    // Much more aggressive throttling to avoid rate limiting
-    const MIN_INTERVAL = 60000;    // Minimum time between requests (60s)
-    const MAX_INTERVAL = 300000;   // Maximum time between requests (5 minutes)
-    const BACKOFF_FACTOR = 4;      // More aggressive exponential backoff
-    const QUEUE_PROCESS_DELAY = 5000; // Time between processing queue items
-    
-    // Calculate interval based on API health
-    const getRefreshInterval = () => {
-      if (isApiHealthy) return MIN_INTERVAL;
-      
-      // Calculate backoff 
-      const backoffTime = MIN_INTERVAL * Math.pow(BACKOFF_FACTOR, consecutiveErrors);
-      return Math.min(backoffTime, MAX_INTERVAL);
-    };
-    
-    // Helper to track API health
-    const trackApiCall = (success: boolean) => {
-      if (success) {
-        isApiHealthy = true;
-        consecutiveErrors = Math.max(0, consecutiveErrors - 1); // Gradually reduce error count
-        lastSuccessfulFetch = Date.now();
-      } else {
-        consecutiveErrors++;
-        if (consecutiveErrors > 2) { // Lower threshold for unhealthy API
-          isApiHealthy = false;
-          console.warn(`API appears unhealthy, backing off (${consecutiveErrors} consecutive errors)`);
-        }
-      }
-    };
-    
-    // Create a queue system to avoid parallel requests
-    const requestQueue: (() => Promise<void>)[] = [];
-    let isProcessingQueue = false;
-    
-    // Process next request in queue with more delay between requests
-    const processQueue = async () => {
-      if (isProcessingQueue || requestQueue.length === 0) return;
-      
-      isProcessingQueue = true;
-      
-      try {
-        const nextRequest = requestQueue.shift();
-        if (nextRequest) {
-          await nextRequest();
-          trackApiCall(true);
-        }
-      } catch (err) {
-        console.error('Error processing queued request:', err);
-        trackApiCall(false);
-      } finally {
-        isProcessingQueue = false;
-        
-        // Process next request if available, with longer delay
-        if (requestQueue.length > 0) {
-          setTimeout(processQueue, QUEUE_PROCESS_DELAY);
-        }
-      }
-    };
-    
-    // Add request to queue with priority and deduplication
-    const queueRequest = (request: () => Promise<void>, type: string) => {
-      // Check if we already have a request of this type in the queue
-      const existingRequestIndex = requestQueue.findIndex(req => 
-        (req as any).requestType === type
-      );
-      
-      // If we already have this type of request, don't add another
-      if (existingRequestIndex >= 0) {
-        return;
-      }
-      
-      // Tag the request with its type for deduplication
-      (request as any).requestType = type;
-      
-      // Add to queue
-      requestQueue.push(request);
-      
-      // Start processing if not already
-      if (!isProcessingQueue) {
-        processQueue();
-      }
-    };
-    
-    // Initial data load with types
-    queueRequest(() => this.fetchNAVData().then(() => {}).catch(() => {}), 'nav');
-    
-    // Stagger the initial requests
-    setTimeout(() => {
-      queueRequest(() => this.fetchOVTPrice().then(() => {}).catch(() => {}), 'ovt');
-    }, 5000);
-    
-    setTimeout(() => {
-      queueRequest(() => this.fetchBTCPrice().then(() => {}).catch(() => {}), 'btc');
-    }, 10000);
-    
-    // Set up staggered intervals with health-based timing and much longer intervals
-    const navInterval = setInterval(() => {
-      // Only queue new requests if the API is believed to be responsive
-      // or enough time has passed since last error
-      if (isApiHealthy || Date.now() - lastSuccessfulFetch > MAX_INTERVAL) {
-        // NAV is high priority so always process it first
-        queueRequest(() => this.fetchNAVData().then(() => {}).catch(() => {}), 'nav');
-      }
-    }, getRefreshInterval() * 1.0); // NAV refreshes at the base interval - most important data
-    
-    const ovtInterval = setInterval(() => {
-      if (isApiHealthy || Date.now() - lastSuccessfulFetch > MAX_INTERVAL) {
-        queueRequest(() => this.fetchOVTPrice().then(() => {}).catch(() => {}), 'ovt');
-      }
-    }, getRefreshInterval() * 2.0); // OVT updates less frequently
-    
-    const btcInterval = setInterval(() => {
-      if (isApiHealthy || Date.now() - lastSuccessfulFetch > MAX_INTERVAL * 2) {
-        queueRequest(() => this.fetchBTCPrice().then(() => {}).catch(() => {}), 'btc');
-      }
-    }, getRefreshInterval() * 4.0); // BTC refreshes least frequently
-    
-    // Add cleanup for memory leaks
-    if (typeof window !== 'undefined') {
-      window.addEventListener('beforeunload', () => {
-        clearInterval(navInterval);
-        clearInterval(ovtInterval);
-        clearInterval(btcInterval);
-      });
-    }
+     const now = Date.now();
+     const HTTP_CACHE_TTL = 120000; // 120 seconds TTL for BTC
+
+     if (!force && this._btcPrice && (now - this._btcLastFetched < HTTP_CACHE_TTL)) {
+       return this._btcPrice;
+     }
+     if (this._pendingBtcPromise) {
+       return this._pendingBtcPromise;
+     }
+
+      console.log('Fetching BTC price via HTTP...');
+     this._pendingBtcPromise = this.executeRateLimitedRequest<BitcoinPrice>(
+       'bitcoin',
+       () => getBitcoinPrice(),
+       2
+     )
+     .then(data => {
+         if (!this._btcPrice || data.timestamp > this._btcLastFetched || this.hasDataChanged(this._btcPrice, data, 0.5)) {
+             this.btcPrice = data;
+         }
+         this._pendingBtcPromise = null;
+         return this.btcPrice!;
+     })
+     .catch(err => {
+       console.error('HTTP fetchBTCPrice failed:', err);
+       this._pendingBtcPromise = null;
+       if (this._btcPrice) return this._btcPrice;
+       throw new Error('Failed to fetch BTC price via HTTP and no cache available');
+     });
+
+     return this._pendingBtcPromise;
   }
 
+  // --- Initialization and Updates ---
+  
+   // Load initial data from cache on construction
+  private loadInitialCache(): void {
+    if (typeof window === 'undefined') return;
+    console.log("PriceStore: Loading initial cache...");
+    const cachedNav = this.loadCachedData<NAVData>('nav-data-cache');
+    if (cachedNav) this._navData = cachedNav;
+
+    const cachedOvt = this.loadCachedData<OVTPrice>('ovt-price-data');
+    if (cachedOvt) this._ovtPrice = cachedOvt;
+
+    const cachedBtc = this.loadCachedData<BitcoinPrice>('btc-price-data');
+    if (cachedBtc) this._btcPrice = cachedBtc;
+  }
+
+
+  // Initialize store: connect WebSocket and potentially fetch initial data via HTTP
+  public initialize(): void {
+    if (typeof window === 'undefined') return; // Only run on client
+
+    console.log("PriceStore initializing...");
+
+    // Connect WebSocket
+    this.connectWebSocket();
+
+    // Optional: Fetch initial data via HTTP if WS connection is delayed
+    // or as a quick way to populate initial state while WS connects.
+    // Consider if this is needed based on WS connection speed and reliability.
+    /*
+    if (!this._navData) {
+        this.fetchNAVData().catch(e => console.warn("Initial NAV HTTP fetch failed", e));
+    }
+    if (!this._ovtPrice) {
+        this.fetchOVTPrice().catch(e => console.warn("Initial OVT HTTP fetch failed", e));
+    }
+     if (!this._btcPrice) {
+        this.fetchBTCPrice().catch(e => console.warn("Initial BTC HTTP fetch failed", e));
+    }
+    */
+
+    // The old startPeriodicUpdates is removed as updates are now WS-driven
+  }
+
+  // REMOVED: startPeriodicUpdates - No longer needed with WebSockets
+  // public startPeriodicUpdates(): void { ... }
+
+
   // Add a utility method to check if data has changed meaningfully
-  private hasDataChanged(oldData: any, newData: any, threshold: number = 0.1): boolean {
-    // For NAVData comparison
-    if (oldData.totalValueSats !== undefined && newData.totalValueSats !== undefined) {
-      // Only consider it changed if value differs by more than 0.1%
-      const pctChange = Math.abs((newData.totalValueSats - oldData.totalValueSats) / oldData.totalValueSats);
-      return pctChange > threshold / 100; // Convert to decimal (0.1% = 0.001)
+  // Adjusted threshold for less frequent updates if desired
+  private hasDataChanged(oldData: any, newData: any, thresholdPercent: number = 0.01): boolean {
+    if (!oldData || !newData) return true; // Always update if old data is null
+
+    // Use timestamp as primary check - if newer, always update
+     if (newData.timestamp && oldData.timestamp && newData.timestamp > oldData.timestamp) {
+        // console.log("Data changed based on timestamp");
+        return true;
     }
-    
-    // For OVTPrice comparison
-    if (oldData.price !== undefined && newData.price !== undefined) {
-      // Only consider it changed if price differs by more than 0.1%
-      const pctChange = Math.abs((newData.price - oldData.price) / oldData.price);
-      return pctChange > threshold / 100;
+
+    // Helper to compare values with threshold
+    const checkValueChange = (key: string): boolean => {
+         if (oldData[key] !== undefined && newData[key] !== undefined && typeof oldData[key] === 'number' && typeof newData[key] === 'number') {
+            if (oldData[key] === 0 && newData[key] === 0) return false; // 0 to 0 is not a change
+            if (oldData[key] === 0 && newData[key] !== 0) return true; // 0 to non-zero is a change
+
+            const pctChange = Math.abs((newData[key] - oldData[key]) / oldData[key]) * 100;
+            // console.log(`Comparing ${key}: Old=${oldData[key]}, New=${newData[key]}, PctChange=${pctChange.toFixed(4)}%, Threshold=${thresholdPercent}%`);
+            return pctChange > thresholdPercent;
+         }
+         // Fallback to simple inequality if not numbers or one is undefined
+         return oldData[key] !== newData[key];
+    };
+
+
+    // Specific comparisons based on data type structure (adjust keys as needed)
+    if (newData.totalValueSats !== undefined) { // NAVData
+        return checkValueChange('totalValueSats') || checkValueChange('changePercentage');
     }
-    
-    // For BitcoinPrice comparison
-    if (oldData.price !== undefined && newData.price !== undefined) {
-      // Only consider it changed if price differs by more than 0.1%
-      const pctChange = Math.abs((newData.price - oldData.price) / oldData.price);
-      return pctChange > threshold / 100;
+    if (newData.price !== undefined && newData.btcPriceSats !== undefined) { // OVTPrice or similar
+        return checkValueChange('price') || checkValueChange('dailyChange'); // Check price and daily change
     }
-    
-    // Default to true if no specific comparison rule exists
-    return true;
+     if (newData.price !== undefined && newData.lastUpdate !== undefined) { // BitcoinPrice or similar
+        return checkValueChange('price'); // Just check price for BTC
+    }
+
+
+    // Fallback: Deep comparison (less efficient) or simple reference check if needed
+     console.warn("hasDataChanged defaulting to true - couldn't determine data type for comparison.");
+    return true; // Default to true if structure doesn't match known types
   }
 }
 
@@ -671,10 +729,12 @@ const handleApiError = (error: any): never => {
       data: error.response.data
     });
   } else if (error.request) {
-    console.error('API Request Error:', error.request);
+    console.error('API No Response Error:', error.message); // error.request might be complex
   } else {
-    console.error('API Error:', error.message);
+    // Setup error
+    console.error('API Setup Error:', error.message);
   }
+   // Rethrow the error so callers can handle it
   throw error;
 };
 
@@ -685,10 +745,10 @@ export const getPortfolioPositions = async (): Promise<Position[]> => {
     if (response.data.success) {
       return response.data.positions;
     }
-    throw new Error('Failed to fetch portfolio positions');
+    throw new Error('API indicated failure fetching portfolio positions');
   } catch (error) {
     console.error('Error fetching portfolio positions:', error);
-    throw error;
+    return handleApiError(error); // Call and return to satisfy linter about never return
   }
 };
 
@@ -699,10 +759,9 @@ export const getOVTPrice = async (): Promise<OVTPrice> => {
     if (response.data.success) {
       return response.data;
     }
-    throw new Error('Failed to fetch OVT price');
+    throw new Error('API indicated failure fetching OVT price');
   } catch (error) {
-    console.error('Error fetching OVT price:', error);
-    throw error; // Let the caller handle the error
+    return handleApiError(error);
   }
 };
 
@@ -713,10 +772,9 @@ export const getBitcoinPrice = async (): Promise<BitcoinPrice> => {
     if (response.data.success) {
       return response.data;
     }
-    throw new Error('Failed to fetch Bitcoin price');
+    throw new Error('API indicated failure fetching Bitcoin price');
   } catch (error) {
-    console.error('Error fetching Bitcoin price:', error);
-    throw error; // Re-throw to handle at caller level
+    return handleApiError(error);
   }
 };
 
@@ -727,10 +785,9 @@ export const getNAVData = async (): Promise<NAVData> => {
     if (response.data.success) {
       return response.data;
     }
-    throw new Error('Failed to fetch NAV data');
+    throw new Error('API indicated failure fetching NAV data');
   } catch (error) {
-    console.error('Error fetching NAV data:', error);
-    throw error; // Re-throw to handle at caller level
+    return handleApiError(error);
   }
 };
 
@@ -746,10 +803,10 @@ export const getPriceHistory = async (
     if (response.data.success) {
       return response.data.history;
     }
-    throw new Error(`Failed to fetch price history for ${positionName}`);
+    throw new Error(`API indicated failure fetching price history for ${positionName}`);
   } catch (error) {
     console.error(`Error fetching price history for ${positionName}:`, error);
-    throw error; // Re-throw to handle at caller level
+    return handleApiError(error);
   }
 };
 
@@ -760,7 +817,7 @@ export const triggerPriceUpdate = async (): Promise<boolean> => {
     return response.data.success;
   } catch (error) {
     console.error('Error triggering price update:', error);
-    throw error; // Re-throw to handle at caller level
+    return handleApiError(error);
   }
 };
 
@@ -771,7 +828,7 @@ export const updateOVTCirculatingSupply = async (): Promise<boolean> => {
     return response.data.success;
   } catch (error) {
     console.error('Error updating OVT circulating supply:', error);
-    throw error; // Re-throw to handle at caller level
+    return handleApiError(error);
   }
 };
 
@@ -782,89 +839,43 @@ export const triggerOVTPriceUpdate = async (): Promise<boolean> => {
     return response.data.success;
   } catch (error) {
     console.error('Error triggering OVT price update:', error);
-    throw error; // Re-throw to handle at caller level
-  }
-};
-
-// Helper functions for handling caching and real-time updates
-export const getCachedOVTPrice = (): OVTPrice | null => {
-  try {
-    if (typeof window === 'undefined') return null;
-    
-    const cachedData = localStorage.getItem('ovt-price-data');
-    if (!cachedData) return null;
-    
-    const parsedData = JSON.parse(cachedData) as OVTPrice;
-    
-    // Only use cache if it's less than 5 minutes old
-    if (Date.now() - parsedData.timestamp < 5 * 60 * 1000) {
-      return parsedData;
-    }
-    return null;
-  } catch (error) {
-    console.error('Error reading cached OVT price:', error);
-    return null;
-  }
-};
-
-export const cacheOVTPrice = (data: OVTPrice): void => {
-  try {
-    if (typeof window === 'undefined') return;
-    localStorage.setItem('ovt-price-data', JSON.stringify({
-      ...data,
-      timestamp: Date.now()
-    }));
-  } catch (error) {
-    console.error('Error caching OVT price:', error);
+    return handleApiError(error);
   }
 };
 
 // Export the singleton instance
 const priceStore = PriceStore.getInstance();
 
-// Initialize price store when module is loaded (but only on client)
+// Initialize price store when module is loaded (client-side only)
 if (typeof window !== 'undefined') {
   priceStore.initialize();
 }
 
-// Better API methods that use the singleton store
+// New way to access the store
 export const getPriceStore = () => priceStore;
 
-// Helper to get NAV data using the store to avoid duplicate requests
-export const getLatestNAVData = async (): Promise<NAVData> => {
-  return priceStore.fetchNAVData();
-};
-
-// Helper to get OVT price using the store
-export const getLatestOVTPrice = async (): Promise<OVTPrice> => {
-  return priceStore.fetchOVTPrice();
-};
-
-// Helper to get Bitcoin price using the store
-export const getLatestBitcoinPrice = async (): Promise<BitcoinPrice> => {
-  return priceStore.fetchBTCPrice();
-};
-
-// Export default with both original and improved methods
+// --- Consolidated Export ---
+// Provides access via default export, including the store instance
 export default {
-  // Original methods
+  // Store instance and accessors
+  store: priceStore,
+  getPriceStore,
+
+  // Potentially still useful direct HTTP calls
   getPortfolioPositions,
-  getOVTPrice,
-  getBitcoinPrice,
-  getNAVData,
   getPriceHistory,
   triggerPriceUpdate,
   updateOVTCirculatingSupply,
-  getCachedOVTPrice,
-  cacheOVTPrice,
   triggerOVTPriceUpdate,
-  
-  // New store-based methods
-  getLatestNAVData,
-  getLatestOVTPrice,
-  getLatestBitcoinPrice,
-  getPriceStore,
-  
-  // Direct store access
-  store: priceStore
+
+  // Direct access to store methods (can be used instead of getLatest...)
+  fetchNAVData: priceStore.fetchNAVData.bind(priceStore), // Expose HTTP fetch methods bound to store
+  fetchOVTPrice: priceStore.fetchOVTPrice.bind(priceStore),
+  fetchBTCPrice: priceStore.fetchBTCPrice.bind(priceStore),
+
+  // Subscription methods directly available
+  subscribeToNavUpdates: priceStore.subscribeToNavUpdates.bind(priceStore),
+  subscribeToOvtUpdates: priceStore.subscribeToOvtUpdates.bind(priceStore),
+  subscribeToBtcUpdates: priceStore.subscribeToBtcUpdates.bind(priceStore),
+  subscribeToConnectionChange: priceStore.subscribeToConnectionChange.bind(priceStore),
 }; 

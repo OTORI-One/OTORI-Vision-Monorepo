@@ -19,7 +19,6 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { ArchClient } from '../lib/archClient';
 import { RuneClient, OVT_RUNE_ID, OVT_FALLBACK_DISTRIBUTED } from '../lib/runeClient';
-import { useBitcoinPrice } from '../hooks/useBitcoinPrice';
 import { useLaserEyes } from '@omnisat/lasereyes';
 import { 
   shouldUseMockData, 
@@ -36,6 +35,9 @@ import {
   getGlobalNAVReference
 } from '../utils/priceMovement';
 import priceService from '../services/priceService';
+import { useNAV } from './useNAV';
+import { useOVTPrice } from './useOVTPrice';
+import { useBitcoinPrice } from './useBitcoinPrice';
 
 // Constants for numeric handling
 export { SATS_PER_BTC };
@@ -61,14 +63,6 @@ export interface TokenDistribution {
     txid: string;
     runeTransactionId?: string;  // Rune-specific transaction ID
   }[];
-}
-
-interface NAVData {
-  totalValue: string;         // Formatted string for display
-  totalValueSats: number;     // Raw value in sats
-  changePercentage: string;
-  portfolioItems: Portfolio[];
-  tokenDistribution: TokenDistribution;
 }
 
 // Initialize clients
@@ -150,89 +144,34 @@ export const getGlobalOVTPrice = (): number => {
 
 export function useOVTClient() {
   // State hooks - initialize properly to prevent React queue errors
-  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [baseCurrency, setBaseCurrency] = useState<'btc' | 'usd'>('btc');
   
-  // Access the central price store
-  const priceStore = useMemo(() => {
-    if (typeof window !== 'undefined') {
-      return priceService.getPriceStore();
-    }
-    return null;
-  }, []);
-  
-  // Add a fallback for Bitcoin price in case useBitcoinPrice returns undefined during testing
-  const bitcoinPriceHook = useBitcoinPrice() || { price: 50000, isLoading: false, error: null };
-  
-  // Memoize the bitcoin price and only update it when it changes by more than 1%
-  // This prevents small fluctuations from causing re-renders
-  const { price: rawBtcPrice } = bitcoinPriceHook;
-  const btcPrice = useMemo(() => {
-    // Safety check for null/undefined/NaN/Infinity
-    if (typeof rawBtcPrice !== 'number' || !Number.isFinite(rawBtcPrice)) {
-      return 50000; // Safe default
-    }
-    
-    // Round to the nearest 100 to reduce fluctuations
-    return Math.round(rawBtcPrice / 100) * 100;
-  }, [rawBtcPrice]);
+  // Use the hooks
+  const { nav, loading: navLoading, error: navError, isConnected: navConnected } = useNAV();
+  const { 
+      price: ovtPriceValue, // This is likely the raw USD price based on useOVTPrice structure
+      btcPriceSats: ovtBtcPriceSats,
+       usdPrice: ovtUsdPrice,
+      btcPriceFormatted: ovtBtcFormatted, // Store formatted values from hook if needed elsewhere
+      usdPriceFormatted: ovtUsdFormatted,
+      isLoading: ovtLoading,
+      error: ovtError,
+      isConnected: ovtConnected
+  } = useOVTPrice();
+  const { price: btcPrice, isLoading: btcLoading, error: btcError } = useBitcoinPrice() || { price: 50000, isLoading: false, error: null }; // Keep BTC price hook
   
   const { address } = useLaserEyes();
   const [portfolioPositions, setPortfolioPositions] = useState<Portfolio[]>([]);
-  const [lastPriceUpdateTime, setLastPriceUpdateTime] = useState<number>(Date.now());
   
-  // Get the global OVT price without triggering renders
-  const initialOVTPrice = useMemo(() => getGlobalOVTPrice(), []);
+  // Derive overall loading state
+  const isLoading = useMemo(() => navLoading || ovtLoading || btcLoading, [navLoading, ovtLoading, btcLoading]);
   
-  // Add centralized OVT price state
-  const [ovtPrice, setOvtPrice] = useState<number>(initialOVTPrice);
-  
-  // Formatted OVT price for consistent display
-  const formattedOvtPrice = useMemo(() => {
-    try {
-      // Check if ovtPrice is valid
-      if (!Number.isFinite(ovtPrice) || ovtPrice <= 0) {
-        // Default reasonable value
-        const defaultPrice = getGlobalNAVReference();
-        
-        // If the default is also invalid, use a hard-coded fallback
-        if (!Number.isFinite(defaultPrice) || defaultPrice <= 0) {
-          return baseCurrency === 'usd' ? '$0.00' : '0 sats';
-        }
-        
-        return formatValue(defaultPrice, baseCurrency, btcPrice);
-      }
-      
-      // Check for valid BTC price for USD conversion
-      if (baseCurrency === 'usd') {
-        if (!Number.isFinite(btcPrice) || btcPrice <= 0) {
-          // If BTC price is invalid, fall back to BTC display
-          return formatValue(ovtPrice, 'btc');
-        }
-      }
-      
-      // Now it's safe to format with validated values
-      return formatValue(ovtPrice, baseCurrency, btcPrice);
-    } catch (error) {
-      console.error('Error formatting OVT price (returning safe default):', error);
-      return baseCurrency === 'usd' ? '$0.00' : '0 sats';
-    }
-  }, [ovtPrice, baseCurrency, btcPrice]);
-
-  const [navData, setNavData] = useState<NAVData>({
-    totalValue: formatValue(getGlobalNAVReference(), 'usd'),
-    totalValueSats: getGlobalNAVReference(),
-    changePercentage: '0%',
-    portfolioItems: [],
-    tokenDistribution: {
-      totalSupply: 2100000,
-      distributed: 2100000,
-      runeId: OVT_RUNE_ID,
-      runeSymbol: 'OVT',
-      distributionEvents: []
-    }
-  });
+  // Combine errors (simple concatenation for now)
+  const combinedError = useMemo(() => {
+      const errors = [navError, ovtError, btcError].filter(Boolean);
+      return errors.length > 0 ? errors.join('; ') : null;
+  }, [navError, ovtError, btcError]);
 
   // Initialize currency from localStorage after mount
   useEffect(() => {
@@ -242,15 +181,6 @@ export function useOVTClient() {
         const currency = saved === 'btc' ? 'btc' : 'usd';
         globalBaseCurrency = currency;
         setBaseCurrency(currency);
-        
-        // Initialize price from localStorage
-        const savedPrice = localStorage.getItem('ovt-global-price');
-        if (savedPrice) {
-          const parsedPrice = parseFloat(savedPrice);
-          if (Number.isFinite(parsedPrice) && parsedPrice > 0) {
-            setOvtPrice(parsedPrice);
-          }
-        }
       } catch (e) {
         console.error('Error loading from localStorage:', e);
       }
@@ -328,46 +258,6 @@ export function useOVTClient() {
     }
   }, []);
 
-  // Simulate price movements for mock data
-  useEffect(() => {
-    if (!shouldUseMockData('portfolio')) {
-      return; // Only simulate prices for mock data
-    }
-    
-    // Listen for portfolio updates from usePortfolioPrices hook
-    const handlePortfolioUpdate = (e: CustomEvent) => {
-      if (e.detail && e.detail.positions) {
-        setPortfolioPositions(e.detail.positions);
-        setLastPriceUpdateTime(Date.now());
-      }
-    };
-    
-    // Add listener for portfolio updates
-    window.addEventListener('portfolio-updated', handlePortfolioUpdate as EventListener);
-    
-    // Set up interval for regular price updates - longer interval for better performance
-    const interval = setInterval(() => {
-      setPortfolioPositions(prevPositions => {
-        // Apply price movements
-        const updatedPositions = simulatePortfolioPriceMovements(prevPositions);
-        
-        // Ensure required description field is set for all positions
-        const validPositions = updatedPositions.map(pos => ({
-          ...pos,
-          description: pos.description || getProjectDescription(pos.name)
-        })) as Portfolio[];
-        
-        setLastPriceUpdateTime(Date.now());
-        return validPositions;
-      });
-    }, 45000 + Math.random() * 30000); // Longer interval (45-75 seconds) for better performance
-    
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('portfolio-updated', handlePortfolioUpdate as EventListener);
-    };
-  }, []);
-
   // Currency change handler
   const handleCurrencyChange = useCallback((currency: 'btc' | 'usd') => {
     // Update global currency
@@ -380,19 +270,15 @@ export function useOVTClient() {
       console.error('Failed to save currency preference:', e);
     }
     
-    // Instead of calling fetchNAV, just update the display currency of existing data
-    setNavData(prev => ({
-      ...prev,
-      totalValue: formatValue(prev.totalValueSats, currency, btcPrice)
-    }));
-    
+    // No need to refetch NAV, formatting is handled by useNAV/useOVTPrice and display components
+   
     // Dispatch a custom event that other components can listen for
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('currency-changed', { 
         detail: { currency } 
       }));
     }
-  }, [btcPrice]);
+  }, []);
 
   // Get transaction history from blockchain
   const getTransactionHistory = useCallback(async () => {
@@ -414,92 +300,9 @@ export function useOVTClient() {
     }
   }, [address]);
 
-  // Fetch NAV data - memoize to prevent unnecessary re-creation
-  const fetchNAV = useCallback(async (currency: 'btc' | 'usd' = 'usd') => {
-    const currencyToUse = currency || baseCurrency || 'usd';
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      // Fetch NAV data from the API
-      const navData = await priceService.getNAVData();
-      
-      // Update local state with API data
-      setNavData({
-        totalValue: currencyToUse === 'usd' ? navData.formattedTotalValueUSD : navData.formattedTotalValueSats,
-        totalValueSats: navData.totalValueSats,
-        changePercentage: `${navData.changePercentage.toFixed(2)}%`,
-        portfolioItems: [], // Will be populated later
-        tokenDistribution: {
-          totalSupply: 2100000,
-          distributed: navData.circulatingSupply || 2100000,
-          runeId: OVT_RUNE_ID,
-          runeSymbol: 'OVT',
-          distributionEvents: []
-        }
-      });
-      
-      // Fetch portfolio positions to populate portfolioItems
-      try {
-        const positions = await priceService.getPortfolioPositions();
-        setPortfolioPositions(positions as Portfolio[]);
-      } catch (posError) {
-        console.error('Error fetching portfolio positions:', posError);
-      }
-      
-      // Update OVT price from NAV data
-      setOvtPrice(navData.ovtPrice);
-      updateGlobalOVTPrice(navData.ovtPrice);
-      
-      setError(null);
-      setLastPriceUpdateTime(Date.now());
-    } catch (err) {
-      console.error('Error fetching NAV data:', err);
-      setError('Failed to fetch NAV data');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [baseCurrency]);
-
-  // Fetch NAV data on mount and when dependencies change
-  useEffect(() => {
-    if (baseCurrency) {
-      // Initial fetch
-      fetchNAV(baseCurrency);
-      
-      // Set up automatic updates
-      const intervalId = setInterval(() => fetchNAV(baseCurrency), 30000);
-      
-      // Clean up on component unmount
-      return () => {
-        if (intervalId) {
-          clearInterval(intervalId);
-        }
-      };
-    }
-  }, [fetchNAV, baseCurrency, lastPriceUpdateTime]);
-
-  // Update the formatValue function to handle the current display mode
-  // Add memoization to prevent excessive recalculations
-  const formatValueWithMode = useCallback((value: number, displayMode?: 'btc' | 'usd') => {
-    if (!Number.isFinite(value) || value < 0) {
-      value = 0;
-    }
-    
-    try {
-      const mode = displayMode || baseCurrency || 'usd';
-      // For USD mode, always use the memoized BTC price
-      return formatValue(value, mode, btcPrice);
-    } catch (error) {
-      console.error('Error in formatValueWithMode:', error);
-      return (displayMode || baseCurrency) === 'usd' ? '$0.00' : '₿0.00';
-    }
-  }, [baseCurrency, btcPrice]);
-
   // Add position management functions
   const addPosition = useCallback(async (position: Omit<Portfolio, 'address' | 'current' | 'change'>) => {
     try {
-      setIsLoading(true);
       setError(null);
       
       // Create a new position with generated values
@@ -518,49 +321,62 @@ export function useOVTClient() {
       console.error('Error adding position:', error);
       setError('Failed to add position');
       throw error;
-    } finally {
-      setIsLoading(false);
     }
   }, []);
 
   // Add getPositions function
-  const getPositions = useCallback(async () => {
+  const getPositions = useCallback(() => {
     try {
-      setIsLoading(true);
       setError(null);
       return portfolioPositions;
     } catch (error) {
       console.error('Error getting positions:', error);
       setError('Failed to get positions');
-      throw error;
-    } finally {
-      setIsLoading(false);
+      return []; // Return empty array on error
     }
   }, [portfolioPositions]);
 
   // Get circulating supply of OVT tokens
   const getCirculatingSupply = useCallback(async (): Promise<number> => {
+    // Prefer data from useNAV hook if available
+    if (nav && nav.totalTokenSupply) {
+        return nav.totalTokenSupply;
+    }
+    // Fallback to RuneClient
     try {
       return await runeClient.getCirculatingSupply();
     } catch (error) {
       console.error('Error getting circulating supply:', error);
       return OVT_FALLBACK_DISTRIBUTED; // Fallback to 1M OVT as per the first TGE plan
     }
-  }, []);
+  }, [nav]); // Depend on nav data
+  
+  // Construct the legacy NAVData object from the useNAV hook
+  const legacyNavData = useMemo(() => {
+      return {
+          totalValue: baseCurrency === 'usd' ? nav.formattedNavUsd : nav.formattedNavSats,
+          totalValueSats: nav.navSats,
+          changePercentage: `${(nav.changePercentage || 0).toFixed(2)}%`,
+          portfolioItems: portfolioPositions, // Still using mock/local portfolio state
+          tokenDistribution: {
+              totalSupply: 2100000, // TODO: Get from source if available
+              distributed: nav.totalTokenSupply || OVT_FALLBACK_DISTRIBUTED,
+              runeId: OVT_RUNE_ID,
+              runeSymbol: 'OVT',
+              distributionEvents: [] // TODO: Populate if needed
+          }
+      };
+  }, [nav, baseCurrency, portfolioPositions]);
 
   return {
     isLoading,
-    error,
-    navData,
+    error: combinedError, // Use combined error
+    navData: legacyNavData, // Provide the constructed legacy object
     baseCurrency: baseCurrency || 'usd',
     btcPrice,
     portfolioPositions,
-    lastPriceUpdateTime,
-    formatValue: useCallback((value: number, mode?: 'btc' | 'usd') => {
-      return formatValue(value, mode || baseCurrency || 'usd', btcPrice);
-    }, [baseCurrency, btcPrice]),
+    formatValue: formatValueUtils, // Export the centralized utility
     getTransactionHistory,
-    fetchNAV,
     handleCurrencyChange,
     setBaseCurrency: handleCurrencyChange,
     archClient,
@@ -568,8 +384,11 @@ export function useOVTClient() {
     addPosition,
     getPositions,
     getCirculatingSupply,
-    ovtPrice,
-    formattedOvtPrice
+    ovtPrice: ovtPriceValue, // Provide value from useOVTPrice hook
+    // Provide formatted value based on baseCurrency
+    formattedOvtPrice: baseCurrency === 'usd' 
+        ? ovtUsdFormatted // Use the formatted value directly from useOVTPrice hook
+        : ovtBtcFormatted   // Use the formatted value directly from useOVTPrice hook
   };
 }
 

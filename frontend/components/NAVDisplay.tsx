@@ -1,8 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
-import priceService from '../src/services/priceService';
-import { SATS_PER_BTC } from '../src/lib/formatting';
-import { useOVTPrice } from '../src/hooks/useOVTPrice';
 import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
 
@@ -11,202 +8,31 @@ interface NAVDisplayProps {
   showChange?: boolean;
 }
 
-// Safely access localStorage only on client side
-const safeGetItem = (key: string, defaultValue: string = ''): string => {
-  if (typeof window !== 'undefined') {
-    try {
-      return localStorage.getItem(key) || defaultValue;
-    } catch (err) {
-      console.warn(`Error reading ${key} from localStorage:`, err);
-      return defaultValue;
-    }
-  }
-  return defaultValue;
-};
-
-// Shared global cache to ensure NAV values are consistent across renders
-// Safely initialize to avoid SSR issues
-const globalNavCache = {
-  navTotalSats: Number(safeGetItem('nav-total-sats', '0')),
-  navTotalUSD: Number(safeGetItem('nav-total-usd', '0')),
-  navPercentage: Number(safeGetItem('nav-percentage', '0')),
-  formattedSats: safeGetItem('nav-formatted-sats', '0 sats'),
-  formattedUSD: safeGetItem('nav-formatted-usd', '$0.00')
-};
-
-// The actual component implementation
+// The simplified component implementation
 function NAVDisplayComponent({ size = 'md', showChange = true }: NAVDisplayProps) {
-  // Use the centralized NAV hook
-  const { nav, formattedNAV } = useNAV();
+  // Use the centralized NAV hook for data, loading, and error states
+  const { nav, loading, error, formattedNAV } = useNAV();
   const { currency } = useCurrencyToggle();
   
-  // Initialize with global cache values
-  const [navData, setNavData] = useState({
-    totalValueSats: globalNavCache.navTotalSats || 0,
-    totalValueUSD: globalNavCache.navTotalUSD || 0,
-    formattedTotalValueSats: globalNavCache.formattedSats || '0 sats',
-    formattedTotalValueUSD: globalNavCache.formattedUSD || '$0.00',
-    changePercentage: globalNavCache.navPercentage || 0,
-    btcPrice: 0,
-    ovtPrice: 0,
-    circulatingSupply: 0,
-    lastUpdate: Date.now(),
-    timestamp: Date.now()
-  });
-
-  // Track when data was last updated to avoid constantly refreshing
-  const lastUpdateRef = useRef<number>(Date.now());
-  const hasInitializedRef = useRef<boolean>(false);
-
-  // Subscribe to central store for NAV updates with priority given to the useNAV hook
-  useEffect(() => {
-    // Skip in SSR context
-    if (typeof window === 'undefined') return;
-    
-    // Update from useNAV hook first
-    if (nav && nav.navSats > 0) {
-      // Only update if nav data has changed significantly
-      const percentChange = Math.abs((nav.changePercentage || 0) - (navData.changePercentage || 0));
-      const valueChange = Math.abs((nav.navSats || 0) - (navData.totalValueSats || 0)) / (navData.totalValueSats || 1);
-      
-      if (percentChange > 0.01 || valueChange > 0.005 || !hasInitializedRef.current) {
-        setNavData({
-          totalValueSats: nav.navSats,
-          totalValueUSD: nav.navUsd,
-          formattedTotalValueSats: nav.formattedNavSats,
-          formattedTotalValueUSD: nav.formattedNavUsd,
-          changePercentage: nav.changePercentage,
-          btcPrice: 0,
-          ovtPrice: 0,
-          circulatingSupply: 0,
-          lastUpdate: Date.now(),
-          timestamp: Date.now()
-        });
-        
-        // Update global cache
-        globalNavCache.navTotalSats = nav.navSats;
-        globalNavCache.navTotalUSD = nav.navUsd;
-        globalNavCache.navPercentage = nav.changePercentage;
-        globalNavCache.formattedSats = nav.formattedNavSats;
-        globalNavCache.formattedUSD = nav.formattedNavUsd;
-        
-        try {
-          localStorage.setItem('nav-total-sats', String(nav.navSats));
-          localStorage.setItem('nav-total-usd', String(nav.navUsd));
-          localStorage.setItem('nav-percentage', String(nav.changePercentage));
-          localStorage.setItem('nav-formatted-sats', nav.formattedNavSats);
-          localStorage.setItem('nav-formatted-usd', nav.formattedNavUsd);
-        } catch (err) {
-          console.error('Error saving NAV to localStorage:', err);
-        }
-        
-        hasInitializedRef.current = true;
-        lastUpdateRef.current = Date.now();
-      }
-    } 
-    // Also fetch fresh data from the API if it's been over 5 seconds since last update
-    else if (Date.now() - lastUpdateRef.current > 5000) {
-      // Try to get fresh data from store
-      priceService.getLatestNAVData().then(storeData => {
-        if (storeData && storeData.totalValueSats > 0) {
-          setNavData(storeData);
-          
-          // Update global cache
-          globalNavCache.navTotalSats = storeData.totalValueSats;
-          globalNavCache.navTotalUSD = storeData.totalValueUSD;
-          globalNavCache.navPercentage = storeData.changePercentage || 0;
-          globalNavCache.formattedSats = storeData.formattedTotalValueSats;
-          globalNavCache.formattedUSD = storeData.formattedTotalValueUSD;
-          
-          try {
-            localStorage.setItem('nav-total-sats', String(storeData.totalValueSats));
-            localStorage.setItem('nav-total-usd', String(storeData.totalValueUSD));
-            localStorage.setItem('nav-percentage', String(storeData.changePercentage || 0));
-            localStorage.setItem('nav-formatted-sats', storeData.formattedTotalValueSats);
-            localStorage.setItem('nav-formatted-usd', storeData.formattedTotalValueUSD);
-          } catch (err) {
-            console.error('Error saving NAV to localStorage:', err);
-          }
-          
-          hasInitializedRef.current = true;
-          lastUpdateRef.current = Date.now();
-        }
-      }).catch(err => {
-        console.warn('Error fetching NAV data:', err);
-      });
-    }
-    
-    // Listen for NAV updates from the store
-    const priceStore = priceService.getPriceStore();
-    const unsubscribe = priceStore.subscribeToNavUpdates(data => {
-      // Only update if significant change or we haven't initialized yet
-      const percentChange = Math.abs((data.changePercentage || 0) - (navData.changePercentage || 0));
-      const valueChange = Math.abs((data.totalValueSats || 0) - (navData.totalValueSats || 0)) / (navData.totalValueSats || 1);
-      
-      if (percentChange > 0.01 || valueChange > 0.005 || !hasInitializedRef.current) {
-        setNavData(data);
-        
-        // Update global cache
-        globalNavCache.navTotalSats = data.totalValueSats;
-        globalNavCache.navTotalUSD = data.totalValueUSD;
-        globalNavCache.navPercentage = data.changePercentage || 0;
-        globalNavCache.formattedSats = data.formattedTotalValueSats;
-        globalNavCache.formattedUSD = data.formattedTotalValueUSD;
-        
-        try {
-          localStorage.setItem('nav-total-sats', String(data.totalValueSats));
-          localStorage.setItem('nav-total-usd', String(data.totalValueUSD));
-          localStorage.setItem('nav-percentage', String(data.changePercentage || 0));
-          localStorage.setItem('nav-formatted-sats', data.formattedTotalValueSats);
-          localStorage.setItem('nav-formatted-usd', data.formattedTotalValueUSD);
-        } catch (err) {
-          console.error('Error saving NAV to localStorage:', err);
-        }
-        
-        hasInitializedRef.current = true;
-        lastUpdateRef.current = Date.now();
-      }
-    });
-    
-    // Trigger a fetch immediately (but don't wait for it)
-    if (!hasInitializedRef.current) {
-      priceStore.fetchNAVData(false); // Use cached data if available
-    }
-    
-    return () => {
-      unsubscribe();
-    };
-  }, [nav]);
-  
-  // Calculate the formatted values more efficiently using memoization
+  // Format values directly from the useNAV hook's data
   // And ensure consistent rendering between server and client
   const formattedValues = useMemo(() => {
-    // For server-side rendering, use the most stable, consistent values
-    // that match what the client is likely to receive
-    const serverDefaultValue = currency === 'usd' ? '$0.00' : '0 sats';
-    const serverDefaultChange = '+0.00%';
-    
-    // Format values based on current currency and real data
+    // Use the formattedNAV from the hook, which already considers currency
     const formattedTotalValue = currency === 'usd' 
-      ? navData.formattedTotalValueUSD || serverDefaultValue
-      : navData.formattedTotalValueSats || serverDefaultValue;
+      ? nav.formattedNavUsd
+      : nav.formattedNavSats;
     
     // Format change percentage with safety checks
-    let changePercentage = (typeof navData.changePercentage === 'number' && isFinite(navData.changePercentage))
-      ? navData.changePercentage.toFixed(2)
-      : (typeof globalNavCache.navPercentage === 'number' && isFinite(globalNavCache.navPercentage))
-        ? globalNavCache.navPercentage.toFixed(2)
-        : '0.00';
-    
-    const isPositive = parseFloat(changePercentage) >= 0;
-    const formattedChangePercentage = `${isPositive ? '+' : ''}${changePercentage}%`;
+    let changePercentage = nav.changePercentage ?? 0;
+    const isPositive = changePercentage >= 0;
+    const formattedChangePercentage = `${isPositive ? '+' : ''}${changePercentage.toFixed(2)}%`;
 
     return {
       formattedTotalValue,
       formattedChangePercentage,
       isPositive
     };
-  }, [currency, navData, globalNavCache.navPercentage]); // Only recompute when these dependencies change
+  }, [currency, nav]); // Depend only on currency and nav data from the hook
   
   // Size classes
   const sizes = {
@@ -223,24 +49,31 @@ function NAVDisplayComponent({ size = 'md', showChange = true }: NAVDisplayProps
   
   return (
     <div className="flex items-center">
-      <div>
-        <p className={`${sizes[size]} text-primary font-medium mb-0.5`}>
-          Net Asset Value (NAV)
-        </p>
-        <div className="flex items-center">
-          <p className={`${valueSize[size]} font-bold text-primary mr-2`}>
-            {formattedValues.formattedTotalValue}
+      {/* Display Loading / Error State from useNAV */}
+      {loading && <p className="text-sm text-primary opacity-75 italic">Loading NAV...</p>}
+      {!loading && error && <p className="text-sm text-error italic">{error}</p>}
+      
+      {/* Only display value when not loading and no error */}
+      {!loading && !error && (
+        <div>
+          <p className={`${sizes[size]} text-primary font-medium mb-0.5`}>
+            Net Asset Value (NAV)
           </p>
-          
-          {showChange && (
-            <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium ${
-              formattedValues.isPositive ? 'bg-success bg-opacity-10 text-success' : 'bg-error bg-opacity-10 text-error'
-            }`}>
-              {formattedValues.formattedChangePercentage}
-            </span>
-          )}
+          <div className="flex items-center">
+            <p className={`${valueSize[size]} font-bold text-primary mr-2`}>
+              {formattedValues.formattedTotalValue}
+            </p>
+            
+            {showChange && (
+              <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium ${
+                formattedValues.isPositive ? 'bg-success bg-opacity-10 text-success' : 'bg-error bg-opacity-10 text-error'
+              }`}>
+                {formattedValues.formattedChangePercentage}
+              </span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

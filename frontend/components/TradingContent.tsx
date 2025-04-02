@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import TradingInterface from './TradingInterface';
 import { useOVTPrice } from '../src/hooks/useOVTPrice';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
-import priceService from '../src/services/priceService';
+import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
 
 // Dynamic import of NAVDisplay with disabled SSR
-const DynamicNAVDisplay = dynamic(() => import('./NAVDisplay'), { ssr: false });
+// const DynamicNAVDisplay = dynamic(() => import('./NAVDisplay'), { ssr: false }); // Consider if NAVDisplay component is still needed or if this component handles display directly
 
 interface TradingContentProps {
   isConnected: boolean;
@@ -27,59 +27,27 @@ const TradingContent: React.FC<TradingContentProps> = ({
   laserEyesWallets,
   tradingDataSource
 }) => {
-  // Get OVT price information for consistent display
-  const { dailyChange, btcPriceFormatted, usdPriceFormatted } = useOVTPrice();
+  // Use hooks to get OVT price and NAV data
+  const { btcPriceFormatted, usdPriceFormatted } = useOVTPrice();
+  const { nav, loading: navLoading, error: navError, isConnected: isNavConnected } = useNAV();
   const { currency } = useCurrencyToggle();
-  
-  // State for NAV data from the backend
-  const [navData, setNavData] = useState({
-    totalValueSats: 0,
-    totalValueUSD: 0,
-    formattedTotalValueSats: '0 sats',
-    formattedTotalValueUSD: '$0.00',
-    changePercentage: 0
-  });
-  
-  // Fetch NAV data from the backend
-  useEffect(() => {
-    // Only run this effect on the client side
-    if (typeof window === 'undefined') return;
-    
-    const fetchNAV = async () => {
-      try {
-        const data = await priceService.getNAVData();
-        setNavData({
-          ...data,
-          // Override the change percentage with the OVT price for consistency
-          changePercentage: dailyChange || data.changePercentage
-        });
-      } catch (error) {
-        console.error('Error fetching NAV:', error);
-      }
-    };
-    
-    // Initial fetch
-    fetchNAV();
-    
-    // Refresh every 30 seconds to reduce API load
-    const interval = setInterval(fetchNAV, 30000);
-    
-    return () => clearInterval(interval);
-  }, [dailyChange]);
   
   // Get formatted total value based on current currency
   const formattedTotalValue = currency === 'usd' 
-    ? navData.formattedTotalValueUSD
-    : navData.formattedTotalValueSats;
+    ? nav.formattedNavUsd
+    : nav.formattedNavSats;
   
   // Format percentage for display
-  const changePercentage = navData.changePercentage;
+  const changePercentage = nav.changePercentage;
   const isPositive = changePercentage >= 0;
   const formattedChangePercentage = (changePercentage || 0).toFixed(2);
   
   return (
     <>
       {/* NAV and Price Information */}
+      {/* TODO: Add loading and error state handling for NAV display */}
+      {navLoading && <div className="text-center text-primary opacity-75 p-4">Loading NAV data...</div>}
+      {!navLoading && navError && <div className="text-center text-error p-4">Error loading NAV: {navError}</div>}
       <div className="bg-white border border-primary rounded-lg shadow-sm p-4 mb-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>

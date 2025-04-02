@@ -5,98 +5,130 @@
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { Position } from '../services/priceService';
+import { Position, getPriceStore } from '../services/priceService';
 import priceService from '../services/priceService';
 import { shouldUseMockData } from '../lib/hybridModeUtils';
 import mockPortfolioPositions from '../mock-data/portfolio-positions.json';
 
+// Extend PriceStore interface for portfolio (conceptually - this isn't modifying the actual class)
+interface PriceStoreWithPortfolio extends ReturnType<typeof getPriceStore> {
+  portfolioPositions?: Position[];
+  subscribeToPortfolioUpdates?(callback: (positions: Position[]) => void): () => void;
+}
+
 export function usePortfolio() {
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const priceStore = useMemo(() => getPriceStore() as PriceStoreWithPortfolio, []);
+
+  // Initialize state from potential store cache or empty array
+  const [positions, setPositions] = useState<Position[]>(() => priceStore.portfolioPositions || []);
+  
+  // Loading/Error state tied to initial fetch and connection
+  const [isConnected, setIsConnected] = useState<boolean>(priceStore.isConnected);
+  const [isLoading, setIsLoading] = useState<boolean>(true); // Start loading until initial fetch completes
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<number>(Date.now());
 
-  // Fetch portfolio positions from the API
-  const fetchPositions = useCallback(async () => {
+  // Fetch initial portfolio positions via HTTP
+  const fetchInitialPositions = useCallback(async () => {
+    // Ensure this only runs once or when needed, not continuously
+    if (!isLoading) return; // Avoid refetch if not loading
+    
+    console.log("usePortfolio: Fetching initial positions via HTTP...");
+    setIsLoading(true);
+    setError(null);
+    
     try {
-      setIsLoading(true);
-      
-      // Even in mock mode, try the backend API first (it will use our moved mock data)
-      // Only fall back to frontend mock data if the API call fails
-      try {
-        // Fetch positions from the centralized price service
-        const data = await priceService.getPortfolioPositions();
-        setPositions(data);
-        setLastUpdate(Date.now());
-        setError(null);
-        setIsLoading(false);
-        return;
-      } catch (apiError) {
-        // If we're in mock mode, don't show an error, just use mock data
-        if (shouldUseMockData('portfolio')) {
-          console.log('API request failed in mock mode, using local mock data');
-        } else {
-          // In production mode, log the error
-          console.error('Error fetching portfolio positions from API:', apiError);
-          setError('Failed to fetch portfolio data from API. Using fallback data.');
-        }
-      }
-      
-      // If we reach here, the API call failed, so use mock data
-      const mockData = mockPortfolioPositions.map(pos => ({
-        ...pos,
-        dailyChange: pos.change // Use existing change value for daily change in mock data
-      })) as Position[];
-      
-      setPositions(mockData);
+      const data = await priceService.getPortfolioPositions();
+      setPositions(data);
       setLastUpdate(Date.now());
-    } catch (error) {
-      console.error('Error fetching portfolio positions:', error);
-      setError('Failed to fetch portfolio data. Using fallback data.');
-      
-      // Use mock data as fallback but add the dailyChange field
-      const mockData = mockPortfolioPositions.map(pos => ({
-        ...pos,
-        dailyChange: pos.change // Use existing change value for daily change in mock data
-      })) as Position[];
-      
-      setPositions(mockData);
+      // Store in our conceptual priceStore extension (won't persist unless priceService is modified)
+      // priceStore.portfolioPositions = data; 
+      setError(null);
+    } catch (apiError) {
+       console.error('usePortfolio: Error fetching initial positions:', apiError);
+       if (shouldUseMockData('portfolio')) {
+          console.log('Using local mock portfolio data as fallback.');
+          const mockData = mockPortfolioPositions.map(pos => ({ ...pos, dailyChange: pos.change })) as Position[];
+          setPositions(mockData);
+          // priceStore.portfolioPositions = mockData;
+          setError(null); // Don't show error in mock mode
+       } else {
+           setError('Failed to load portfolio data. Displaying empty list or cached data if available.');
+           // Keep potentially stale data if already present
+           if (positions.length === 0) setPositions([]); 
+       }
     } finally {
+      // Only set loading false after the attempt, regardless of success/fail
       setIsLoading(false);
     }
-  }, []);
+  }, [isLoading, positions.length]); // Depend on isLoading to control execution
 
-  // Initial fetch
+  // Effect for initial fetch and subscriptions
   useEffect(() => {
-    fetchPositions();
-    
-    // Set up periodic refresh (every 10 seconds instead of 5 minutes)
-    // This will keep data updated but not so frequently that it causes performance issues
-    const intervalId = setInterval(fetchPositions, 10 * 1000);
-    
-    // Cleanup function to prevent memory leaks
-    return () => {
-      console.log('usePortfolio hook unmounting - cleaning up interval');
-      clearInterval(intervalId);
-    };
-  }, [fetchPositions]);
+    let isMounted = true;
 
-  // Calculate total value of all positions - memoize to prevent recalculations
+    // 1. Fetch initial data on mount
+    fetchInitialPositions();
+
+    // 2. Subscribe to WebSocket connection changes
+    const handleConnectionChange = (status: boolean) => {
+        if (isMounted) {
+            setIsConnected(status);
+            if (!status && positions.length > 0) {
+                setError("Real-time connection lost. Portfolio list may be outdated.");
+            } else if (status) {
+                setError(null); // Clear connection error when reconnected
+                // Optionally trigger a refetch if needed on reconnect
+                // fetchInitialPositions(); 
+            }
+        }
+    };
+    const unsubscribeConnection = priceStore.subscribeToConnectionChange(handleConnectionChange);
+
+    // 3. Subscribe to hypothetical portfolio updates (if priceService implements it)
+    let unsubscribePortfolio: (() => void) | null = null;
+    if (priceStore.subscribeToPortfolioUpdates) {
+        const handlePortfolioUpdate = (updatedPositions: Position[]) => {
+            if (isMounted) {
+                console.log("usePortfolio: Received portfolio update via subscription.");
+                setPositions(updatedPositions);
+                setLastUpdate(Date.now());
+                setError(null);
+                setIsLoading(false); // Data arrived
+            }
+        };
+        unsubscribePortfolio = priceStore.subscribeToPortfolioUpdates(handlePortfolioUpdate);
+    }
+    
+    // REMOVED: setInterval polling logic
+    /*
+    const intervalId = setInterval(fetchPositions, 10 * 1000);
+    */
+
+    // Cleanup
+    return () => {
+      isMounted = false;
+      unsubscribeConnection();
+      if (unsubscribePortfolio) {
+        unsubscribePortfolio();
+      }
+      // clearInterval(intervalId); // Removed interval
+    };
+  // Run only on mount or if fetchInitialPositions changes (which it shouldn't frequently)
+  }, [priceStore, fetchInitialPositions]); 
+
+  // Memoized calculations (no changes needed)
   const totalValue = useMemo(() => {
     return positions.reduce((sum, position) => sum + position.current, 0);
   }, [positions]);
 
-  // Calculate overall change percentage - also memoize
   const overallChangePercentage = useMemo(() => {
     const totalCurrent = positions.reduce((sum, position) => sum + position.current, 0);
     const totalOriginal = positions.reduce((sum, position) => sum + position.value, 0);
-    
     if (totalOriginal === 0) return 0;
-    
     return ((totalCurrent - totalOriginal) / totalOriginal) * 100;
   }, [positions]);
 
-  // Get position by name
   const getPositionByName = useCallback((name: string) => {
     return positions.find(position => position.name === name);
   }, [positions]);
@@ -106,12 +138,19 @@ export function usePortfolio() {
     isLoading,
     error,
     lastUpdate,
+    isConnected, // Expose connection status
     totalValue,
     overallChangePercentage,
-    // Keep these methods for backward compatibility
     getTotalValue: useCallback(() => totalValue, [totalValue]),
     getOverallChangePercentage: useCallback(() => overallChangePercentage, [overallChangePercentage]),
     getPositionByName,
-    refreshPortfolio: fetchPositions
+    // refreshPortfolio: fetchInitialPositions // Rename refresh to reflect it's an initial/manual fetch now
+     // Expose a manual refresh if desired, but it uses HTTP
+    refreshPortfolio: useCallback(() => { 
+        // Allow manual refresh even if not loading initially
+        console.log("Manual portfolio refresh triggered...");
+        setIsLoading(true); // Set loading true for manual refresh
+        fetchInitialPositions(); 
+    }, [fetchInitialPositions])
   };
 } 

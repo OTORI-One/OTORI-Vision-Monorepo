@@ -32,7 +32,7 @@ export default function TradePage() {
   // Use hooks
   const { address: walletAddress, network } = useLaserEyes();
   const { currency } = useCurrencyToggle();
-  const { nav, refreshNAV } = useNAV(); // Get NAV data
+  const { nav } = useNAV(); // Get NAV data (refreshNAV is removed)
   const isConnected = !!walletAddress;
   
   // Client-side state
@@ -76,9 +76,9 @@ export default function TradePage() {
       setLaserEyesWallets([walletAddress]);
     }
     
-    // Make sure we have fresh NAV data
-    refreshNAV();
-  }, [walletAddress, refreshNAV]);
+    // NAV data is now handled by the useNAV hook and WebSocket connection
+    // No need to manually refresh here
+  }, [walletAddress]);
   
   // Update wallet connection status when address changes
   useEffect(() => {
