@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const WebSocket = require('ws');
 // REMOVE the import from index.js to break circular dependency
 // const { RUNES_API_URL } = require('../index.js'); 
 
@@ -23,6 +24,9 @@ const OVT_TREASURY_ADDRESS = process.env.NEXT_PUBLIC_TREASURY_ADDRESS || 'tb1pgl
 const OVT_TREASURY_ADDRESS_2 = process.env.NEXT_PUBLIC_TREASURY_ADDRESS_2 || 'tb1plpfgtre7sxxrrwjdpy4357qj2nr7ek06xqpdryxr4lzt5tck6x3qz07zd3';
 const OVT_RUNE_ID = process.env.NEXT_PUBLIC_OVT_RUNE_ID || '240249:101';
 const SECONDS_IN_DAY = 86400000;
+
+// Set to store active WebSocket clients
+const connectedClients = new Set();
 
 // Advanced price movement algorithm variables
 // Bitcoin market sentiment as a shared state factor
@@ -506,7 +510,10 @@ async function updatePrices() {
     console.log('Updating price data...');
     
     // 1. Update Bitcoin price
-    await updateBitcoinPrice();
+    const btcUpdated = await updateBitcoinPrice();
+    if (btcUpdated) {
+        broadcastUpdate('BTC_PRICE_UPDATE', priceState.btcPrice);
+    }
     
     // 2. Update position prices with advanced price movement algorithm
     // Reference the current day for consistency
@@ -589,21 +596,33 @@ async function updatePrices() {
       
       // Update historical data
       updatePriceHistory(positionName, newValue);
+
+      // Broadcast individual position update
+      broadcastUpdate('POSITION_UPDATE', { name: positionName, data: priceState.positions[positionName] });
     });
     
     // 3. Update OVT price based on NAV and circulating supply
-    calculateOVTPrice();
+    const oldOvtPrice = priceState.ovtPrice;
+    calculateOVTPrice(); // This updates priceState.totalNAV and priceState.ovtPrice
     
-    // 4. Update OVT price history
-    updatePriceHistory('ovt', priceState.ovtPrice);
-    
+    // Broadcast NAV update (totalNAV is updated in calculateOVTPrice)
+    broadcastUpdate('NAV_UPDATE', { totalNAV: priceState.totalNAV, lastUpdate: Date.now() /* Add other relevant NAV fields */ });
+
+    // Broadcast OVT price update if it changed
+    if (priceState.ovtPrice !== oldOvtPrice) {
+        broadcastUpdate('OVT_PRICE_UPDATE', { price: priceState.ovtPrice, circulatingSupply: priceState.ovtCirculatingSupply /* Add other relevant OVT fields */ });
+    }
+
+    // 4. Update OVT price history (already done in calculateOVTPrice if logic is there, or do it here)
+    // updatePriceHistory('ovt', priceState.ovtPrice); // Ensure this happens if not already done
+
     // 5. Update last update timestamp
     priceState.lastUpdate = Date.now();
     
     // 6. Save the updated data
     savePriceData();
     
-    console.log('Price data updated successfully');
+    console.log('Price data updated successfully and broadcasted');
     return true;
   } catch (error) {
     console.error('Error updating prices:', error);
@@ -1341,6 +1360,85 @@ function getNAVData() {
   };
 }
 
+// --- WebSocket Functions ---
+
+/**
+ * Handles a new WebSocket client connection.
+ * Adds the client to the set and sets up handlers.
+ * @param {WebSocket} ws The WebSocket client instance.
+ */
+function handleNewWebSocketClient(ws) {
+    connectedClients.add(ws);
+    console.log(`WebSocket client added. Total clients: ${connectedClients.size}`);
+
+    // Optional: Send current state immediately upon connection
+    try {
+        if (priceState && priceState.totalNAV !== undefined) { 
+            ws.send(JSON.stringify({ type: 'NAV_UPDATE', payload: { totalNAV: priceState.totalNAV, lastUpdate: priceState.lastUpdate /* Add other NAV fields */ } }));
+        }
+        if (priceState && priceState.ovtPrice !== undefined) {
+            ws.send(JSON.stringify({ type: 'OVT_PRICE_UPDATE', payload: { price: priceState.ovtPrice, circulatingSupply: priceState.ovtCirculatingSupply /* Add other OVT fields */ } }));
+        }
+        if (priceState && priceState.btcPrice !== undefined) {
+            ws.send(JSON.stringify({ type: 'BTC_PRICE_UPDATE', payload: priceState.btcPrice }));
+        }
+        // Send all current positions
+        if (priceState && priceState.positions) {
+             ws.send(JSON.stringify({ type: 'ALL_POSITIONS_UPDATE', payload: priceState.positions }));
+        }
+
+    } catch (error) {
+        console.error('Error sending initial state to new WebSocket client:', error);
+    }
+
+    ws.on('close', (code, reason) => {
+        connectedClients.delete(ws);
+        console.log(`WebSocket client removed (Code: ${code}, Reason: ${reason || 'N/A'}). Total clients: ${connectedClients.size}`);
+    });
+    ws.on('error', (error) => {
+        console.error('Error on WebSocket client:', error);
+        connectedClients.delete(ws); // Remove on error too
+        console.log(`WebSocket client removed due to error. Total clients: ${connectedClients.size}`);
+    });
+}
+
+/**
+ * Broadcasts an update message to all connected WebSocket clients.
+ * @param {string} type The type of the update message.
+ * @param {any} payload The data payload for the update.
+ */
+function broadcastUpdate(type, payload) {
+    if (connectedClients.size === 0) {
+        // console.log('No clients connected, skipping broadcast.'); // Optional log
+        return;
+    }
+
+    const message = JSON.stringify({ type, payload });
+    // Limit verbose logging for frequent updates like position changes
+    if (type !== 'POSITION_UPDATE' || Math.random() < 0.1) { // Log other types or 10% of position updates
+        console.log(`Broadcasting ${type} to ${connectedClients.size} clients`);
+    }
+    
+    connectedClients.forEach(client => {
+        // Check readyState using WebSocket constants if ws library is properly imported and used
+        // Assuming 'ws' library is available:
+        if (client.readyState === WebSocket.OPEN) { 
+            client.send(message, (err) => {
+                if (err) {
+                    console.error(`Error sending message (${type}) to client:`, err);
+                    // Optional: Consider removing the client if send fails repeatedly
+                    // connectedClients.delete(client); 
+                    // console.log(`Removed client due to send error. Total clients: ${connectedClients.size}`);
+                }
+            });
+        } else {
+            // Optional: Handle clients not in OPEN state (e.g., closing)
+             // console.log('Client not open, skipping send.');
+             // connectedClients.delete(client); // Consider removing if state is consistently not OPEN
+        }
+    });
+}
+
 module.exports = {
   initialize,
   getAllPositions,
@@ -1353,5 +1451,7 @@ module.exports = {
   calculateOVTPrice,
   updatePriceHistory,
   savePriceData,
-  requestTracker
+  requestTracker,
+  handleNewWebSocketClient,
+  broadcastUpdate
 }; 

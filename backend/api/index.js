@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const axios = require('axios');
+const WebSocket = require('ws'); // Import WebSocket library
 
 // Initialize express app
 const app = express();
@@ -482,6 +483,35 @@ app.use((err, req, res, next) => {
 
 // Start server
 if (require.main === module) {
+  let wss; // Declare wss variable
+  if (priceRoutes) { // Use the check for loaded price routes
+      console.log('Initializing WebSocket Server for Price Service...');
+      wss = new WebSocket.Server({ server }); // Attach to the existing HTTP server
+
+      // Basic connection logging (more handling in priceService)
+      wss.on('connection', (ws) => {
+          console.log('WebSocket client connected to Price Service');
+          ws.on('close', () => console.log('WebSocket client disconnected'));
+          ws.on('error', (error) => console.error('WebSocket error:', error));
+          // Forward the new client to the price service for management
+          try {
+              const priceServiceInstance = require('./services/priceService'); // Get instance
+              if (priceServiceInstance && typeof priceServiceInstance.handleNewWebSocketClient === 'function') {
+                  priceServiceInstance.handleNewWebSocketClient(ws);
+              } else {
+                  console.error('priceServiceInstance or handleNewWebSocketClient method not found');
+                  // Optionally close the connection if the handler isn't ready
+                  // ws.close(1011, 'Price service handler not available'); 
+              }
+          } catch (err) {
+             console.error('Error requiring or calling priceService.handleNewWebSocketClient:', err);
+             // Optionally close the connection on error
+             // ws.close(1011, 'Internal server error during WS connection setup');
+          }
+      });
+      console.log(`WebSocket server attached to port ${PORT}`);
+  }
+
   server.listen(PORT, () => {
     console.log(`OTORI Vision API server (${SERVICE_TYPE}) running on port ${PORT} in ${NODE_ENV} mode`);
     console.log(`API documentation available at http://localhost:${PORT}/`);
