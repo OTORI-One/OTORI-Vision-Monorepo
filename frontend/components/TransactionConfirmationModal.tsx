@@ -11,6 +11,7 @@ export interface TransactionDetails {
   totalValue: number;
   feeEstimate?: number;
   tokenSymbol?: string;
+  limitPrice?: number;
 }
 
 interface TransactionConfirmationModalProps {
@@ -38,7 +39,8 @@ export default function TransactionConfirmationModal({
     price,
     totalValue,
     feeEstimate = 0,
-    tokenSymbol = 'OVT'
+    tokenSymbol = 'OVT',
+    limitPrice
   } = transactionDetails;
   
   // Format values based on current currency

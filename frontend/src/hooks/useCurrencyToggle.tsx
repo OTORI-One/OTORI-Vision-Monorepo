@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useContext, createContext, ReactNode } from 'react';
+import React, { useState, useEffect, useCallback, useContext, createContext, ReactNode, useMemo } from 'react';
+import { getPriceStore } from '../services/priceService'; // Import price store
 
 // Define the currency type
 export type Currency = 'btc' | 'usd';
@@ -8,8 +9,9 @@ interface CurrencyContextType {
   currency: Currency;
   setCurrency: (currency: Currency) => void;
   toggleCurrency: () => void;
-  formatValue: (value: number, bitcoinPrice?: number) => string;
-  formatRawValue: (value: number, bitcoinPrice?: number) => number;
+  bitcoinPrice: number;
+  formatValue: (value: number, btcPriceOverride?: number) => string;
+  formatRawValue: (value: number, btcPriceOverride?: number) => number;
   getBitcoinPrice: () => number;
 }
 
@@ -18,9 +20,10 @@ const CurrencyContext = createContext<CurrencyContextType>({
   currency: 'usd',
   setCurrency: () => {},
   toggleCurrency: () => {},
+  bitcoinPrice: 50000,
   formatValue: () => '',
   formatRawValue: () => 0,
-  getBitcoinPrice: () => 50000,
+  getBitcoinPrice: () => 50000
 });
 
 // Constants
@@ -39,46 +42,65 @@ export const CurrencyProvider = ({
   children, 
   initialCurrency = 'usd' 
 }: CurrencyProviderProps) => {
-  // Initialize with value from localStorage or default
   const [currency, setCurrencyState] = useState<Currency>(initialCurrency);
-  const [bitcoinPrice, setBitcoinPrice] = useState<number>(50000);
+  
+  const priceStore = useMemo(() => getPriceStore(), []);
+  
+  // Safely initialize bitcoinPrice state, handling potential null
+  const [bitcoinPrice, setBitcoinPrice] = useState<number>(() => {
+    const initialPrice = priceStore.btcPrice; // Assume BitcoinPrice is number | null
+    return (initialPrice !== null && isFinite(initialPrice)) ? initialPrice : 50000;
+  }); 
   
   // Initialize from localStorage on mount
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const storedCurrency = localStorage.getItem(LOCAL_STORAGE_KEY) as Currency;
-        
-        if (storedCurrency && (storedCurrency === 'btc' || storedCurrency === 'usd')) {
+    let storedCurrency: Currency | null = null;
+    try {
+      storedCurrency = localStorage.getItem(LOCAL_STORAGE_KEY) as Currency | null; // Use correct key
+      if (storedCurrency && (storedCurrency === 'btc' || storedCurrency === 'usd')) { // Check if valid
           setCurrencyState(storedCurrency);
-        }
-        
-        // Set the global for other components
-        if (typeof window !== 'undefined') {
-          (window as any).globalBaseCurrency = storedCurrency || initialCurrency;
-        }
-        
-        // Try to get Bitcoin price from global
-        if (typeof window !== 'undefined' && (window as any).btcPrice) {
-          setBitcoinPrice((window as any).btcPrice);
-        }
-      } catch (error) {
-        console.error('Error accessing localStorage for currency preference:', error);
       }
+      // Set the global for other components (Consider removing this global pattern later)
+      if (typeof window !== 'undefined') {
+        (window as any).globalBaseCurrency = storedCurrency || initialCurrency; // Use initialCurrency as fallback
+      }
+    } catch (error) {
+      console.error('Error accessing localStorage for currency preference:', error);
     }
-  }, [initialCurrency]);
+  }, [initialCurrency]); // Depend on initialCurrency
   
+  // Update Bitcoin price from priceStore subscription
+  useEffect(() => {
+    // Handle potential null from subscription
+    const handlePriceUpdate = (newPrice: number | null) => { // Accept number | null
+      if (newPrice !== null && isFinite(newPrice)) { 
+        setBitcoinPrice(newPrice);
+      }
+    };
+    
+    // Subscribe (assuming callback expects number | null based on BitcoinPrice type)
+    const unsubscribe = priceStore.subscribeToBtcUpdates(handlePriceUpdate);
+    
+    // Safely check and set initial price from store if available and valid
+    const currentStorePrice = priceStore.btcPrice;
+    if (currentStorePrice !== null && isFinite(currentStorePrice)) {
+        setBitcoinPrice(currentStorePrice);
+    }
+
+    return () => {
+      unsubscribe();
+    };
+  }, [priceStore]); 
+
   // Update localStorage and global when currency changes
   const setCurrency = useCallback((newCurrency: Currency) => {
     setCurrencyState(newCurrency);
     
     if (typeof window !== 'undefined') {
       try {
-        localStorage.setItem(LOCAL_STORAGE_KEY, newCurrency);
-        // Also set global for consistency across components
+        localStorage.setItem(LOCAL_STORAGE_KEY, newCurrency); // Use correct key
         (window as any).globalBaseCurrency = newCurrency;
         
-        // Dispatch a custom event to notify other components
         window.dispatchEvent(new CustomEvent('currency-change', { 
           detail: { currency: newCurrency } 
         }));
@@ -86,39 +108,12 @@ export const CurrencyProvider = ({
         console.error('Error saving currency preference:', error);
       }
     }
-  }, []);
-  
+  }, []); // Removed currency from dependency array as setCurrency doesn't depend on it directly
+
   // Toggle between BTC and USD
   const toggleCurrency = useCallback(() => {
-    const newCurrency = currency === 'btc' ? 'usd' : 'btc';
-    setCurrency(newCurrency);
+    setCurrency(currency === 'btc' ? 'usd' : 'btc');
   }, [currency, setCurrency]);
-  
-  // Update Bitcoin price from global
-  useEffect(() => {
-    const updateBitcoinPrice = () => {
-      if (typeof window !== 'undefined' && (window as any).btcPrice) {
-        setBitcoinPrice((window as any).btcPrice);
-      }
-    };
-    
-    // Listen for bitcoin price updates
-    window.addEventListener('btcprice-update', updateBitcoinPrice);
-    
-    // Update immediately on mount
-    updateBitcoinPrice();
-    
-    // Then update every 15 seconds
-    const intervalId = setInterval(updateBitcoinPrice, 15000);
-    
-    // Cleanup on unmount
-    return () => {
-      window.removeEventListener('btcprice-update', updateBitcoinPrice);
-      if (intervalId) {
-        clearInterval(intervalId);
-      }
-    };
-  }, []);
   
   // Format a value according to current currency
   const formatValue = useCallback((value: number, btcPriceOverride?: number): string => {
@@ -181,8 +176,10 @@ export const CurrencyProvider = ({
   
   // Return raw converted value without formatting
   const formatRawValue = useCallback((value: number, btcPriceOverride?: number): number => {
-    const effectiveBtcPrice = btcPriceOverride || bitcoinPrice;
-    
+    const effectiveBtcPrice = (btcPriceOverride && isFinite(btcPriceOverride))
+      ? btcPriceOverride
+      : (isFinite(bitcoinPrice) ? bitcoinPrice : 50000);
+
     if (currency === 'usd') {
       // Convert sats to USD
       return (value / SATS_PER_BTC) * effectiveBtcPrice;
@@ -202,6 +199,7 @@ export const CurrencyProvider = ({
     currency,
     setCurrency,
     toggleCurrency,
+    bitcoinPrice,
     formatValue,
     formatRawValue,
     getBitcoinPrice,
@@ -227,4 +225,4 @@ export function useCurrencyToggle() {
   return context;
 }
 
-export default useCurrencyToggle; 
+export default CurrencyProvider; 
