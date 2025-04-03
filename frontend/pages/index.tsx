@@ -4,9 +4,7 @@ import { ArrowUpIcon, CurrencyDollarIcon, CircleStackIcon, ArrowPathIcon } from 
 import WalletConnector from '../components/WalletConnector';
 import PortfolioChart from '../components/PortfolioChart';
 import ChartToggle from '../components/ChartToggle';
-import { useOVTClient, SATS_PER_BTC } from '../src/hooks/useOVTClient';
 import AdminDashboard from '../components/admin/AdminDashboard';
-import { useBitcoinPrice } from '../src/hooks/useBitcoinPrice';
 import { useLaserEyes } from '@omnisat/lasereyes';
 import Layout from '../components/Layout';
 import { useTradingModule } from '../src/hooks/useTradingModule';
@@ -15,9 +13,7 @@ import { getGlobalNAVReference, updateGlobalNAVReference } from '../src/utils/pr
 import CurrencyToggle from '../components/CurrencyToggle';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { usePortfolio } from '../src/hooks/usePortfolio';
-import { formatValue } from '../src/lib/formatting';
 import { useOVTPrice } from '../src/hooks/useOVTPrice';
-import priceService from '../src/services/priceService';
 import dynamic from 'next/dynamic';
 import TransactionConfirmationModal from '../components/TransactionConfirmationModal';
 import useRuneIntegration from '../src/hooks/useRuneIntegration';
@@ -54,24 +50,9 @@ export default function Dashboard() {
     dailyChange, 
     dailyChangeFormatted, 
     isPositiveChange,
-    isLoading,
+    isLoading: ovtPriceLoading,
   } = useOVTPrice();
 
-  // Get OVTClient data with useEffect for baseCurrency syncing instead of direct use
-  const ovtClientData = useOVTClient();
-  const { 
-    isLoading: ovtClientLoading, 
-    error, 
-    navData, 
-    formatValue,
-    ovtPrice: clientOvtPrice,
-    formattedOvtPrice: clientFormattedOvtPrice
-  } = ovtClientData;
-  
-  // Extract setBaseCurrency to use it safely in an effect
-  const { setBaseCurrency, baseCurrency } = ovtClientData;
-  
-  const { price: btcPrice } = useBitcoinPrice();
   const { network, address } = useLaserEyes();
   
   // Use the RuneIntegration hook for real wallet transactions
@@ -86,12 +67,10 @@ export default function Dashboard() {
   const { 
     buyOVT, 
     sellOVT, 
-    getMarketPrice,
-    prepareTransaction,
     executeTransaction,
     pendingTransaction,
     setPendingTransaction, 
-    error: tradingError 
+    error: tradingError
   } = useTradingModule();
 
   // State for admin status
@@ -121,43 +100,6 @@ export default function Dashboard() {
     setConnectedAddress(null);
     setIsAdmin(false);
   };
-  
-  // Periodically refresh data from server
-  useEffect(() => {
-    if (typeof window === 'undefined') return; // Only run on client
-    
-    // Initial fetch - with random delay to prevent many clients hitting at once
-    const initialFetch = async () => {
-      try {
-        // Add staggered delay to prevent multiple components from making simultaneous requests
-        await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
-      } catch (err) {
-        console.warn('Initial data fetch error:', err);
-      }
-    };
-    
-    initialFetch();
-    
-    // Set up interval for refreshing with a much longer interval to avoid rate limiting
-    const intervalId = setInterval(() => {
-    }, 600000); // 10 minutes instead of 5 to avoid rate limiting
-    
-    return () => {
-      if (intervalId) {
-        clearInterval(intervalId);
-      }
-    };
-  }, []);
-  
-  // Sync currency toggle with OVT client
-  useEffect(() => {
-    if (typeof window === 'undefined') return; // Only run on client
-    
-    if (baseCurrency && currency && baseCurrency !== currency && currency !== lastCurrencyRef.current) {
-      lastCurrencyRef.current = currency;
-      setBaseCurrency(currency);
-    }
-  }, [currency, baseCurrency, setBaseCurrency]);
   
   // Update wallet connection status when address changes
   useEffect(() => {
@@ -193,10 +135,10 @@ export default function Dashboard() {
     if (!pendingTransaction) return;
     
     setIsProcessingTx(true);
+    setNetworkError(null);
+    setSuccessMessage(null);
     
     try {
-      // Instead of using executeTransaction from useTradingModule, use the rune integration hooks
-      // which will trigger the wallet extensions
       let result;
       if (pendingTransaction.type === 'buy') {
         result = await runesBuyOVT(pendingTransaction.amount, pendingTransaction.price);
@@ -204,26 +146,17 @@ export default function Dashboard() {
         result = await runesSellOVT(pendingTransaction.amount, pendingTransaction.price);
       }
       
-      // Show success message
       setSuccessMessage(`Successfully ${pendingTransaction.type === 'buy' ? 'purchased' : 'sold'} ${pendingTransaction.amount} OVT`);
       
-      // Reset form
       if (pendingTransaction.type === 'buy') {
         setBuyAmount('');
       } else {
         setSellAmount('');
       }
       
-      // Simulate a change in the global NAV
-      const navChangePercentage = pendingTransaction.type === 'buy' ? 
-        0.001 + (Math.random() * 0.004) : -0.0005 - (Math.random() * 0.0015);
-      updateGlobalNAVReference(navChangePercentage);
-      
-      // Refresh NAV data
-      // fetchNAV();
     } catch (err) {
       console.error('Transaction failed:', err);
-      setNetworkError(err instanceof Error ? err.message : 'Transaction failed');
+      setNetworkError(runesError || (err instanceof Error ? err.message : 'Transaction failed'));
     } finally {
       setIsProcessingTx(false);
       setShowConfirmation(false);
@@ -239,10 +172,9 @@ export default function Dashboard() {
       setSuccessMessage(null);
       
       const amount = parseFloat(buyAmount);
-      // This will trigger the confirmation flow
       await buyOVT(amount);
     } catch (error) {
-      setNetworkError(error instanceof Error ? error.message : 'Error processing your purchase');
+      setNetworkError(tradingError || (error instanceof Error ? error.message : 'Error preparing purchase'));
     }
   };
   
@@ -255,12 +187,14 @@ export default function Dashboard() {
       setSuccessMessage(null);
       
       const amount = parseFloat(sellAmount);
-      // This will trigger the confirmation flow
       await sellOVT(amount);
     } catch (error) {
-      setNetworkError(error instanceof Error ? error.message : 'Error processing your sale');
+      setNetworkError(tradingError || (error instanceof Error ? error.message : 'Error preparing sale'));
     }
   };
+
+  // Combine loading states for disabling buttons
+  const isActionLoading = isSubmitting || isProcessingTx || runesLoading || ovtPriceLoading;
 
   return (
     <Layout>
@@ -404,14 +338,14 @@ export default function Dashboard() {
                       onChange={(e) => setBuyAmount(e.target.value)}
                       className="flex-grow bg-white border border-primary border-opacity-20 text-primary rounded p-2"
                       placeholder="Amount"
-                      disabled={isSubmitting || isProcessingTx}
+                      disabled={isActionLoading}
                     />
                     <button
                       onClick={handleBuy}
-                      disabled={isSubmitting || !buyAmount || isProcessingTx}
+                      disabled={isActionLoading || !buyAmount}
                       className="bg-success hover:bg-success/80 text-white rounded px-4 py-2 disabled:opacity-50"
                     >
-                      Buy
+                      {runesLoading && pendingTransaction?.type === 'buy' ? 'Buying...' : 'Buy'}
                     </button>
                   </div>
                 </div>
@@ -426,17 +360,23 @@ export default function Dashboard() {
                       onChange={(e) => setSellAmount(e.target.value)}
                       className="flex-grow bg-white border border-primary border-opacity-20 text-primary rounded p-2"
                       placeholder="Amount"
-                      disabled={isSubmitting || isProcessingTx}
+                      disabled={isActionLoading}
                     />
                     <button
                       onClick={handleSell}
-                      disabled={isSubmitting || !sellAmount || isProcessingTx}
+                      disabled={isActionLoading || !sellAmount}
                       className="bg-error hover:bg-error/80 text-white rounded px-4 py-2 disabled:opacity-50"
                     >
-                      Sell
+                      {runesLoading && pendingTransaction?.type === 'sell' ? 'Selling...' : 'Sell'}
                     </button>
                   </div>
                 </div>
+                {tradingError && (
+                  <p className="text-error text-sm mt-2">{tradingError}</p>
+                )}
+                {runesError && isProcessingTx && (
+                   <p className="text-error text-sm mt-2">{runesError}</p>
+                )}
               </div>
             )}
           </div>

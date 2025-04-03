@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Layout from '../components/Layout';
-import TradingInterface from '../components/TradingInterface';
-import { useOVTPrice } from '../src/hooks/useOVTPrice';
+// import TradingInterface from '../components/TradingInterface'; // Removed
+import { useOVTPrice } from '../src/hooks/useOVTPrice'; // Keep for DynamicTradingContent potentially
 import { useLaserEyes } from '@omnisat/lasereyes';
 import { getDataSourceIndicator } from '../src/lib/hybridModeUtils';
 import WalletConnector from '../components/WalletConnector';
@@ -9,7 +9,7 @@ import CurrencyToggle from '../components/CurrencyToggle';
 import NAVDisplay from '../components/NAVDisplay';
 import { isAdminWallet } from '../src/utils/adminUtils';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
-import { usePortfolio } from '../src/hooks/usePortfolio';
+// import { usePortfolio } from '../src/hooks/usePortfolio'; // Removed
 import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
 import TransactionConfirmationModal from '../components/TransactionConfirmationModal';
@@ -24,8 +24,13 @@ const DynamicTradingContent = dynamic(
 export default function TradePage() {
   // Use hooks
   const { address: walletAddress, network } = useLaserEyes();
-  const { currency } = useCurrencyToggle();
-  const { nav } = useNAV(); // Get NAV data (refreshNAV is removed)
+  // Removed unused currency variable from useCurrencyToggle
+  // const { currency } = useCurrencyToggle(); 
+  // Removed unused nav variable from useNAV
+  // const { nav } = useNAV(); 
+  useNAV(); // Call hook to ensure NAV data is fetched/subscribed for NAVDisplay
+  useCurrencyToggle(); // Call hook to ensure currency state is managed
+
   const isConnected = !!walletAddress;
   
   // Client-side state
@@ -50,14 +55,14 @@ export default function TradePage() {
   const { 
     buyOVT, 
     sellOVT, 
-    getMarketPrice, 
+    // getMarketPrice, // Removed
     isLoading,
-    tradeHistory,
-    error,
+    // tradeHistory, // Removed
+    // error, // Removed
     pendingTransaction,
     setPendingTransaction,
-    executeTransaction,
-    dataSource 
+    executeTransaction, // Still used in handleConfirmTransaction
+    // dataSource // Removed
   } = useTradingModule();
   
   // Mark component as mounted to prevent hydration issues
@@ -103,6 +108,7 @@ export default function TradePage() {
     if (!pendingTransaction) return;
     
     setIsProcessingTx(true);
+    setLastTradeStatus(null); // Clear previous status messages
     
     try {
       const result = await executeTransaction(pendingTransaction);

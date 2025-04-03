@@ -1,10 +1,8 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import Layout from '../components/Layout';
-import { useOVTClient } from '../src/hooks/useOVTClient';
 import { useLaserEyes } from '@omnisat/lasereyes';
 import { getDataSourceIndicator } from '../src/lib/hybridModeUtils';
 import DataSourceIndicator from '../components/DataSourceIndicator';
-import { SATS_PER_BTC } from '../src/lib/formatting';
 import { usePortfolio } from '../src/hooks/usePortfolio';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import NAVDisplay from '../components/NAVDisplay';
@@ -19,9 +17,8 @@ export default function PortfolioPage() {
   const prevValuesRef = useRef<Record<string, number>>({});
   
   // Use our central hooks
-  const { btcPrice } = useOVTClient();
   const { currency, formatValue } = useCurrencyToggle();
-  const { positions, getTotalValue, getOverallChangePercentage } = usePortfolio();
+  const { positions, getTotalValue, getOverallChangePercentage, isLoading, error } = usePortfolio();
   
   // Get wallet info from laser eyes
   const { address: walletAddress, network } = useLaserEyes();
@@ -172,6 +169,19 @@ export default function PortfolioPage() {
             <p className="text-lg text-primary mb-4">Admin Access Required</p>
             <p className="text-sm text-primary opacity-75">The portfolio view is only available to fund administrators</p>
           </div>
+        ) : isLoading ? (
+          // Loading State
+          <div className="bg-white border border-primary p-6 rounded-lg shadow-sm text-center">
+            <p className="text-lg text-primary mb-4">Loading Portfolio Data...</p>
+            <p className="text-sm text-primary opacity-75">Fetching the latest positions and values.</p>
+            {/* Optional: Add a spinner here */}
+          </div>
+        ) : error ? (
+          // Error State
+          <div className="bg-white border border-error p-6 rounded-lg shadow-sm text-center">
+            <p className="text-lg text-error mb-4">Error Loading Portfolio</p>
+            <p className="text-sm text-error opacity-75">{error}</p>
+          </div>
         ) : (
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             {/* Portfolio Summary Card */}
@@ -269,9 +279,10 @@ export default function PortfolioPage() {
                 </div>
               ))
             ) : (
+              // No Positions State (Handles case after loading finishes but no data)
               <div className="bg-white border border-primary p-6 rounded-lg shadow-sm col-span-1 lg:col-span-3 text-center">
                 <p className="text-primary opacity-75 mb-2">No portfolio positions found</p>
-                <p className="text-sm text-primary opacity-50">Visit the Trade section to acquire OVT tokens</p>
+                <p className="text-sm text-primary opacity-50">Visit the Trade section to acquire OVT tokens or check admin settings.</p>
               </div>
             )}
           </div>
