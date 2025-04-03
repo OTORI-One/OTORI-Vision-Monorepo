@@ -46,15 +46,6 @@ const TradingContent: React.FC<TradingContentProps> = ({
   const formattedNAV = formatSatsToCurrency(currentNAV, baseCurrency, btcPrice);
   const formattedOvtPrice = formatSatsToCurrency(currentOvtPriceSats, baseCurrency, btcPrice);
 
-  // Historical price data for the chart - Temporarily disabled
-  /*
-  const chartData = ovtPriceData?.history?.map((item: { timestamp: number; price: number }) => ({
-    timestamp: item.timestamp,
-    price: item.price, // Assuming history price is also in sats
-  })) ?? [];
-  */
-  const chartData: any[] = []; // Provide empty array for now
-
   if (combinedError) {
     console.error("TradingContent Error:", combinedError);
     return (
@@ -132,13 +123,7 @@ const TradingContent: React.FC<TradingContentProps> = ({
       <div className="lg:col-span-3 bg-card border border-border shadow-sm p-4 rounded h-[300px] md:h-[400px]">
          <h3 className="text-lg font-bold mb-4">OVT Price History (Sats)</h3>
          <div className="h-[calc(100%-2rem)] pb-6">
-           {chartData.length > 0 ? (
-             <PriceChart data={chartData} baseCurrency="btc" />
-           ) : (
-             <div className="flex items-center justify-center h-full text-muted-foreground">
-               {isLoading ? 'Loading chart data...' : 'Chart temporarily disabled or no data.'}
-             </div>
-           )}
+           <PriceChart baseCurrency="btc" />
          </div>
        </div>
 
