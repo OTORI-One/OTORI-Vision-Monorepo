@@ -4,7 +4,7 @@ import PositionManagement from './PositionManagement';
 import TokenMinting from './TokenMinting';
 import RuneMinting from './RuneMinting';
 import TransactionHistory from './TransactionHistory';
-import { useOVTClient } from '../../src/hooks/useOVTClient';
+import { useNAV } from '../../src/hooks/useNAV';
 import { useOVTPrice } from '../../src/hooks/useOVTPrice';
 import { isAdminWallet, ADMIN_WALLETS } from '../../src/utils/adminUtils';
 import { useLaserEyes, XVERSE, UNISAT } from '@omnisat/lasereyes';
@@ -34,7 +34,7 @@ export default function AdminDashboard() {
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
   
   // Use our centralized hooks
-  const { isLoading, error, navData } = useOVTClient();
+  const { nav: navData, loading: isLoading, error } = useNAV();
   const { price: ovtPrice, btcPriceFormatted, usdPriceFormatted } = useOVTPrice();
   const { positions, getTotalValue, getOverallChangePercentage } = usePortfolio();
   const { currency, formatValue } = useCurrencyToggle();
@@ -324,25 +324,23 @@ export default function AdminDashboard() {
                       <p className="text-sm font-medium text-primary">Status</p>
                       <p className="text-base text-primary">Etched</p>
                       <p className="text-sm text-primary opacity-75">Bitcoin Rune representing the OTORI Vision Token</p>
-                      <p className="text-sm text-primary mt-1">Rune ID: {navData?.tokenDistribution?.runeId || '240249:101'}</p>
+                      <p className="text-sm text-primary mt-1">Rune ID: {'240249:101'}</p>
                     </div>
                     <div>
                       <p className="text-sm font-medium text-primary">Initial Supply</p>
-                      <p className="text-base text-primary">{navData?.tokenDistribution?.totalSupply?.toLocaleString() || '2,100,000'}</p>
+                      <p className="text-base text-primary">{'2,100,000'.toLocaleString()}</p>
                     </div>
                   </div>
                   <div>
                     <div className="mb-4">
                       <p className="text-sm font-medium text-primary">Current Supply</p>
-                      <p className="text-base text-primary">{navData?.tokenDistribution?.totalSupply?.toLocaleString() || '2,100,000'}</p>
+                      <p className="text-base text-primary">{'2,100,000'.toLocaleString()}</p>
                     </div>
                     <div>
                       <p className="text-sm font-medium text-primary">Distribution</p>
                       <p className="text-base text-primary">
-                        {navData?.tokenDistribution?.distributed?.toLocaleString() || '0'} tokens 
-                        ({navData?.tokenDistribution ? 
-                          ((navData.tokenDistribution.distributed / navData.tokenDistribution.totalSupply) * 100).toFixed(2) 
-                          : '0'}%)
+                        {'0'.toLocaleString()} tokens 
+                        (0.00%)
                       </p>
                       <p className="text-sm font-medium text-primary mt-2">Distribution Events</p>
                       <p className="text-base text-primary">1</p>

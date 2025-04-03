@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useOVTClient } from '../../src/hooks/useOVTClient';
+import { useCurrencyToggle } from '../../src/hooks/useCurrencyToggle';
+import { formatDate } from '../../src/lib/formatting';
 import { 
   CurrencyDollarIcon, 
   FireIcon, 
@@ -30,8 +32,8 @@ export default function TransactionHistory() {
     getTransactionHistory, 
     isLoading, 
     error, 
-    formatValue
   } = useOVTClient();
+  const { formatValue } = useCurrencyToggle();
 
   useEffect(() => {
     const fetchTransactions = async () => {
@@ -62,10 +64,6 @@ export default function TransactionHistory() {
 
   console.log('Filtered transactions:', filteredTransactions);
 
-  const formatDate = (timestamp: number) => {
-    return new Date(timestamp).toLocaleString();
-  };
-
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'confirmed': return 'text-green-600';
@@ -87,8 +85,8 @@ export default function TransactionHistory() {
   };
 
   const formatAmount = (tx: Transaction) => {
-    const currency = tx.details?.currency || 'OVT';
-    return `${tx.amount.toLocaleString()} ${currency}`;
+    const currencySymbol = tx.details?.currency || 'OVT';
+    return `${tx.amount.toLocaleString()} ${currencySymbol}`;
   };
 
   if (isLoading) {

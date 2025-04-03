@@ -1,8 +1,7 @@
 import { useState, useEffect } from 'react';
-import { useOVTClient } from '../../src/hooks/useOVTClient';
 import { usePortfolio } from '../../src/hooks/usePortfolio';
+import { useCurrencyToggle } from '../../src/hooks/useCurrencyToggle';
 import { PortfolioPosition } from '../../src/utils/priceMovement';
-import type { Portfolio } from '../../src/hooks/useOVTClient';
 
 const SATS_PER_BTC = 100000000;
 
@@ -11,7 +10,7 @@ interface PositionManagementProps {
 }
 
 export default function PositionManagement({ onActionRequiringMultiSig }: PositionManagementProps) {
-  const { formatValue } = useOVTClient();
+  const { formatValue } = useCurrencyToggle();
   const { positions, refreshPortfolio } = usePortfolio();
   const [newPosition, setNewPosition] = useState({
     name: '',
@@ -97,10 +96,11 @@ export default function PositionManagement({ onActionRequiringMultiSig }: Positi
         description: `Add position for ${portfolioData.name}`,
         data: portfolioData,
         execute: async (signatures: string[]) => {
-          // Implement the API call to add position here
-          // Note: We removed addPosition since it doesn't exist in the hook
-          // After the API call completes, refresh the portfolio data
-          await refreshPortfolio();
+          // TODO: Implement the actual API call to add the position using signatures.
+          // For now, we just refresh the portfolio list, assuming the backend
+          // processes the addition and the refresh gets the latest state.
+          console.log('Simulating adding position with signatures:', signatures);
+          await refreshPortfolio(); 
           
           // Reset form
           setNewPosition({
@@ -258,7 +258,7 @@ export default function PositionManagement({ onActionRequiringMultiSig }: Positi
                     <h4 className="text-lg font-medium text-primary">{position.name}</h4>
                     <p className="mt-1 text-sm text-primary opacity-75">{position.description}</p>
                     <p className="mt-1 text-sm text-primary">
-                      {position.tokenAmount.toLocaleString()} tokens @ {formatValue(position.pricePerToken)}
+                      {formatTokenAmount(position.tokenAmount)} @ {formatValue(position.pricePerToken)}
                     </p>
                   </div>
                   <div className="ml-4 flex-shrink-0">
