@@ -1,0 +1,30 @@
+{
+  "trades": [
+    {
+      "id": 1,
+      "userId": "demo-user",
+      "type": "BUY",
+      "amount": 1,
+      "price": 1.163493941671372e+164,
+      "basePrice": 1.1588585076408088e+164,
+      "priceImpact": 0.4,
+      "value": 1.163493941671372e+164,
+      "fee": 3.4904818250141164e+161,
+      "timestamp": "2025-03-28T11:27:36.006Z"
+    },
+    {
+      "id": 2,
+      "userId": "demo-user",
+      "type": "SELL",
+      "amount": 1,
+      "price": 1.1588585076389545e+164,
+      "basePrice": 1.1588585076408088e+164,
+      "priceImpact": 1.600001280000768e-10,
+      "value": 1.1588585076389545e+164,
+      "fee": 3.4765755229168637e+161,
+      "timestamp": "2025-03-28T11:27:37.000Z"
+    }
+  ],
+  "lastTradeId": 2,
+  "lastUpdated": "2025-03-28T11:27:37.000Z"
+}

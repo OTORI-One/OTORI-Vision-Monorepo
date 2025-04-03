@@ -1,12 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import TradingInterface from './TradingInterface';
 import { useOVTPrice } from '../src/hooks/useOVTPrice';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
-
-// Dynamic import of NAVDisplay with disabled SSR
-// const DynamicNAVDisplay = dynamic(() => import('./NAVDisplay'), { ssr: false }); // Consider if NAVDisplay component is still needed or if this component handles display directly
+import { formatSatsToCurrency, formatNumber } from '../src/utils/formatters';
+import PriceChart from './PriceChart';
 
 interface TradingContentProps {
   isConnected: boolean;
@@ -27,96 +26,123 @@ const TradingContent: React.FC<TradingContentProps> = ({
   laserEyesWallets,
   tradingDataSource
 }) => {
-  // Use hooks to get OVT price and NAV data
-  const { btcPriceFormatted, usdPriceFormatted } = useOVTPrice();
-  const { nav, loading: navLoading, error: navError, isConnected: isNavConnected } = useNAV();
-  const { currency } = useCurrencyToggle();
+  const { nav, loading: navLoading, error: navError } = useNAV();
+  const { 
+      price: currentOvtPriceSats, // Assuming 'price' from hook is in sats
+      isLoading: priceLoading, 
+      error: priceError 
+  } = useOVTPrice(); 
+  const { currency, getBitcoinPrice } = useCurrencyToggle();
+  const baseCurrency = currency;
+  const btcPrice = getBitcoinPrice();
   
-  // Get formatted total value based on current currency
-  const formattedTotalValue = currency === 'usd' 
-    ? nav.formattedNavUsd
-    : nav.formattedNavSats;
-  
-  // Format percentage for display
-  const changePercentage = nav.changePercentage;
-  const isPositive = changePercentage >= 0;
-  const formattedChangePercentage = (changePercentage || 0).toFixed(2);
-  
+  // Combine loading states
+  const isLoading = navLoading || priceLoading;
+  const combinedError = navError || priceError;
+
+  // Extract relevant data safely using correct property names from useNAV
+  const currentNAV = nav?.navSats ?? 0; // Use navSats
+  const circulatingSupply = nav?.totalTokenSupply ?? 0; // Use totalTokenSupply
+  const formattedNAV = formatSatsToCurrency(currentNAV, baseCurrency, btcPrice);
+  const formattedOvtPrice = formatSatsToCurrency(currentOvtPriceSats, baseCurrency, btcPrice);
+
+  // Historical price data for the chart - Temporarily disabled
+  /*
+  const chartData = ovtPriceData?.history?.map((item: { timestamp: number; price: number }) => ({
+    timestamp: item.timestamp,
+    price: item.price, // Assuming history price is also in sats
+  })) ?? [];
+  */
+  const chartData: any[] = []; // Provide empty array for now
+
+  if (combinedError) {
+    console.error("TradingContent Error:", combinedError);
+    return (
+      <div className="flex-1 p-4 md:p-6 space-y-4 md:space-y-6">
+        <div className="bg-red-100 border border-red-500 p-4 rounded">
+           <h3 className="text-red-700 font-bold flex items-center">
+             Error Loading Trading Data
+           </h3>
+           <div className="text-red-600 mt-2">
+             <p>Could not load necessary data. Please try refreshing the page.</p>
+             <p className="text-xs mt-1">Details: {combinedError}</p>
+           </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoading && !nav && !currentOvtPriceSats) { 
+    return (
+      <div className="flex-1 p-4 md:p-6 grid gap-4 md:gap-6 grid-cols-1 lg:grid-cols-3">
+        <div className="lg:col-span-1 space-y-4 md:space-y-6">
+          <div className="border p-4 rounded"><p className="text-muted-foreground">Loading NAV...</p></div>
+          <div className="border p-4 rounded"><p className="text-muted-foreground">Loading Price...</p></div>
+          <div className="border p-4 rounded"><p className="text-muted-foreground">Loading Supply...</p></div>
+        </div>
+        <div className="lg:col-span-2 border p-4 rounded">
+           <h3 className="font-bold mb-2">Trade OVT</h3>
+           <div className="space-y-4">
+             <div className="h-10 bg-gray-200 rounded w-full"></div>
+             <div className="h-10 bg-gray-200 rounded w-full"></div>
+             <div className="h-10 bg-gray-200 rounded w-1/4"></div>
+           </div>
+        </div>
+        <div className="lg:col-span-3 border p-4 rounded h-[300px] md:h-[400px]">
+           <h3 className="font-bold mb-2">OVT Price History (Sats)</h3>
+           <div className="h-full w-full bg-gray-200 rounded flex items-center justify-center">
+             <p className="text-muted-foreground">Loading chart...</p>
+           </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <>
-      {/* NAV and Price Information */}
-      {/* TODO: Add loading and error state handling for NAV display */}
-      {navLoading && <div className="text-center text-primary opacity-75 p-4">Loading NAV data...</div>}
-      {!navLoading && navError && <div className="text-center text-error p-4">Error loading NAV: {navError}</div>}
-      <div className="bg-white border border-primary rounded-lg shadow-sm p-4 mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <h3 className="text-sm font-medium text-primary">Net Asset Value</h3>
-            <p className="text-2xl font-bold text-primary">
-              {formattedTotalValue}
-            </p>
-            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-              isPositive
-                ? 'bg-success bg-opacity-10 text-success' 
-                : 'bg-error bg-opacity-10 text-error'
-            }`}>
-              {isPositive ? '+' : ''}{formattedChangePercentage}%
-            </span>
+    <div className="flex-1 p-4 md:p-6 grid gap-4 md:gap-6 grid-cols-1 lg:grid-cols-3">
+      <div className="lg:col-span-1 space-y-4 md:space-y-6">
+        <div className="bg-card border border-border shadow-sm p-4 rounded">
+          <h3 className="text-sm font-medium text-muted-foreground pb-2">Fund NAV</h3>
+          <div className="text-2xl font-bold">
+             {formattedNAV}
+             {navLoading && <span className="text-xs text-muted-foreground ml-2">(Updating...)</span>}
           </div>
-          <div>
-            <h3 className="text-sm font-medium text-primary">OVT Price</h3>
-            <p className="text-2xl font-bold text-primary">
-              {currency === 'btc' ? btcPriceFormatted : usdPriceFormatted}
-            </p>
-            <p className="text-xs text-primary opacity-75">per token</p>
+        </div>
+         <div className="bg-card border border-border shadow-sm p-4 rounded">
+          <h3 className="text-sm font-medium text-muted-foreground pb-2">OVT Price</h3>
+          <div className="text-2xl font-bold">
+             {formattedOvtPrice}
+             {priceLoading && <span className="text-xs text-muted-foreground ml-2">(Updating...)</span>}
           </div>
-          <div>
-            <h3 className="text-sm font-medium text-primary">Data Source</h3>
-            <div className="flex items-center mt-2">
-              <span className={`inline-block w-3 h-3 rounded-full mr-2 ${
-                tradingDataSource.isMock ? 'bg-warning' : 'bg-success'
-              }`}></span>
-              <span className="text-sm text-primary">{tradingDataSource.label}</span>
-            </div>
+        </div>
+        <div className="bg-card border border-border shadow-sm p-4 rounded">
+          <h3 className="text-sm font-medium text-muted-foreground pb-2">Circulating Supply</h3>
+          <div className="text-2xl font-bold">
+             {formatNumber(circulatingSupply, 0)} OVT
+             {navLoading && <span className="text-xs text-muted-foreground ml-2">(Updating...)</span>}
           </div>
         </div>
       </div>
-      
-      {!isConnected ? (
-        <div className="bg-white border border-primary p-6 rounded-lg shadow-sm text-center">
-          <p className="text-lg text-primary mb-4">Please connect your wallet to start trading</p>
-          <p className="text-sm text-primary opacity-75">You need to connect your wallet to access trading functionality</p>
-        </div>
-      ) : !walletAddress || !laserEyesWallets.includes(walletAddress) ? (
-        <div className="bg-white border border-primary p-6 rounded-lg shadow-sm text-center">
-          <p className="text-lg text-primary mb-4">Trading Access Restricted</p>
-          <p className="text-sm text-primary opacity-75">
-            Only authorized users can access the trading interface.
-            If you believe you should have access, please contact support.
-          </p>
-        </div>
-      ) : (
-        <div className="bg-white border border-primary p-6 rounded-lg shadow-sm">
-          <div className="mb-6">
-            <h2 className="text-lg font-medium text-primary">Market Overview</h2>
-            <p className="text-sm text-primary opacity-75">
-              Trade OVT tokens using market or limit orders. Please note that all trades are simulated 
-              on the testnet and do not involve real value.
-            </p>
-            <div className="mt-2 text-xs text-primary opacity-50 flex items-center">
-              <span className={`inline-block w-2 h-2 rounded-full mr-1 ${
-                tradingDataSource.isMock ? 'bg-warning' : 'bg-success'
-              }`}></span>
-              <span>Using {tradingDataSource.label}</span>
-            </div>
-          </div>
-          
-          <div className="border-t border-primary border-opacity-20 pt-6">
-            <TradingInterface />
-          </div>
-        </div>
-      )}
-    </>
+
+      <div className="lg:col-span-2 bg-card border border-border shadow-sm p-4 rounded">
+        <h3 className="text-lg font-bold mb-4">Trade OVT</h3>
+         <TradingInterface />
+      </div>
+
+      <div className="lg:col-span-3 bg-card border border-border shadow-sm p-4 rounded h-[300px] md:h-[400px]">
+         <h3 className="text-lg font-bold mb-4">OVT Price History (Sats)</h3>
+         <div className="h-[calc(100%-2rem)] pb-6">
+           {chartData.length > 0 ? (
+             <PriceChart data={chartData} baseCurrency="btc" />
+           ) : (
+             <div className="flex items-center justify-center h-full text-muted-foreground">
+               {isLoading ? 'Loading chart data...' : 'Chart temporarily disabled or no data.'}
+             </div>
+           )}
+         </div>
+       </div>
+
+    </div>
   );
 };
 

@@ -54,9 +54,7 @@ export default function Dashboard() {
     dailyChange, 
     dailyChangeFormatted, 
     isPositiveChange,
-    refreshPrice,
     isLoading,
-    setIsLoading
   } = useOVTPrice();
 
   // Get OVTClient data with useEffect for baseCurrency syncing instead of direct use
@@ -66,7 +64,6 @@ export default function Dashboard() {
     error, 
     navData, 
     formatValue,
-    fetchNAV,
     ovtPrice: clientOvtPrice,
     formattedOvtPrice: clientFormattedOvtPrice
   } = ovtClientData;
@@ -134,7 +131,6 @@ export default function Dashboard() {
       try {
         // Add staggered delay to prevent multiple components from making simultaneous requests
         await new Promise(resolve => setTimeout(resolve, 2000 + Math.random() * 3000));
-        await fetchNAV();
       } catch (err) {
         console.warn('Initial data fetch error:', err);
       }
@@ -144,7 +140,6 @@ export default function Dashboard() {
     
     // Set up interval for refreshing with a much longer interval to avoid rate limiting
     const intervalId = setInterval(() => {
-      fetchNAV();
     }, 600000); // 10 minutes instead of 5 to avoid rate limiting
     
     return () => {
@@ -152,7 +147,7 @@ export default function Dashboard() {
         clearInterval(intervalId);
       }
     };
-  }, [fetchNAV]);
+  }, []);
   
   // Sync currency toggle with OVT client
   useEffect(() => {
@@ -179,29 +174,6 @@ export default function Dashboard() {
       setIsAdmin(false);
     }
   }, [network, address]);
-  
-  // Add a central debounced refresh function to prevent multiple rapid requests
-  const handleManualRefresh = async () => {
-    if (isLoading) return; // Prevent duplicate refreshes
-    
-    try {
-      // Show a refreshing indicator
-      setIsLoading(true);
-      
-      // First refresh OVT price 
-      await refreshPrice();
-      
-      // Then refresh NAV with a larger delay to prevent rate limiting
-      await new Promise(resolve => setTimeout(resolve, 2000)); 
-      await fetchNAV();
-      
-    } catch (err) {
-      console.error('Failed to refresh data:', err);
-    } finally {
-      // Hide loading indicator
-      setIsLoading(false);
-    }
-  };
   
   // Handle pending transactions (confirmation flow)
   useEffect(() => {
@@ -248,7 +220,7 @@ export default function Dashboard() {
       updateGlobalNAVReference(navChangePercentage);
       
       // Refresh NAV data
-      fetchNAV();
+      // fetchNAV();
     } catch (err) {
       console.error('Transaction failed:', err);
       setNetworkError(err instanceof Error ? err.message : 'Transaction failed');
@@ -341,15 +313,6 @@ export default function Dashboard() {
               {/* Currency Toggle */}
               <CurrencyToggle size="sm" />
               
-              {/* Manual Refresh Button */}
-              <button 
-                onClick={handleManualRefresh}
-                className="text-primary hover:text-primary-dark rounded p-1"
-                title="Refresh All Price Data"
-              >
-                <ArrowPathIcon className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-              </button>
-              
               {/* Wallet Connection */}
               <WalletConnector 
                 onConnect={handleConnectWallet}
@@ -407,13 +370,6 @@ export default function Dashboard() {
             <div className="bg-white border border-primary rounded-lg shadow-sm p-4">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-xl font-semibold text-primary">OVT Price</h2>
-                <button 
-                  onClick={handleManualRefresh}
-                  className="text-primary hover:text-primary-dark p-1 rounded-full"
-                  title="Refresh OVT Price"
-                >
-                  <ArrowPathIcon className="h-4 w-4" />
-                </button>
               </div>
               
               <div className="space-y-2">

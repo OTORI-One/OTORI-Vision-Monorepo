@@ -8,7 +8,7 @@ use arch_program::account::AccountInfo;
 use arch_program::msg;
 
 // Custom implementation for getrandom to work with WebAssembly
-#[cfg(all(target_arch = "wasm32", feature = "custom"))]
+#[cfg(target_arch = "wasm32")]
 mod getrandom_shim {
     use getrandom::Error;
     
@@ -30,9 +30,8 @@ mod getrandom_shim {
 
 // Network configuration module
 pub mod network_config {
-    use bitcoin::Network;
+    use arch_program::bitcoin::Network;
     use std::env;
-    use std::str::FromStr;
     
     // Get the network from environment variable or default to Testnet
     pub fn get_network() -> Network {

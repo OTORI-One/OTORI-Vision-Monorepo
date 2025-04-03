@@ -1,0 +1,17 @@
+{
+  "bids": [
+    {
+      "id": 1,
+      "userId": "demo-user",
+      "type": "BUY",
+      "amount": 1,
+      "price": 105,
+      "filled": 0,
+      "status": "OPEN",
+      "timestamp": "2025-03-28T11:27:38.019Z"
+    }
+  ],
+  "asks": [],
+  "lastOrderId": 1,
+  "lastUpdated": "2025-03-28T11:27:38.019Z"
+}

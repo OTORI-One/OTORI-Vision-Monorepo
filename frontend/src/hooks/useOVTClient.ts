@@ -38,6 +38,7 @@ import priceService from '../services/priceService';
 import { useNAV } from './useNAV';
 import { useOVTPrice } from './useOVTPrice';
 import { useBitcoinPrice } from './useBitcoinPrice';
+import { useCurrencyToggle } from './useCurrencyToggle';
 
 // Constants for numeric handling
 export { SATS_PER_BTC };
@@ -143,9 +144,12 @@ export const getGlobalOVTPrice = (): number => {
 };
 
 export function useOVTClient() {
+  // Get currency context
+  const { currency: baseCurrencyFromToggle, setCurrency: setBaseCurrencyFromToggle } = useCurrencyToggle();
+
   // State hooks - initialize properly to prevent React queue errors
   const [error, setError] = useState<string | null>(null);
-  const [baseCurrency, setBaseCurrency] = useState<'btc' | 'usd'>('btc');
+  const [portfolioPositions, setPortfolioPositions] = useState<Portfolio[]>([]);
   
   // Use the hooks
   const { nav, loading: navLoading, error: navError, isConnected: navConnected } = useNAV();
@@ -159,10 +163,11 @@ export function useOVTClient() {
       error: ovtError,
       isConnected: ovtConnected
   } = useOVTPrice();
-  const { price: btcPrice, isLoading: btcLoading, error: btcError } = useBitcoinPrice() || { price: 50000, isLoading: false, error: null }; // Keep BTC price hook
+  // Rename destructured btcPrice to avoid conflict
+  const { price: bitcoinHookPrice, isLoading: btcLoading, error: btcError } = useBitcoinPrice() || { price: 50000, isLoading: false, error: null }; 
   
   const { address } = useLaserEyes();
-  const [portfolioPositions, setPortfolioPositions] = useState<Portfolio[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
   
   // Derive overall loading state
   const isLoading = useMemo(() => navLoading || ovtLoading || btcLoading, [navLoading, ovtLoading, btcLoading]);
@@ -172,20 +177,6 @@ export function useOVTClient() {
       const errors = [navError, ovtError, btcError].filter(Boolean);
       return errors.length > 0 ? errors.join('; ') : null;
   }, [navError, ovtError, btcError]);
-
-  // Initialize currency from localStorage after mount
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        const saved = localStorage.getItem('ovt-currency-preference');
-        const currency = saved === 'btc' ? 'btc' : 'usd';
-        globalBaseCurrency = currency;
-        setBaseCurrency(currency);
-      } catch (e) {
-        console.error('Error loading from localStorage:', e);
-      }
-    }
-  }, []);
 
   // Initialize portfolio positions with mock data
   useEffect(() => {
@@ -258,27 +249,11 @@ export function useOVTClient() {
     }
   }, []);
 
-  // Currency change handler
+  // Currency change handler - uses the function from useCurrencyToggle
   const handleCurrencyChange = useCallback((currency: 'btc' | 'usd') => {
-    // Update global currency
-    globalBaseCurrency = currency;
-    setBaseCurrency(currency);
-    
-    try {
-      localStorage.setItem('ovt-currency-preference', currency);
-    } catch (e) {
-      console.error('Failed to save currency preference:', e);
-    }
-    
-    // No need to refetch NAV, formatting is handled by useNAV/useOVTPrice and display components
-   
-    // Dispatch a custom event that other components can listen for
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('currency-changed', { 
-        detail: { currency } 
-      }));
-    }
-  }, []);
+    setBaseCurrencyFromToggle(currency);
+    // Dispatching event is likely handled within useCurrencyToggle/Provider now
+  }, [setBaseCurrencyFromToggle]);
 
   // Get transaction history from blockchain
   const getTransactionHistory = useCallback(async () => {
@@ -354,7 +329,7 @@ export function useOVTClient() {
   // Construct the legacy NAVData object from the useNAV hook
   const legacyNavData = useMemo(() => {
       return {
-          totalValue: baseCurrency === 'usd' ? nav.formattedNavUsd : nav.formattedNavSats,
+          totalValue: baseCurrencyFromToggle === 'usd' ? nav.formattedNavUsd : nav.formattedNavSats,
           totalValueSats: nav.navSats,
           changePercentage: `${(nav.changePercentage || 0).toFixed(2)}%`,
           portfolioItems: portfolioPositions, // Still using mock/local portfolio state
@@ -366,14 +341,14 @@ export function useOVTClient() {
               distributionEvents: [] // TODO: Populate if needed
           }
       };
-  }, [nav, baseCurrency, portfolioPositions]);
+  }, [nav, baseCurrencyFromToggle, portfolioPositions]);
 
   return {
     isLoading,
     error: combinedError, // Use combined error
     navData: legacyNavData, // Provide the constructed legacy object
-    baseCurrency: baseCurrency || 'usd',
-    btcPrice,
+    baseCurrency: baseCurrencyFromToggle, // Use currency from the hook
+    btcPrice: bitcoinHookPrice, // Use the renamed variable from useBitcoinPrice
     portfolioPositions,
     formatValue: formatValueUtils, // Export the centralized utility
     getTransactionHistory,
@@ -386,7 +361,7 @@ export function useOVTClient() {
     getCirculatingSupply,
     ovtPrice: ovtPriceValue, // Provide value from useOVTPrice hook
     // Provide formatted value based on baseCurrency
-    formattedOvtPrice: baseCurrency === 'usd' 
+    formattedOvtPrice: baseCurrencyFromToggle === 'usd' 
         ? ovtUsdFormatted // Use the formatted value directly from useOVTPrice hook
         : ovtBtcFormatted   // Use the formatted value directly from useOVTPrice hook
   };

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useLaserEyes } from '@omnisat/lasereyes';
 import Layout from '../components/Layout';
 import WalletConnector from '../components/WalletConnector';
-import WalletTokenDisplay from '../src/components/WalletTokenDisplay';
+import WalletTokenDisplay from '../components/WalletTokenDisplay';
 import useRuneIntegration from '../src/hooks/useRuneIntegration';
 import { isAdminWallet } from '../src/utils/adminUtils';
 import NAVDisplay from '../components/NAVDisplay';

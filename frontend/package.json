@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@omnisat/lasereyes": "^0.0.142",
-    "ts-node": "^10.9.2"
+    "ts-node": "^10.9.2",
+    "websocket": "^1.0.35"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.1.6",

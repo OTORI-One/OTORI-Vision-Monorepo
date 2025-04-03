@@ -23,9 +23,9 @@
       "@/*": [
         "src/*"
       ],
-      "@/src/*": [
-        "src/*"
-      ]
+      "@/components/*": ["components/*"],
+      "@/hooks/*": ["src/hooks/*"],
+      "@/utils/*": ["src/utils/*"]
     },
     "plugins": [
       {

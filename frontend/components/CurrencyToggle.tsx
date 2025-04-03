@@ -1,5 +1,5 @@
 import React from 'react';
-import { useCurrencyToggle } from '@/src/hooks/useCurrencyToggle';
+import { useCurrencyToggle } from '@/hooks/useCurrencyToggle';
 
 interface CurrencyToggleProps {
   className?: string;

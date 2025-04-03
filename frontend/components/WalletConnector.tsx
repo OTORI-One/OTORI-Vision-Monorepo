@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { UNISAT, XVERSE, useLaserEyes, ProviderType } from '@omnisat/lasereyes';
-import WalletTokenDisplay from '../src/components/WalletTokenDisplay';
+import WalletTokenDisplay from './WalletTokenDisplay';
 
 interface WalletConnectorProps {
   onConnect: (address: string) => void;

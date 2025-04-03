@@ -1,0 +1,10 @@
+{
+  "totalLiquidity": 5000000,
+  "ovtPool": 2500000,
+  "btcPool": 9.270868064835332e+156,
+  "fees": {
+    "trading": 0.003,
+    "withdrawal": 0.001
+  },
+  "lastUpdated": "2025-03-28T11:27:37.000Z"
+}

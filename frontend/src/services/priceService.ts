@@ -94,12 +94,13 @@ class PriceStore {
     }
     if (this.ws) {
       console.log('Disconnecting WebSocket...');
-      this.ws.onopen = null;
-      this.ws.onmessage = null;
-      this.ws.onerror = null;
-      this.ws.onclose = null;
+      // Assign empty functions to effectively clear handlers
+      this.ws.onopen = () => {}; 
+      this.ws.onmessage = () => {};
+      this.ws.onerror = () => {};
+      this.ws.onclose = () => {};
       this.ws.close();
-      this.ws = null;
+      this.ws = null; // Setting the ws object itself to null is fine
     }
     this._isConnected = false;
     this.notifyConnectionListeners();
