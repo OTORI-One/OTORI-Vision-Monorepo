@@ -29,28 +29,40 @@ class PriceStore {
   private _navData: NAVData | null = null;
   private _ovtPrice: OVTPrice | null = null;
   private _btcPrice: BitcoinPrice | null = null;
-  // NEW: Add state for OVT Balance and Transactions
   private _ovtBalance: TokenBalance | null = null;
   private _ovtTransactions: RuneTransaction[] = [];
+  // Add back portfolio state
+  private _portfolioPositions: Position[] = []; 
+  // Add trade history and order book state
+  private _tradeHistory: TradeTransaction[] = [];
+  private _orderBook: OrderBook = { bids: [], asks: [] };
   
-  // Track when data was last fetched (still useful for cache validity)
+  // Track when data was last fetched
   private _navLastFetched: number = 0;
   private _ovtLastFetched: number = 0;
   private _btcLastFetched: number = 0;
-  // NEW: Last fetched times for balance/transactions (might be less relevant if purely WS)
   private _ovtBalanceLastFetched: number = 0;
   private _ovtTransactionsLastFetched: number = 0;
+  // Add back portfolio fetched time
+  private _portfolioLastFetched: number = 0;
+  // Add trade fetched times
+  private _tradeHistoryLastFetched: number = 0;
+  private _orderBookLastFetched: number = 0;
   
   // Store listeners for data changes
   private _navListeners: Set<(data: NAVData) => void> = new Set();
   private _ovtListeners: Set<(data: OVTPrice) => void> = new Set();
   private _btcListeners: Set<(data: BitcoinPrice) => void> = new Set();
-  // NEW: Add listener sets for balance and transactions
   private _ovtBalanceListeners: Set<(data: TokenBalance) => void> = new Set();
-  private _ovtTransactionListeners: Set<(data: RuneTransaction[]) => void> = new Set(); // Or single transaction if preferred
+  private _ovtTransactionListeners: Set<(data: RuneTransaction[]) => void> = new Set();
+  // Add back portfolio listeners
+  private _portfolioListeners: Set<(positions: Position[]) => void> = new Set();
+  // Add trade listener sets
+  private _tradeListeners: Set<(trade: TradeTransaction) => void> = new Set(); // Assuming single trade updates
+  private _orderBookListeners: Set<(orderBook: OrderBook) => void> = new Set();
   
   // WebSocket State
-  private ws: W3CWebSocket | null = null; // Use W3CWebSocket type
+  private ws: W3CWebSocket | null = null;
   private wsUrl: string = WS_URL;
   private _isConnected: boolean = false;
   private connectionListeners: Set<(status: boolean) => void> = new Set();
@@ -187,6 +199,37 @@ class PriceStore {
                  this.addOvtTransaction(newTransaction);
              } else {
                  console.warn('Received invalid OVT_TRANSACTION_ADDED payload:', message.payload);
+             }
+             break;
+          // NEW: Handle Portfolio Updates
+          case 'PORTFOLIO_UPDATE':
+             // Assuming payload is Position[]
+             if (message.payload && Array.isArray(message.payload)) {
+                 console.log('Updating Portfolio from WS:', message.payload);
+                 this.portfolioPositions = message.payload as Position[]; // Use setter
+             } else {
+                 console.warn('Received invalid PORTFOLIO_UPDATE payload:', message.payload);
+             }
+             break;
+          // NEW: Handle Trade Updates (assuming a single trade is pushed)
+          case 'TRADE_UPDATE':
+             // Assuming payload is a single TradeTransaction
+             if (message.payload && message.payload.txid) {
+                 // console.log('Received Trade Update from WS:', message.payload);
+                 const newTrade = message.payload as TradeTransaction;
+                 this.addTradeToHistory(newTrade); // Use method to add and notify
+             } else {
+                 console.warn('Received invalid TRADE_UPDATE payload:', message.payload);
+             }
+             break;
+          // NEW: Handle Order Book Updates
+          case 'ORDER_BOOK_UPDATE':
+             // Assuming payload is the full OrderBook object
+             if (message.payload && Array.isArray(message.payload.bids) && Array.isArray(message.payload.asks)) {
+                 // console.log('Updating Order Book from WS:', message.payload);
+                 this.orderBook = message.payload as OrderBook; // Use setter
+             } else {
+                 console.warn('Received invalid ORDER_BOOK_UPDATE payload:', message.payload);
              }
              break;
           case 'PONG': // Handle potential ping/pong
@@ -620,11 +663,30 @@ class PriceStore {
     const cachedBtc = this.loadCachedData<BitcoinPrice>('btc-price-data');
     if (cachedBtc) this._btcPrice = cachedBtc;
 
-    // NEW: Load cached balance/transactions if implemented
-    // const cachedBalance = this.loadCachedData<TokenBalance>(`ovt-balance-cache-${address}`); // Need address here... tricky
-    // if (cachedBalance) this._ovtBalance = cachedBalance;
-    // const cachedTransactions = this.loadCachedData<RuneTransaction[]>(`ovt-transactions-cache-${address}`);
-    // if (cachedTransactions) this._ovtTransactions = cachedTransactions;
+    // NEW: Load portfolio from cache
+    this._portfolioPositions = this.loadCachedData<Position[]>('portfolio-positions-cache') || [];
+    // NEW: Load trade data from cache
+    this._tradeHistory = this.loadCachedData<TradeTransaction[]>('trade-history-cache') || [];
+    this._orderBook = this.loadCachedData<OrderBook>('order-book-cache') || { bids: [], asks: [] };
+    
+    // Set fetched times if data was loaded
+    if (this._navData) this._navLastFetched = Date.now();
+    if (this._ovtPrice) this._ovtLastFetched = Date.now();
+    if (this._btcPrice) this._btcLastFetched = Date.now();
+    // NEW: Set portfolio fetched time
+    if (this._portfolioPositions.length > 0) this._portfolioLastFetched = Date.now(); 
+    // NEW: Set trade data fetched time
+    if (this._tradeHistory.length > 0) this._tradeHistoryLastFetched = Date.now();
+    if (this._orderBook.bids.length > 0 || this._orderBook.asks.length > 0) this._orderBookLastFetched = Date.now();
+
+    console.log('Initial cache loaded:', {
+      nav: !!this._navData,
+      ovt: !!this._ovtPrice,
+      btc: !!this._btcPrice,
+      portfolio: this._portfolioPositions.length > 0,
+      tradeHistory: this._tradeHistory.length > 0,
+      orderBook: this._orderBook.bids.length > 0 || this._orderBook.asks.length > 0
+    });
   }
 
 
@@ -786,6 +848,209 @@ class PriceStore {
       this._ovtTransactionListeners.delete(callback);
     };
   }
+
+  // --- NEW: Portfolio Data Accessors & Subscription ---
+
+  public get portfolioPositions(): Position[] {
+    return this._portfolioPositions;
+  }
+
+  public set portfolioPositions(data: Position[]) {
+    // Basic validation: Ensure it's an array
+    if (Array.isArray(data)) {
+       const changed = this._portfolioPositions.length !== data.length || 
+                       JSON.stringify(this._portfolioPositions) !== JSON.stringify(data); // Simple deep compare for now
+
+       if (changed) {
+         this._portfolioPositions = data;
+         this._portfolioLastFetched = Date.now();
+         // Notify all portfolio listeners
+         this._portfolioListeners.forEach(listener => {
+           try { listener(data); } catch (e) { console.error('Error in Portfolio listener:', e); }
+         });
+         // Cache portfolio data
+         this.cacheData('portfolio-positions-cache', data); 
+       }
+    } else {
+        console.warn("Attempted to set portfolioPositions with non-array data:", data);
+    }
+  }
+
+  // Subscribe to Portfolio updates
+  public subscribeToPortfolioUpdates(callback: (positions: Position[]) => void): () => void {
+    this._portfolioListeners.add(callback);
+    // Immediately call with current data if available
+    if (this._portfolioPositions.length > 0) { // Check if we have data
+      try { callback(this._portfolioPositions); } catch (e) { console.error('Error in initial Portfolio callback:', e); }
+    }
+    // Return unsubscribe function
+    return () => {
+      this._portfolioListeners.delete(callback);
+    };
+  }
+
+  // Fetch Portfolio Positions (initial load via HTTP)
+  // Replaces the standalone exported function
+  public async getPortfolioPositions(force: boolean = false): Promise<Position[]> {
+    const now = Date.now();
+    // Return cached data if not forced and cache is fresh (e.g., within 5 mins for portfolio)
+    if (!force && this._portfolioPositions.length > 0 && (now - this._portfolioLastFetched < 300000)) { // 5 min TTL
+      console.log("PriceStore: Returning cached portfolio positions.");
+      return Promise.resolve([...this._portfolioPositions]); // Return a copy
+    }
+
+    // Use rate limiter/queue if needed, adapting existing pattern
+    return this.executeRateLimitedRequest<Position[]>('/portfolio', async () => {
+      try {
+        console.log("PriceStore: Fetching portfolio positions from API...");
+        const response = await axios.get<Position[]>(`${API_BASE_URL}/portfolio`);
+        if (response.data && Array.isArray(response.data)) {
+            // Validate data structure if necessary here
+            this.portfolioPositions = response.data; // Use setter to update cache and notify listeners
+            return response.data;
+        } else {
+            throw new Error('Invalid portfolio data format received from API');
+        }
+      } catch (error) {
+        console.error('Error fetching portfolio positions:', error);
+        handleApiError(error); // handleApiError is typed as 'never', it should throw
+        // Add explicit throw to satisfy TS strict checks about implicit undefined return
+        throw error; 
+      }
+    });
+  }
+
+  // --- NEW: Trading Data Accessors & Subscriptions ---
+
+  public get tradeHistory(): TradeTransaction[] {
+    return this._tradeHistory;
+  }
+  
+  // Method to add a single trade (used by WS handler)
+  public addTradeToHistory(trade: TradeTransaction): void {
+    if (trade && trade.txid) {
+      // Avoid duplicates and update existing if status changes
+      const existingIndex = this._tradeHistory.findIndex(t => t.txid === trade.txid);
+      let changed = false;
+      if (existingIndex > -1) {
+        // Update existing trade if different (e.g., status change)
+        if (JSON.stringify(this._tradeHistory[existingIndex]) !== JSON.stringify(trade)) {
+            this._tradeHistory[existingIndex] = trade;
+            changed = true;
+        } 
+      } else {
+        // Add new trade
+        this._tradeHistory.unshift(trade); // Add to the beginning
+        // Optional: Limit history size
+        // if (this._tradeHistory.length > MAX_HISTORY_SIZE) { this._tradeHistory.pop(); }
+        changed = true;
+      }
+
+      if (changed) {
+          this._tradeHistory.sort((a, b) => b.timestamp - a.timestamp); // Ensure sorted by time
+          this._tradeHistoryLastFetched = Date.now(); // Update timestamp
+          // Notify individual trade listeners with the *new/updated* trade
+          this._tradeListeners.forEach(listener => {
+              try { listener(trade); } catch (e) { console.error('Error in Trade listener:', e); }
+          });
+          // Optionally cache trade history (can get large)
+          // this.cacheData('trade-history-cache', this._tradeHistory);
+      }
+    }
+  }
+
+  // Setter for the full history (e.g., for initial load via HTTP if needed)
+  public set tradeHistory(data: TradeTransaction[]) {
+      if (Array.isArray(data)) {
+          const sortedData = [...data].sort((a, b) => b.timestamp - a.timestamp);
+          const changed = JSON.stringify(this._tradeHistory) !== JSON.stringify(sortedData);
+          if (changed) {
+              this._tradeHistory = sortedData;
+              this._tradeHistoryLastFetched = Date.now();
+              // Notify listeners? Typically updates come one by one via WS.
+              // Maybe notify order book listeners if a full history load impacts it?
+              // this.cacheData('trade-history-cache', this._tradeHistory);
+          }
+      } else {
+           console.warn("Attempted to set tradeHistory with non-array data:", data);
+      }
+  }
+
+  public get orderBook(): OrderBook {
+    return this._orderBook;
+  }
+
+  public set orderBook(data: OrderBook) {
+    // Basic validation
+    if (data && Array.isArray(data.bids) && Array.isArray(data.asks)) {
+      // Deep compare can be expensive, check size first
+      const changed = this._orderBook.bids.length !== data.bids.length || 
+                      this._orderBook.asks.length !== data.asks.length ||
+                      JSON.stringify(this._orderBook) !== JSON.stringify(data);
+
+      if (changed) {
+        this._orderBook = data;
+        this._orderBookLastFetched = Date.now();
+        // Notify order book listeners
+        this._orderBookListeners.forEach(listener => {
+          try { listener(data); } catch (e) { console.error('Error in Order Book listener:', e); }
+        });
+        // Cache order book data
+        this.cacheData('order-book-cache', data);
+      }
+    } else {
+        console.warn("Attempted to set orderBook with invalid data:", data);
+    }
+  }
+
+  // Subscribe to individual Trade updates
+  public subscribeToTradeUpdates(callback: (trade: TradeTransaction) => void): () => void {
+    this._tradeListeners.add(callback);
+    // Initial call with history is complex as listener expects single trades.
+    // The hook should probably fetch initial history separately.
+    return () => {
+      this._tradeListeners.delete(callback);
+    };
+  }
+
+  // Subscribe to Order Book updates
+  public subscribeToOrderBookUpdates(callback: (orderBook: OrderBook) => void): () => void {
+    this._orderBookListeners.add(callback);
+    // Immediately call with current data if available
+    if (this._orderBook.bids.length > 0 || this._orderBook.asks.length > 0) { 
+      try { callback(this._orderBook); } catch (e) { console.error('Error in initial Order Book callback:', e); }
+    }
+    return () => {
+      this._orderBookListeners.delete(callback);
+    };
+  }
+
+  // --- Fetching Methods (Add HTTP fetches for initial load if needed) ---
+  // Example: Fetch initial Trade History via HTTP (if backend supports it)
+  public async fetchTradeHistory(force: boolean = false): Promise<TradeTransaction[]> {
+      // TODO: Implement HTTP fetch logic similar to getPortfolioPositions
+      // Needs a corresponding API endpoint, e.g., /trade/history
+      console.warn("fetchTradeHistory not implemented yet.");
+      // For now, return current state or cached state
+      if (this._tradeHistory.length > 0 && !force) {
+          return Promise.resolve([...this._tradeHistory]);
+      }
+      // Placeholder: return empty if no API call implemented
+      return Promise.resolve([]); 
+  }
+
+  // Example: Fetch initial Order Book via HTTP (if backend supports it)
+  public async fetchOrderBook(force: boolean = false): Promise<OrderBook> {
+       // TODO: Implement HTTP fetch logic similar to getPortfolioPositions
+       // Needs a corresponding API endpoint, e.g., /trade/orderbook
+      console.warn("fetchOrderBook not implemented yet.");
+       // For now, return current state or cached state
+      if ((this._orderBook.bids.length > 0 || this._orderBook.asks.length > 0) && !force) {
+          return Promise.resolve({...this._orderBook});
+      }
+       // Placeholder: return empty if no API call implemented
+       return Promise.resolve({ bids: [], asks: [] });
+  }
 }
 
 // Types
@@ -864,20 +1129,6 @@ const handleApiError = (error: any): never => {
   }
    // Rethrow the error so callers can handle it
   throw error;
-};
-
-// Fetch all portfolio positions
-export const getPortfolioPositions = async (): Promise<Position[]> => {
-  try {
-    const response = await apiClient.get<{success: boolean; positions: Position[]}>('/portfolio');
-    if (response.data.success) {
-      return response.data.positions;
-    }
-    throw new Error('API indicated failure fetching portfolio positions');
-  } catch (error) {
-    console.error('Error fetching portfolio positions:', error);
-    return handleApiError(error); // Call and return to satisfy linter about never return
-  }
 };
 
 // Get current OVT price
@@ -990,7 +1241,6 @@ export default {
   getPriceStore,
 
   // Potentially still useful direct HTTP calls
-  getPortfolioPositions,
   getPriceHistory,
   triggerPriceUpdate,
   updateOVTCirculatingSupply,
@@ -1008,4 +1258,36 @@ export default {
   subscribeToConnectionChange: priceStore.subscribeToConnectionChange.bind(priceStore),
   subscribeToOvtBalanceUpdates: priceStore.subscribeToOvtBalanceUpdates.bind(priceStore),
   subscribeToOvtTransactionUpdates: priceStore.subscribeToOvtTransactionUpdates.bind(priceStore),
+  subscribeToPortfolioUpdates: priceStore.subscribeToPortfolioUpdates.bind(priceStore),
+  // NEW: Expose trade subscriptions
+  subscribeToTradeUpdates: priceStore.subscribeToTradeUpdates.bind(priceStore),
+  subscribeToOrderBookUpdates: priceStore.subscribeToOrderBookUpdates.bind(priceStore),
 }; 
+
+// --- Type Definitions (Ensure TradeTransaction and OrderBook are defined or imported) ---
+
+// Assume TradeTransaction and OrderBook interfaces are defined similar to useTradingModule
+
+export interface Order {
+  price: number;  // in sats
+  amount: number; // number of OVT tokens
+}
+
+export interface OrderBook {
+  bids: Order[];  // buy orders (price descending)
+  asks: Order[];  // sell orders (price ascending)
+}
+
+export interface TradeTransaction {
+  txid: string;
+  type: 'BUY' | 'SELL';
+  amount: number; // OVT amount
+  valueSats: number; // Total value in Sats
+  pricePerOvtSats: number; // Effective price
+  feeSats: number;
+  confirmations?: number; // Optional confirmations
+  timestamp: number; // Unix timestamp (seconds or ms)
+  status: 'pending' | 'confirmed' | 'failed';
+  orderType?: 'market' | 'limit'; // Optional order type
+  limitPrice?: number; // Optional limit price
+} 
