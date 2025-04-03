@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useContext, createContext, ReactNode, useMemo } from 'react';
-import { getPriceStore } from '../services/priceService'; // Import price store
+import { getPriceStore, BitcoinPrice } from '../services/priceService'; // Import BitcoinPrice type
 
 // Define the currency type
 export type Currency = 'btc' | 'usd';
@@ -48,10 +48,9 @@ export const CurrencyProvider = ({
   
   // Safely initialize bitcoinPrice state, handling potential null
   const [bitcoinPrice, setBitcoinPrice] = useState<number>(() => {
-    const initialPrice = priceStore.btcPrice; // Assume BitcoinPrice is number | null
-    return (initialPrice !== null && isFinite(initialPrice)) ? initialPrice : 50000;
-  }); 
-  
+    const initialPrice = priceStore.btcPrice;
+    return (initialPrice && typeof initialPrice.price === 'number' && isFinite(initialPrice.price)) ? initialPrice.price : 50000;
+  });
   // Initialize from localStorage on mount
   useEffect(() => {
     let storedCurrency: Currency | null = null;
@@ -72,19 +71,20 @@ export const CurrencyProvider = ({
   // Update Bitcoin price from priceStore subscription
   useEffect(() => {
     // Handle potential null from subscription
-    const handlePriceUpdate = (newPrice: number | null) => { // Accept number | null
-      if (newPrice !== null && isFinite(newPrice)) { 
-        setBitcoinPrice(newPrice);
+    const handlePriceUpdate = (newPrice: BitcoinPrice) => {
+      if (newPrice && typeof newPrice.price === 'number' && isFinite(newPrice.price)) { 
+        setBitcoinPrice(newPrice.price);
       }
     };
-    
-    // Subscribe (assuming callback expects number | null based on BitcoinPrice type)
-    const unsubscribe = priceStore.subscribeToBtcUpdates(handlePriceUpdate);
+    // Subscribe to price updates
+    const unsubscribe = priceStore.subscribeToBtcUpdates((data) => {
+      handlePriceUpdate(data);
+    });
     
     // Safely check and set initial price from store if available and valid
     const currentStorePrice = priceStore.btcPrice;
-    if (currentStorePrice !== null && isFinite(currentStorePrice)) {
-        setBitcoinPrice(currentStorePrice);
+    if (currentStorePrice && typeof currentStorePrice.price === 'number' && isFinite(currentStorePrice.price)) {
+        setBitcoinPrice(currentStorePrice.price);
     }
 
     return () => {
