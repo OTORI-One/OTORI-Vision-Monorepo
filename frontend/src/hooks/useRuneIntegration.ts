@@ -11,9 +11,10 @@
  * It communicates with the backend Runes API to perform these operations.
  */
 
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { useLaserEyes } from '@omnisat/lasereyes';
+import { getPriceStore } from '../services/priceService'; // Added import
 
 // OVT Rune constants
 export const OVT_RUNE_ID = '240249:101';
@@ -101,6 +102,7 @@ export function useRuneIntegration() {
   const [balance, setBalance] = useState<number>(0);
   const [metadata, setMetadata] = useState<RuneMetadata | null>(null);
   const [transactions, setTransactions] = useState<RuneTransaction[]>([]);
+  const priceStore = useMemo(() => getPriceStore(), []); // Get price store instance
 
   // API base URL
   const API_BASE_URL = process.env.NEXT_PUBLIC_RUNES_API_ENDPOINT || 'http://localhost:3030';
@@ -116,7 +118,10 @@ export function useRuneIntegration() {
     runeId: string = OVT_RUNE_ID
   ): Promise<number> => {
     if (!walletAddress) {
-      throw new Error('Wallet address is required');
+      // Allow returning 0 if no address, avoid throwing error for initial state
+      setBalance(0);
+      return 0;
+      // throw new Error('Wallet address is required');
     }
 
     setIsLoading(true);
@@ -138,7 +143,8 @@ export function useRuneIntegration() {
     } catch (err) {
       console.error('Error fetching rune balance:', err);
       setError('Failed to fetch token balance');
-      // Return 0 as fallback
+      // Return 0 as fallback and set balance state
+      setBalance(0);
       return 0;
     } finally {
       setIsLoading(false);
@@ -213,7 +219,10 @@ export function useRuneIntegration() {
     runeId: string = OVT_RUNE_ID
   ): Promise<RuneTransaction[]> => {
     if (!walletAddress) {
-      throw new Error('Wallet address is required');
+       // Allow returning [] if no address, avoid throwing error
+       setTransactions([]);
+       return [];
+      // throw new Error('Wallet address is required');
     }
 
     setIsLoading(true);
@@ -234,6 +243,7 @@ export function useRuneIntegration() {
         txid: tx.txid,
         type: tx.type,
         amount: tx.amount,
+        // Ensure address represents the other party involved
         address: tx.fromAddress === walletAddress ? tx.toAddress : tx.fromAddress,
         timestamp: tx.timestamp,
         confirmations: tx.confirmations || 0,
@@ -248,6 +258,7 @@ export function useRuneIntegration() {
     } catch (err) {
       console.error('Error fetching transaction history:', err);
       setError('Failed to fetch transaction history');
+      setTransactions([]); // Clear transactions on error
       return [];
     } finally {
       setIsLoading(false);
@@ -312,17 +323,6 @@ export function useRuneIntegration() {
       
       const txData = response.data.transaction;
       
-      // In a production app, we would now:
-      // 1. Present the PSBT to the user for signing with their wallet
-      // 2. Submit the signed PSBT back to the API
-      // For now, we'll simulate a successful transaction
-      
-      // Refresh balance after transaction
-      setTimeout(() => getBalance(address), 1000);
-      
-      // Refresh transaction history
-      setTimeout(() => getTransactionHistory(address), 1500);
-      
       return {
         txid: txData.txid,
         status: txData.status || 'pending',
@@ -339,7 +339,7 @@ export function useRuneIntegration() {
     } finally {
       setIsLoading(false);
     }
-  }, [address, connected, signMessage, getBalance, getTransactionHistory, API_BASE_URL]);
+  }, [address, connected, signMessage, API_BASE_URL]);
 
   /**
    * Sell OVT tokens
@@ -362,10 +362,8 @@ export function useRuneIntegration() {
 
     try {
       // First check if we have enough OVT to sell
-      const currentBalance = await getBalance(address);
-      
-      if (currentBalance < amount) {
-        throw new Error(`Insufficient balance: required ${amount}, available ${currentBalance}`);
+      if (balance < amount) {
+        throw new Error(`Insufficient balance: required ${amount}, available ${balance}`);
       }
       
       // Sign the transaction request
@@ -408,17 +406,6 @@ export function useRuneIntegration() {
       
       const txData = response.data.transaction;
       
-      // In a production app, we would now:
-      // 1. Present the PSBT to the user for signing with their wallet
-      // 2. Submit the signed PSBT back to the API
-      // For now, we'll simulate a successful transaction
-      
-      // Refresh balance after transaction
-      setTimeout(() => getBalance(address), 1000);
-      
-      // Refresh transaction history
-      setTimeout(() => getTransactionHistory(address), 1500);
-      
       return {
         txid: txData.txid,
         status: txData.status || 'pending',
@@ -435,7 +422,7 @@ export function useRuneIntegration() {
     } finally {
       setIsLoading(false);
     }
-  }, [address, connected, signMessage, getBalance, getTransactionHistory, API_BASE_URL]);
+  }, [address, connected, signMessage, balance, API_BASE_URL]);
 
   /**
    * Submit a signed transaction
@@ -470,12 +457,6 @@ export function useRuneIntegration() {
       
       const txData = response.data.transaction;
       
-      // Refresh balance after transaction
-      setTimeout(() => getBalance(fromAddress), 1000);
-      
-      // Refresh transaction history
-      setTimeout(() => getTransactionHistory(fromAddress), 1500);
-      
       return {
         txid: txData.txid,
         status: txData.status || 'confirmed',
@@ -489,7 +470,7 @@ export function useRuneIntegration() {
     } finally {
       setIsLoading(false);
     }
-  }, [getBalance, getTransactionHistory, API_BASE_URL]);
+  }, [API_BASE_URL]);
 
   /**
    * Transfer OVT tokens to another address
@@ -516,6 +497,11 @@ export function useRuneIntegration() {
     setError(null);
 
     try {
+      // Check balance from state first
+      if (balance < amount) {
+        throw new Error(`Insufficient balance: required ${amount}, available ${balance}`);
+      }
+
       // Call the API to prepare transfer transaction
       const response = await axios.post(`${API_BASE_URL}/ovt/transfer`, {
         fromAddress,
@@ -529,17 +515,6 @@ export function useRuneIntegration() {
       }
       
       const txData = response.data.transaction;
-      
-      // In a production app, we would now:
-      // 1. Present the PSBT to the user for signing with their wallet
-      // 2. Submit the signed PSBT back to the API
-      // For now, we'll simulate a successful transaction
-      
-      // Refresh balance after transaction
-      setTimeout(() => getBalance(fromAddress), 1000);
-      
-      // Refresh transaction history
-      setTimeout(() => getTransactionHistory(fromAddress), 1500);
       
       return {
         txid: txData.txid || 'mock-txid-' + Date.now(),
@@ -557,7 +532,7 @@ export function useRuneIntegration() {
     } finally {
       setIsLoading(false);
     }
-  }, [getBalance, getTransactionHistory, API_BASE_URL]);
+  }, [balance, API_BASE_URL]);
 
   /**
    * Get distribution statistics for OVT token
@@ -599,20 +574,74 @@ export function useRuneIntegration() {
   }, [API_BASE_URL]);
 
   /**
-   * Fetch token info when wallet address changes
+   * Fetch token info and subscribe to updates
    */
   useEffect(() => {
-    if (address) {
-      // Load initial balance
-      getBalance(address, OVT_RUNE_ID).catch(console.error);
-      
-      // Load transaction history
-      getTransactionHistory(address, OVT_RUNE_ID).catch(console.error);
+    // Initial fetch when address becomes available or changes
+    if (address && connected) {
+      console.log(`useRuneIntegration: Address detected (${address}), fetching initial data...`);
+      getBalance(address, OVT_RUNE_ID).catch(err => console.error("Initial getBalance failed:", err));
+      getTransactionHistory(address, OVT_RUNE_ID).catch(err => console.error("Initial getTransactionHistory failed:", err));
+    } else {
+      console.log("useRuneIntegration: No address or not connected, clearing data.");
+       // Clear data if address is removed (wallet disconnect)
+      setBalance(0);
+      setTransactions([]);
     }
-    
-    // Load token metadata regardless of wallet connection
-    getTokenMetadata(OVT_RUNE_ID).catch(console.error);
-  }, [address, getBalance, getTokenMetadata, getTransactionHistory]);
+
+    // Always load metadata (doesn't depend on address)
+    getTokenMetadata(OVT_RUNE_ID).catch(err => console.error("Initial getTokenMetadata failed:", err));
+
+    // --- WebSocket Subscriptions ---
+    console.log("useRuneIntegration: Setting up WebSocket subscriptions.");
+
+    // Subscribe to balance updates
+    const unsubscribeBalance = priceStore.subscribeToOvtBalanceUpdates((newBalanceData) => {
+       // Ensure the update is for the current user's address and rune
+      if (address && newBalanceData.address === address && newBalanceData.runeId === OVT_RUNE_ID) {
+         console.log(`useRuneIntegration: Received OVT_BALANCE_UPDATED via WebSocket for ${address}:`, newBalanceData.amount);
+         setBalance(newBalanceData.amount);
+       } else if (address && newBalanceData.address === address) {
+          console.log(`useRuneIntegration: Received balance update for ${address}, but wrong rune (${newBalanceData.runeId}). Ignoring.`);
+       } else {
+          // console.log(`useRuneIntegration: Received balance update for different address (${newBalanceData.address}), ignoring.`);
+       }
+    });
+
+    // Subscribe to transaction updates (receives the full list)
+    const unsubscribeTransactions = priceStore.subscribeToOvtTransactionUpdates((updatedTransactionList) => {
+        console.log(`useRuneIntegration: Received OVT_TRANSACTION_UPDATED via WebSocket. Updating local list.`);
+        // Simply update the state with the new list provided by the priceStore
+        // This assumes the priceStore handles adding new transactions correctly
+        // and that the subscription provides the *complete, sorted* list.
+        setTransactions(updatedTransactionList);
+
+        // If the WS only sends the *new* transaction, you would use this logic instead:
+        /*
+        const newTransaction = updatedTransactionData; // Assuming updatedTransactionData is the single new transaction
+        if (address && (newTransaction.fromAddress === address || newTransaction.toAddress === address)) {
+           console.log(`useRuneIntegration: Received NEW OVT_TRANSACTION via WebSocket affecting ${address}. Adding to list.`);
+           setTransactions(prev => {
+                // Avoid duplicates and keep sorted
+                if (!prev.some(tx => tx.txid === newTransaction.txid)) {
+                    return [newTransaction, ...prev].sort((a, b) => b.timestamp - a.timestamp);
+                }
+                return prev;
+           });
+         } else {
+            console.log(`useRuneIntegration: Received new transaction update not involving ${address}, ignoring.`);
+         }
+        */
+    });
+
+    // Cleanup function
+    return () => {
+      console.log("useRuneIntegration: Cleaning up WebSocket subscriptions.");
+      unsubscribeBalance();
+      unsubscribeTransactions();
+    };
+    // Dependencies: address, connected, getBalance, getTransactionHistory, getTokenMetadata, priceStore
+  }, [address, connected, getBalance, getTransactionHistory, getTokenMetadata, priceStore]);
 
   /**
    * Format token amount with proper divisibility 

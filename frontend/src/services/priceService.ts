@@ -8,6 +8,7 @@
 
 import axios from 'axios';
 import { w3cwebsocket as W3CWebSocket, IMessageEvent, ICloseEvent } from "websocket"; // Use websocket library and import types
+import { RuneTransaction, TokenBalance } from '../hooks/useRuneIntegration'; // Import necessary types
 
 // API base URL - can be overridden via environment variables
 const API_BASE_URL = process.env.NEXT_PUBLIC_PRICE_API_URL || 'http://localhost:3030/api/price';
@@ -28,16 +29,25 @@ class PriceStore {
   private _navData: NAVData | null = null;
   private _ovtPrice: OVTPrice | null = null;
   private _btcPrice: BitcoinPrice | null = null;
+  // NEW: Add state for OVT Balance and Transactions
+  private _ovtBalance: TokenBalance | null = null;
+  private _ovtTransactions: RuneTransaction[] = [];
   
   // Track when data was last fetched (still useful for cache validity)
   private _navLastFetched: number = 0;
   private _ovtLastFetched: number = 0;
   private _btcLastFetched: number = 0;
+  // NEW: Last fetched times for balance/transactions (might be less relevant if purely WS)
+  private _ovtBalanceLastFetched: number = 0;
+  private _ovtTransactionsLastFetched: number = 0;
   
   // Store listeners for data changes
   private _navListeners: Set<(data: NAVData) => void> = new Set();
   private _ovtListeners: Set<(data: OVTPrice) => void> = new Set();
   private _btcListeners: Set<(data: BitcoinPrice) => void> = new Set();
+  // NEW: Add listener sets for balance and transactions
+  private _ovtBalanceListeners: Set<(data: TokenBalance) => void> = new Set();
+  private _ovtTransactionListeners: Set<(data: RuneTransaction[]) => void> = new Set(); // Or single transaction if preferred
   
   // WebSocket State
   private ws: W3CWebSocket | null = null; // Use W3CWebSocket type
@@ -51,6 +61,9 @@ class PriceStore {
   private _pendingNavPromise: Promise<NAVData> | null = null;
   private _pendingOvtPromise: Promise<OVTPrice> | null = null;
   private _pendingBtcPromise: Promise<BitcoinPrice> | null = null;
+  // NEW: Pending promises for balance/transactions (if HTTP fetch remains)
+  private _pendingOvtBalancePromise: Promise<TokenBalance> | null = null;
+  private _pendingOvtTransactionsPromise: Promise<RuneTransaction[]> | null = null;
   
   // Rate limiting/Queueing might be removed if purely WS, but keep for now if HTTP calls remain
   private requestQueue: Map<string, number> = new Map();
@@ -153,7 +166,30 @@ class PriceStore {
                 console.warn('Received invalid BTC_PRICE_UPDATE payload:', message.payload);
             }
             break;
-           case 'PONG': // Handle potential ping/pong
+          // NEW: Handle OVT Balance Updates
+          case 'OVT_BALANCE_UPDATE':
+             // Assuming payload structure: { address: string, runeId: string, amount: number, formattedAmount: string }
+            if (message.payload && message.payload.address && typeof message.payload.amount === 'number') {
+                console.log('Updating OVT Balance from WS:', message.payload);
+                this.ovtBalance = message.payload as TokenBalance; // Use setter
+            } else {
+                 console.warn('Received invalid OVT_BALANCE_UPDATE payload:', message.payload);
+            }
+            break;
+           // NEW: Handle OVT Transaction Updates (Example: receiving a single new transaction)
+           // Alternative: Backend could send 'OVT_TRANSACTION_HISTORY_UPDATE' with the full list
+          case 'OVT_TRANSACTION_ADDED':
+             // Assuming payload structure matches RuneTransaction interface
+             if (message.payload && message.payload.txid) {
+                 console.log('Adding OVT Transaction from WS:', message.payload);
+                 const newTransaction = message.payload as RuneTransaction;
+                 // Use setter to update the list and notify listeners
+                 this.addOvtTransaction(newTransaction);
+             } else {
+                 console.warn('Received invalid OVT_TRANSACTION_ADDED payload:', message.payload);
+             }
+             break;
+          case 'PONG': // Handle potential ping/pong
              // console.log('Received pong from server');
              break;
           default:
@@ -583,6 +619,12 @@ class PriceStore {
 
     const cachedBtc = this.loadCachedData<BitcoinPrice>('btc-price-data');
     if (cachedBtc) this._btcPrice = cachedBtc;
+
+    // NEW: Load cached balance/transactions if implemented
+    // const cachedBalance = this.loadCachedData<TokenBalance>(`ovt-balance-cache-${address}`); // Need address here... tricky
+    // if (cachedBalance) this._ovtBalance = cachedBalance;
+    // const cachedTransactions = this.loadCachedData<RuneTransaction[]>(`ovt-transactions-cache-${address}`);
+    // if (cachedTransactions) this._ovtTransactions = cachedTransactions;
   }
 
 
@@ -595,19 +637,17 @@ class PriceStore {
     // Connect WebSocket
     this.connectWebSocket();
 
-    // Optional: Fetch initial data via HTTP if WS connection is delayed
-    // or as a quick way to populate initial state while WS connects.
-    // Consider if this is needed based on WS connection speed and reliability.
+    // Optional: Add initial HTTP fetches for balance/transactions if desired
     /*
-    if (!this._navData) {
-        this.fetchNAVData().catch(e => console.warn("Initial NAV HTTP fetch failed", e));
-    }
-    if (!this._ovtPrice) {
-        this.fetchOVTPrice().catch(e => console.warn("Initial OVT HTTP fetch failed", e));
-    }
-     if (!this._btcPrice) {
-        this.fetchBTCPrice().catch(e => console.warn("Initial BTC HTTP fetch failed", e));
-    }
+     const address = getCurrentUserAddress(); // Need a way to get current address if fetching here
+     if (address) {
+         if (!this._ovtBalance) {
+             // Call hypothetical fetchOvtBalance().catch(...)
+         }
+         if (this._ovtTransactions.length === 0) {
+             // Call hypothetical fetchOvtTransactions().catch(...)
+         }
+     }
     */
 
     // The old startPeriodicUpdates is removed as updates are now WS-driven
@@ -658,6 +698,93 @@ class PriceStore {
     // Fallback: Deep comparison (less efficient) or simple reference check if needed
      console.warn("hasDataChanged defaulting to true - couldn't determine data type for comparison.");
     return true; // Default to true if structure doesn't match known types
+  }
+
+  // NEW: OVT Balance accessors
+  public get ovtBalance(): TokenBalance | null {
+    return this._ovtBalance;
+  }
+
+  public set ovtBalance(data: TokenBalance | null) {
+     if (data && data.address && typeof data.amount === 'number') {
+       const changed = !this._ovtBalance || this._ovtBalance.amount !== data.amount || this._ovtBalance.address !== data.address;
+       if (changed) {
+          this._ovtBalance = data;
+          this._ovtBalanceLastFetched = Date.now();
+          // Notify listeners
+          this._ovtBalanceListeners.forEach(listener => {
+            try { listener(data); } catch (e) { console.error('Error in OVT Balance listener:', e); }
+          });
+          // Optionally cache balance? Depends on use case.
+          // this.cacheData(`ovt-balance-cache-${data.address}`, data);
+       }
+    }
+  }
+
+  // NEW: OVT Transactions accessors / modifiers
+  public get ovtTransactions(): RuneTransaction[] {
+    return this._ovtTransactions;
+  }
+
+  // Setter for the entire list (e.g., after initial HTTP fetch)
+  public set ovtTransactions(data: RuneTransaction[]) {
+     // Basic check for array type
+     if (Array.isArray(data)) {
+         // More sophisticated check could compare txids if needed
+         const changed = JSON.stringify(this._ovtTransactions) !== JSON.stringify(data);
+         if (changed) {
+            this._ovtTransactions = [...data].sort((a, b) => b.timestamp - a.timestamp); // Keep sorted
+            this._ovtTransactionsLastFetched = Date.now();
+            // Notify listeners with the full, updated list
+            this._ovtTransactionListeners.forEach(listener => {
+                try { listener(this._ovtTransactions); } catch (e) { console.error('Error in OVT Transaction list listener:', e); }
+            });
+            // Optionally cache transactions? Can get large.
+            // this.cacheData(`ovt-transactions-cache-${address}`, data);
+         }
+     }
+  }
+
+   // Method to add a single transaction (e.g., from WS 'OVT_TRANSACTION_ADDED')
+   public addOvtTransaction(transaction: RuneTransaction): void {
+       if (transaction && transaction.txid) {
+            // Avoid duplicates
+            if (!this._ovtTransactions.some(tx => tx.txid === transaction.txid)) {
+                const newList = [transaction, ...this._ovtTransactions].sort((a, b) => b.timestamp - a.timestamp);
+                this._ovtTransactions = newList;
+                this._ovtTransactionsLastFetched = Date.now(); // Update timestamp
+                // Notify listeners with the new full list
+                this._ovtTransactionListeners.forEach(listener => {
+                    try { listener(this._ovtTransactions); } catch (e) { console.error('Error in OVT Transaction add listener:', e); }
+                });
+            }
+       }
+   }
+
+  // NEW: Subscribe to OVT Balance updates
+  public subscribeToOvtBalanceUpdates(callback: (data: TokenBalance) => void): () => void {
+    this._ovtBalanceListeners.add(callback);
+    // Immediately call with current data if available
+    if (this._ovtBalance) {
+        try { callback(this._ovtBalance); } catch (e) { console.error('Error in initial OVT Balance callback:', e); }
+    }
+    // Return unsubscribe function
+    return () => {
+      this._ovtBalanceListeners.delete(callback);
+    };
+  }
+
+  // NEW: Subscribe to OVT Transaction updates (provides the full list)
+  public subscribeToOvtTransactionUpdates(callback: (data: RuneTransaction[]) => void): () => void {
+    this._ovtTransactionListeners.add(callback);
+    // Immediately call with current data if available
+    if (this._ovtTransactions.length > 0) {
+        try { callback(this._ovtTransactions); } catch (e) { console.error('Error in initial OVT Transactions callback:', e); }
+    }
+    // Return unsubscribe function
+    return () => {
+      this._ovtTransactionListeners.delete(callback);
+    };
   }
 }
 
@@ -879,4 +1006,6 @@ export default {
   subscribeToOvtUpdates: priceStore.subscribeToOvtUpdates.bind(priceStore),
   subscribeToBtcUpdates: priceStore.subscribeToBtcUpdates.bind(priceStore),
   subscribeToConnectionChange: priceStore.subscribeToConnectionChange.bind(priceStore),
+  subscribeToOvtBalanceUpdates: priceStore.subscribeToOvtBalanceUpdates.bind(priceStore),
+  subscribeToOvtTransactionUpdates: priceStore.subscribeToOvtTransactionUpdates.bind(priceStore),
 }; 
