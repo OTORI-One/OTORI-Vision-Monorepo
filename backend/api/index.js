@@ -486,11 +486,14 @@ if (require.main === module) {
   let wss; // Declare wss variable
   if (priceRoutes) { // Use the check for loaded price routes
       console.log('Initializing WebSocket Server for Price Service...');
-      wss = new WebSocket.Server({ server }); // Attach to the existing HTTP server
+      wss = new WebSocket.Server({
+          server: server,       // Attach to the HTTP server
+          path: '/api/price/ws' // **** Specify the path ****
+      });
 
       // Basic connection logging (more handling in priceService)
       wss.on('connection', (ws) => {
-          console.log('WebSocket client connected to Price Service');
+          console.log('WebSocket client connected to Price Service'); // This should now work
           ws.on('close', () => console.log('WebSocket client disconnected'));
           ws.on('error', (error) => console.error('WebSocket error:', error));
           // Forward the new client to the price service for management
@@ -509,7 +512,8 @@ if (require.main === module) {
              // ws.close(1011, 'Internal server error during WS connection setup');
           }
       });
-      console.log(`WebSocket server attached to port ${PORT}`);
+       // Update log message for clarity
+      console.log(`WebSocket server configured for path /api/price/ws on port ${PORT}`); 
   }
 
   server.listen(PORT, () => {
