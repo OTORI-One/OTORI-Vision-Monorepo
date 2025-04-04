@@ -789,22 +789,13 @@ app.get('/', (req, res) => {
 // Define OVT rune information endpoint
 app.get('/ovt/info', async (req, res) => {
   try {
-    // Try to get OVT rune info from remote API
-    const result = await getRemoteOVTInfo();
-    if (result.success) {
-      return res.json(result.result);
-    } else {
-      throw new Error(result.error);
-    }
-  } catch (error) {
-    console.error('Error getting OVT info:', error);
-    
-    // Fallback to mock data
+    // Instead of trying to get OVT rune info from remote API, construct it locally
+    // using constants defined in this file
     res.json({
       success: true,
       rune: {
         runeId: OVT_RUNE_ID,
-        name: 'OTORI•VISION•TOKEN',
+        name: OVT_RUNE_SYMBOL,
         symbol: '⊙',
         supply: 2100000,
         treasuryAddresses: [OVT_TREASURY_ADDRESS, OVT_TREASURY_ADDRESS_2],
@@ -813,6 +804,12 @@ app.get('/ovt/info', async (req, res) => {
         divisibility: 2,
         timestamp: '2025-03-20 21:48:00 UTC'
       }
+    });
+  } catch (error) {
+    console.error('Error getting OVT info:', error);
+    res.status(500).json({
+      success: false,
+      error: error.toString()
     });
   }
 });
