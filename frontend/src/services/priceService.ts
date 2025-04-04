@@ -737,71 +737,79 @@ class PriceStore {
     if (!oldData || !newData) return true; // Always update if old data is null or new data exists
 
     // Use timestamp as primary check - if newer, always update
-    // Ensure both timestamps exist and are numbers before comparing
     if (typeof newData.timestamp === 'number' && typeof oldData.timestamp === 'number' && newData.timestamp > oldData.timestamp) {
         return true;
     }
 
-    // Helper to compare numeric values with threshold
     const checkNumericChange = (key: string): boolean => {
         const oldValue = oldData[key];
         const newValue = newData[key];
         if (typeof oldValue === 'number' && typeof newValue === 'number' && isFinite(oldValue) && isFinite(newValue)) {
-            if (oldValue === 0 && newValue === 0) return false; // 0 to 0 is not a change
-            if (oldValue === 0) return true; // 0 to non-zero is a change
+            if (oldValue === 0 && newValue === 0) return false; 
+            if (oldValue === 0) return true; 
 
             const pctChange = Math.abs((newValue - oldValue) / oldValue) * 100;
             return pctChange > thresholdPercent;
         }
-        // Fallback to simple inequality if not finite numbers or types differ
         return oldValue !== newValue;
     };
 
-    // Specific comparisons based on likely data type structures
-    // Check based on properties unique to each message type
+    // --- Type Identification --- 
+    // Identify based on key properties present in the newData object
 
-    // NAVData Check (has totalValueSats and changePercentage)
-    if (newData.totalValueSats !== undefined && newData.changePercentage !== undefined) {
-        // console.log('Comparing as NAVData');
-        return checkNumericChange('totalValueSats') || checkNumericChange('changePercentage');
+    // NAVData Check (use totalValueSats as key identifier) - Checks NAV_UPDATE
+    if (newData.totalValueSats !== undefined) {
+       // console.log('Comparing as NAVData');
+       // Compare the primary value and potentially others if they exist in newData
+       let changed = checkNumericChange('totalValueSats');
+       if (newData.changePercentage !== undefined) changed = changed || checkNumericChange('changePercentage');
+       return changed;
     }
 
-    // OVTPrice Check (has btcPriceSats and dailyChange)
-    if (newData.btcPriceSats !== undefined && newData.dailyChange !== undefined) {
-         // console.log('Comparing as OVTPrice');
-        // Check price and daily change (use lower threshold for dailyChange)
-        return checkNumericChange('price') || checkNumericChange('dailyChange');
+    // OVTPrice Check (use price AND circulatingSupply) - Checks OVT_PRICE_UPDATE
+    // Ensure it's not BitcoinPrice by checking for circulatingSupply
+    if (newData.price !== undefined && newData.circulatingSupply !== undefined) {
+        // console.log('Comparing as OVTPrice');
+       // Compare price and potentially dailyChange if it exists in newData
+       let changed = checkNumericChange('price');
+       if (newData.dailyChange !== undefined) changed = changed || checkNumericChange('dailyChange');
+       return changed;
     }
 
-    // BitcoinPrice Check (has formatted property, price is common)
+    // BitcoinPrice Check (use formatted string as key identifier) - Checks BTC_PRICE_UPDATE
+    // Assumes payload is just the number (price)
+    if (newData.formatted !== undefined && newData.price === undefined && typeof newData === 'number') { // Modified: Check if newData *itself* is the number
+        // console.log('Comparing as BitcoinPrice');
+        // Directly compare the numeric value if newData is the price itself
+        return oldData !== newData; 
+    }
+     // Check if it's the BitcoinPrice object with `formatted`
     if (newData.formatted !== undefined && newData.price !== undefined) {
-         // console.log('Comparing as BitcoinPrice');
-        return checkNumericChange('price'); // Just check price for BTC
+         // console.log('Comparing as BitcoinPrice Object');
+         return checkNumericChange('price');
     }
     
-    // Position Check (has value, current, tokenAmount - check if it's an individual position update)
-    // Distinguish from NAV/OVT which also have 'price'-like fields
+    // Position Check (use name, current, tokenAmount) - Checks POSITION_UPDATE / ALL_POSITIONS_UPDATE item
     if (newData.name !== undefined && newData.current !== undefined && newData.tokenAmount !== undefined) {
        // console.log(`Comparing as Position: ${newData.name}`);
        return checkNumericChange('current') || checkNumericChange('change') || checkNumericChange('dailyChange');
     }
 
-    // OVT Balance Check (address, amount)
+    // OVT Balance Check (address, amount, runeId) - Checks OVT_BALANCE_UPDATE
     if (newData.address !== undefined && newData.amount !== undefined && newData.runeId !== undefined) {
         // console.log('Comparing as OVTBalance');
         return oldData?.amount !== newData.amount || oldData?.address !== newData.address;
     }
     
-    // OrderBook Check (bids, asks arrays)
+    // OrderBook Check (bids, asks arrays) - Checks ORDER_BOOK_UPDATE
     if (Array.isArray(newData.bids) && Array.isArray(newData.asks)) {
         // console.log('Comparing as OrderBook');
-        // Simple length check first, then stringify for deeper compare (can be slow)
         return oldData?.bids?.length !== newData.bids.length || 
                oldData?.asks?.length !== newData.asks.length || 
                JSON.stringify(oldData) !== JSON.stringify(newData); 
     }
 
-    // Fallback if type couldn't be determined
+    // Fallback
     console.warn("hasDataChanged defaulting to true - couldn't determine data type for comparison.", newData);
     return true;
   }
