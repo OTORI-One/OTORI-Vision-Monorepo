@@ -12,6 +12,9 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+// Create a router for the /api/runes prefix
+const runesRouter = express.Router();
+
 // Import trading service
 const tradingService = require('./services/tradingService');
 
@@ -604,7 +607,7 @@ async function getWalletBalance(address) {
 }
 
 // Home route documentation should be updated to reflect the new endpoints
-app.get('/', (req, res) => {
+runesRouter.get('/', (req, res) => {
   const endpoints = [
     {
       path: '/',
@@ -787,7 +790,7 @@ app.get('/', (req, res) => {
 });
 
 // Define OVT rune information endpoint
-app.get('/ovt/info', async (req, res) => {
+runesRouter.get('/ovt/info', async (req, res) => {
   try {
     // Instead of trying to get OVT rune info from remote API, construct it locally
     // using constants defined in this file
@@ -815,7 +818,7 @@ app.get('/ovt/info', async (req, res) => {
 });
 
 // Update the other endpoints to use the remote API functions
-app.get('/ovt/balances', async (req, res) => {
+runesRouter.get('/ovt/balances', async (req, res) => {
   try {
     // Get the specific address from the query parameter
     const address = req.query.address;
@@ -853,7 +856,7 @@ app.get('/ovt/balances', async (req, res) => {
   }
 });
 
-app.get('/ovt/distribution', async (req, res) => {
+runesRouter.get('/ovt/distribution', async (req, res) => {
   try {
     const result = await getRemoteDistributionStats();
     if (result.success) {
@@ -870,7 +873,7 @@ app.get('/ovt/distribution', async (req, res) => {
   }
 });
 
-app.get('/ovt/lp-info', async (req, res) => {
+runesRouter.get('/ovt/lp-info', async (req, res) => {
   try {
     const result = await getRemoteLPInfo();
     if (result.success) {
@@ -887,7 +890,7 @@ app.get('/ovt/lp-info', async (req, res) => {
   }
 });
 
-app.post('/ovt/prepare-lp-distribution', async (req, res) => {
+runesRouter.post('/ovt/prepare-lp-distribution', async (req, res) => {
   try {
     const amount = req.body.amount || 0;
     const lpAddress = req.body.lpAddress || LP_ADDRESS;
@@ -927,24 +930,24 @@ app.post('/ovt/prepare-lp-distribution', async (req, res) => {
 });
 
 // Keep the existing endpoints for backward compatibility (temporarily)
-app.get('/rune/:id', (req, res) => {
+runesRouter.get('/rune/:id', (req, res) => {
   res.redirect('/ovt/info');
 });
 
-app.get('/rune/:id/balances', (req, res) => {
+runesRouter.get('/rune/:id/balances', (req, res) => {
   res.redirect('/ovt/balances');
 });
 
-app.get('/rune/:id/distribution', (req, res) => {
+runesRouter.get('/rune/:id/distribution', (req, res) => {
   res.redirect('/ovt/distribution');
 });
 
-app.get('/rune/:id/lp-info', (req, res) => {
+runesRouter.get('/rune/:id/lp-info', (req, res) => {
   res.redirect('/ovt/lp-info');
 });
 
 // Update the prepare-lp-distribution endpoint to handle the request directly rather than redirecting
-app.post('/rune/prepare-lp-distribution', async (req, res) => {
+runesRouter.post('/rune/prepare-lp-distribution', async (req, res) => {
   try {
     const amount = req.body.amount || 0;
     const lpAddress = req.body.lpAddress || LP_ADDRESS;
@@ -975,46 +978,8 @@ app.post('/rune/prepare-lp-distribution', async (req, res) => {
   }
 });
 
-// Add functions to validate ord and bitcoin-cli before the server starts
-function checkOrdInstallation() {
-  try {
-    const result = execSync('which ord').toString().trim();
-    console.log(`Found ord at: ${result}`);
-    return true;
-  } catch (error) {
-    console.error('ord is not installed or not in PATH');
-    return false;
-  }
-}
-
-function checkBitcoinCliInstallation() {
-  try {
-    const result = execSync('which bitcoin-cli').toString().trim();
-    console.log(`Found bitcoin-cli at: ${result}`);
-    return true;
-  } catch (error) {
-    console.error('bitcoin-cli is not installed or not in PATH');
-    return false;
-  }
-}
-
-function checkOrdConfig() {
-  try {
-    // Check if ord config exists
-    const configExists = fs.existsSync(path.join(process.env.HOME, '.ord', 'ord.yaml'));
-    if (!configExists) {
-      console.error('ord config file not found at ~/.ord/ord.yaml');
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error('Error checking ord config:', error);
-    return false;
-  }
-}
-
 // Add health check endpoint
-app.get('/health', (req, res) => {
+runesRouter.get('/health', (req, res) => {
   // Check all required dependencies
   const ordInstalled = checkOrdInstallation();
   const bitcoinCliInstalled = checkBitcoinCliInstallation();
@@ -1061,7 +1026,7 @@ app.get('/health', (req, res) => {
 });
 
 // Add global error handling middleware (place this before module.exports)
-app.use((err, req, res, next) => {
+runesRouter.use((err, req, res, next) => {
   console.error('Server error:', err);
   res.status(500).json({
     error: 'Internal Server Error',
@@ -1074,7 +1039,7 @@ const rateLimit = {};
 const RATE_LIMIT_WINDOW = 60000; // 1 minute
 const RATE_LIMIT_MAX = 60; // 60 requests per minute
 
-app.use((req, res, next) => {
+runesRouter.use((req, res, next) => {
   const ip = req.ip || req.headers['x-forwarded-for'] || 'unknown';
   
   // Initialize or clean up old entries
@@ -1100,7 +1065,7 @@ app.use((req, res, next) => {
 });
 
 // Update the /ovt/buy endpoint to use the trading service for real token transfers
-app.post('/ovt/buy', async (req, res) => {
+runesRouter.post('/ovt/buy', async (req, res) => {
   try {
     const { fromAddress, amount, maxPrice, signature, pubkey } = req.body;
     
@@ -1208,7 +1173,7 @@ app.post('/ovt/buy', async (req, res) => {
   }
 });
 
-app.post('/ovt/sell', async (req, res) => {
+runesRouter.post('/ovt/sell', async (req, res) => {
   try {
     const { fromAddress, toAddress, amount, minPrice, signature, pubkey } = req.body;
     
@@ -1342,7 +1307,7 @@ app.post('/ovt/sell', async (req, res) => {
 });
 
 // Add endpoint for transaction submission after signing
-app.post('/ovt/submit-transaction', async (req, res) => {
+runesRouter.post('/ovt/submit-transaction', async (req, res) => {
   try {
     const { signedPsbt, txType, fromAddress, toAddress, amount } = req.body;
     
@@ -1453,7 +1418,7 @@ app.post('/ovt/submit-transaction', async (req, res) => {
 });
 
 // Add endpoint for token transfers
-app.post('/ovt/transfer', async (req, res) => {
+runesRouter.post('/ovt/transfer', async (req, res) => {
   try {
     const { fromAddress, toAddress, runeId, amount } = req.body;
     
@@ -1551,7 +1516,7 @@ app.post('/ovt/transfer', async (req, res) => {
 });
 
 // Add transaction history endpoint
-app.get('/ovt/transactions', async (req, res) => {
+runesRouter.get('/ovt/transactions', async (req, res) => {
   try {
     const address = req.query.address;
     
@@ -1606,6 +1571,52 @@ app.get('/ovt/transactions', async (req, res) => {
     });
   }
 });
+
+// Mount the router at /api/runes
+app.use('/api/runes', runesRouter);
+
+// Add a route for the root to redirect to the documentation
+app.get('/', (req, res) => {
+  res.redirect('/api/runes');
+});
+
+// Add functions to validate ord and bitcoin-cli before the server starts
+function checkOrdInstallation() {
+  try {
+    const result = execSync('which ord').toString().trim();
+    console.log(`Found ord at: ${result}`);
+    return true;
+  } catch (error) {
+    console.error('ord is not installed or not in PATH');
+    return false;
+  }
+}
+
+function checkBitcoinCliInstallation() {
+  try {
+    const result = execSync('which bitcoin-cli').toString().trim();
+    console.log(`Found bitcoin-cli at: ${result}`);
+    return true;
+  } catch (error) {
+    console.error('bitcoin-cli is not installed or not in PATH');
+    return false;
+  }
+}
+
+function checkOrdConfig() {
+  try {
+    // Check if ord config exists
+    const configExists = fs.existsSync(path.join(process.env.HOME, '.ord', 'ord.yaml'));
+    if (!configExists) {
+      console.error('ord config file not found at ~/.ord/ord.yaml');
+      return false;
+    }
+    return true;
+  } catch (error) {
+    console.error('Error checking ord config:', error);
+    return false;
+  }
+}
 
 // Start the server if this file is run directly
 // Use process.env.PORT provided by PM2 ecosystem config
