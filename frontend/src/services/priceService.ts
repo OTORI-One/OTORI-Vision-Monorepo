@@ -775,14 +775,19 @@ class PriceStore {
        return changed;
     }
 
-    // BitcoinPrice Check (use formatted string as key identifier) - Checks BTC_PRICE_UPDATE
-    // Assumes payload is just the number (price)
-    if (newData.formatted !== undefined && newData.price === undefined && typeof newData === 'number') { // Modified: Check if newData *itself* is the number
-        // console.log('Comparing as BitcoinPrice');
-        // Directly compare the numeric value if newData is the price itself
-        return oldData !== newData; 
+    // BitcoinPrice Check - Checks BTC_PRICE_UPDATE
+    // Scenario 1: newData is just the numeric price
+    if (typeof newData === 'number' && isFinite(newData)) {
+        // console.log('Comparing as BitcoinPrice (Number)');
+        // Directly compare numeric values, allowing for a small threshold
+        const oldValue = typeof oldData === 'number' ? oldData : (oldData?.price ?? NaN); 
+        if (!isFinite(oldValue)) return true; // If old value wasn't a number, it changed
+        if (oldValue === 0 && newData === 0) return false;
+        if (oldValue === 0) return true;
+        const pctChange = Math.abs((newData - oldValue) / oldValue) * 100;
+        return pctChange > thresholdPercent;
     }
-     // Check if it's the BitcoinPrice object with `formatted`
+    // Scenario 2: newData is an object with price and formatted properties
     if (newData.formatted !== undefined && newData.price !== undefined) {
          // console.log('Comparing as BitcoinPrice Object');
          return checkNumericChange('price');
