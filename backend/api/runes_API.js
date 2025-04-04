@@ -762,7 +762,7 @@ app.get('/', (req, res) => {
     
     html += `
         <footer>
-          OTORI Vision Runes API v1.0 | Running on port ${process.env.PORT || 3030}
+          OTORI Vision Runes API v1.0 | Running on port ${process.env.PORT}
         </footer>
       </body>
       </html>

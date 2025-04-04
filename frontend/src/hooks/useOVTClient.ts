@@ -68,7 +68,7 @@ export interface TokenDistribution {
 
 // Initialize clients
 const runeClient = new RuneClient({
-  baseUrl: process.env.NEXT_PUBLIC_RUNES_API_ENDPOINT || 'http://localhost:3030',
+  baseUrl: process.env.NEXT_PUBLIC_RUNE_ENDPOINT || 'http://localhost:3031',
   mockData: process.env.NEXT_PUBLIC_USE_MOCK_DATA === 'true'
 });
 const archClient = new ArchClient({
