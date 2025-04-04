@@ -757,17 +757,16 @@ class PriceStore {
     // --- Type Identification --- 
     // Identify based on key properties present in the newData object
 
-    // NAVData Check (use totalValueSats as key identifier) - Checks NAV_UPDATE
-    if (newData.totalValueSats !== undefined) {
+    // NAVData Check (use totalNAV as key identifier) - Checks NAV_UPDATE
+    if (newData.totalNAV !== undefined) {
        // console.log('Comparing as NAVData');
        // Compare the primary value and potentially others if they exist in newData
-       let changed = checkNumericChange('totalValueSats');
+       let changed = checkNumericChange('totalNAV');
        if (newData.changePercentage !== undefined) changed = changed || checkNumericChange('changePercentage');
        return changed;
     }
 
     // OVTPrice Check (use price AND circulatingSupply) - Checks OVT_PRICE_UPDATE
-    // Ensure it's not BitcoinPrice by checking for circulatingSupply
     if (newData.price !== undefined && newData.circulatingSupply !== undefined) {
         // console.log('Comparing as OVTPrice');
        // Compare price and potentially dailyChange if it exists in newData
