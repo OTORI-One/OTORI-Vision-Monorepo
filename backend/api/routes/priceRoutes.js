@@ -12,6 +12,20 @@ const priceService = require('../services/priceService');
 // Initialize price service when routes are loaded
 priceService.initialize();
 
+// Middleware for securing internal endpoints
+const secureInternalEndpoint = (req, res, next) => {
+  const internalSecret = process.env.INTERNAL_WS_SECRET;
+  const requestSecret = req.headers['x-internal-secret'];
+
+  // Check if the secret is missing or doesn't match
+  if (!internalSecret || requestSecret !== internalSecret) {
+    console.warn('Unauthorized attempt to access internal broadcast endpoint from IP:', req.ip);
+    return res.status(403).json({ success: false, error: 'Forbidden' });
+  }
+
+  next();
+};
+
 // Add rate limiting middleware
 const rateLimitMiddleware = (endpoint) => (req, res, next) => {
   // Get client IP
@@ -270,6 +284,33 @@ router.post('/update-ovt', (req, res) => {
       success: false,
       error: 'Failed to update OVT price'
     });
+  }
+});
+
+/**
+ * @route POST /api/price/internal/broadcast
+ * @description Internal endpoint for other backend services to trigger WebSocket broadcasts.
+ * @access Internal (Protected by shared secret)
+ */
+router.post('/internal/broadcast', secureInternalEndpoint, (req, res) => {
+  try {
+    const { type, payload } = req.body;
+
+    // Basic validation
+    if (!type || typeof type !== 'string' || !payload) {
+      console.warn('Invalid broadcast request received:', req.body);
+      return res.status(400).json({ success: false, error: 'Invalid request body. Requires "type" (string) and "payload".' });
+    }
+
+    // Call the priceService to broadcast the update
+    priceService.broadcastUpdate(type, payload);
+
+    // Respond immediately, the broadcast is asynchronous
+    res.status(202).json({ success: true, message: 'Broadcast request accepted' });
+
+  } catch (error) {
+    console.error('Error processing internal broadcast request:', error);
+    res.status(500).json({ success: false, error: 'Internal server error processing broadcast request' });
   }
 });
 

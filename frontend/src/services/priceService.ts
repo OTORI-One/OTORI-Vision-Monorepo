@@ -211,6 +211,19 @@ class PriceStore {
                  console.warn('Received invalid PORTFOLIO_UPDATE payload:', message.payload);
              }
              break;
+          // ADDED: Handle full initial positions update
+          case 'ALL_POSITIONS_UPDATE':
+            // Assuming payload is an object where keys are position names
+            // and values are Position objects (matching backend structure)
+            if (message.payload && typeof message.payload === 'object') {
+                console.log('Received initial All Positions from WS:', message.payload);
+                // Convert backend object { name: data } to frontend array [data]
+                const positionsArray = Object.values(message.payload) as Position[];
+                this.portfolioPositions = positionsArray; // Use setter
+            } else {
+                console.warn('Received invalid ALL_POSITIONS_UPDATE payload:', message.payload);
+            }
+            break;
           // NEW: Handle Trade Updates (assuming a single trade is pushed)
           case 'TRADE_UPDATE':
              // Assuming payload is a single TradeTransaction
