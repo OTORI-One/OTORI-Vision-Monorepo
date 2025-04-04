@@ -105,7 +105,7 @@ export function useRuneIntegration() {
   const priceStore = useMemo(() => getPriceStore(), []); // Get price store instance
 
   // API base URL
-  const API_BASE_URL = process.env.NEXT_PUBLIC_RUNE_ENDPOINT || 'http://localhost:3031';
+  const API_BASE_URL = process.env.NEXT_PUBLIC_RUNE_ENDPOINT || 'http://localhost:3032';
   
   // Check if we should use mock data
   const USE_MOCK_DATA = process.env.NEXT_PUBLIC_USE_MOCK_DATA === 'true';
