@@ -820,12 +820,33 @@ app.get('/ovt/info', async (req, res) => {
 // Update the other endpoints to use the remote API functions
 app.get('/ovt/balances', async (req, res) => {
   try {
-    const result = await getRemoteWalletBalances();
-    if (result.success) {
-      return res.json(result.result);
-    } else {
-      throw new Error(result.error);
+    // Get the specific address from the query parameter
+    const address = req.query.address;
+    if (!address) {
+      return res.status(400).json({ success: false, error: 'Address query parameter is required' });
     }
+
+    // Execute the local ord command to get all balances per address
+    const commandResult = await execOrdCommand('wallet addresses'); // Correct command
+    
+    if (!commandResult.success || !commandResult.result) {
+      throw new Error(commandResult.error || 'Failed to execute ord wallet addresses command');
+    }
+
+    // Parse the balances output
+    const allBalances = parseRuneBalances(commandResult.result);
+
+    // Find the balance for the requested address
+    const userBalance = allBalances.find(b => b.address === address);
+
+    // Return the specific balance or a default structure if not found
+    const responsePayload = {
+        success: true,
+        balances: userBalance ? [userBalance] : [] // Return array with single balance or empty array
+    };
+
+    return res.json(responsePayload);
+
   } catch (error) {
     console.error('Error getting OVT balances:', error);
     res.status(500).json({
