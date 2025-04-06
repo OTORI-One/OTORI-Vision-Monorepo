@@ -12,6 +12,34 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+// WebSocket Broadcast Helpers START
+// Helper function to send broadcast messages via internal HTTP call
+const OTORI_PRICE_API_ENDPOINT = process.env.OTORI_PRICE_API_ENDPOINT || 'http://localhost:3033'; // Ensure otori-price-api runs on 3033
+const INTERNAL_BROADCAST_URL = `${OTORI_PRICE_API_ENDPOINT}/api/price/internal/broadcast`;
+// const INTERNAL_SECRET = process.env.INTERNAL_API_SECRET; // Add this if implementing shared secret
+
+async function sendWebSocketBroadcast(type, payload) {
+    // Prevent broadcast in test environments if needed
+    if (process.env.NODE_ENV === 'test') {
+        console.log(`[WebSocket Broadcast] Skipped in test environment. Type: ${type}`);
+        return;
+    }
+    try {
+        console.log(`[WebSocket Broadcast] Sending type: ${type}`); // Verbose logging for now
+        // console.debug("Payload:", payload); // Optional: log payload details if needed
+        await axios.post(INTERNAL_BROADCAST_URL, { type, payload }, {
+            timeout: 2000, // Add a timeout to prevent hanging
+            // headers: { 'X-Internal-Secret': INTERNAL_SECRET } // Uncomment if secret is used
+        });
+        console.log(`[WebSocket Broadcast] Successfully sent type: ${type}`);
+    } catch (error) {
+        const errorMessage = error.response ? JSON.stringify(error.response.data) : error.message;
+        console.error(`[WebSocket Broadcast] Failed to send type: ${type}. Error: ${errorMessage}`);
+        // Do not block the main flow, just log the error
+    }
+}
+// WebSocket Broadcast Helpers END
+
 // Create a router for the /api/runes prefix
 const runesRouter = express.Router();
 
@@ -1407,6 +1435,7 @@ runesRouter.post('/ovt/submit-transaction', async (req, res) => {
     // 2. Broadcast the transaction to the Bitcoin network
     let txid = trackingId;
     let broadcastSuccess = false;
+    let broadcastError = null; // Store broadcast error message
     
     try {
       // Use UTXO service to finalize and broadcast the PSBT
@@ -1417,30 +1446,46 @@ runesRouter.post('/ovt/submit-transaction', async (req, res) => {
         broadcastSuccess = true;
         console.log(`Transaction broadcast successful. TXID: ${txid}`);
       } else {
-        console.error('Failed to broadcast transaction');
+        console.error('Failed to broadcast transaction (finalizePSBT returned null/no txid)');
+        broadcastError = 'Failed to finalize or broadcast PSBT';
       }
     } catch (error) {
       console.error(`Error broadcasting transaction: ${error.message}`);
-      
-      // If we can't broadcast, return a pending status with the trackingId
-      return res.status(202).json({
-        success: true,
-        transaction: {
-          txid: trackingId,
-          type: txType,
-          amount: amount,
-          fromAddress: fromAddress,
-          toAddress: toAddress,
-          timestamp: Date.now(),
-          status: 'pending',
-          confirmations: 0,
-          error: error.message
-        },
-        message: 'Transaction submitted but broadcast failed. Please try again later.'
+      broadcastError = error.message; // Store the error message
+      // Let the flow continue to send WS message but respond with error below
+    }
+
+    // --- WebSocket Update START ---
+    // Prepare transaction object for broadcast
+    const transactionData = {
+        txid: broadcastSuccess ? txid : trackingId, // Use real txid if broadcast succeeded
+        type: txType,
+        amount: amount, // Raw amount
+        fromAddress: fromAddress,
+        toAddress: toAddress,
+        timestamp: Date.now(),
+        status: broadcastSuccess ? 'submitted' : 'failed', // Reflect broadcast status
+        confirmations: 0,
+        runeId: OVT_RUNE_ID, // Assuming OVT
+        error: broadcastError // Include broadcast error if any
+    };
+
+    // Send OVT_TRANSACTION_ADDED update
+    // This signals the frontend to update history and potentially re-fetch balances
+    sendWebSocketBroadcast('OVT_TRANSACTION_ADDED', transactionData);
+    // --- WebSocket Update END ---
+    
+    // 3. Return response based on broadcast success
+    if (!broadcastSuccess) {
+      // If broadcast failed, return appropriate error status (e.g., 500 or 502)
+      return res.status(502).json({ // Use 502 Bad Gateway if broadcast failed
+        success: false,
+        transaction: transactionData, // Include transaction data with failed status
+        message: `Transaction submission failed: ${broadcastError || 'Unknown broadcast error'}`
       });
     }
     
-    // 3. Return a success response with transaction details
+    // 4. Return a success response with transaction details
     res.json({
       success: true,
       transaction: {
@@ -1450,7 +1495,7 @@ runesRouter.post('/ovt/submit-transaction', async (req, res) => {
         fromAddress: fromAddress,
         toAddress: toAddress,
         timestamp: Date.now(),
-        status: broadcastSuccess ? 'submitted' : 'pending',
+        status: broadcastSuccess ? 'submitted' : 'failed',
         confirmations: 0
       },
       message: broadcastSuccess ? 
@@ -1499,6 +1544,8 @@ runesRouter.post('/ovt/transfer', async (req, res) => {
     
     // 2. Prepare and execute the ord wallet send command
     let txid;
+    let transferSuccess = false;
+    let transferError = null;
     try {
       // Get fee rate from environment or use a default
       const feeRate = process.env.BITCOIN_FEE_RATE || 1; // Default to 1 sat/vB
@@ -1530,16 +1577,43 @@ runesRouter.post('/ovt/transfer', async (req, res) => {
       }
 
       console.log(`Real Rune transfer executed. TXID: ${txid}`);
+      transferSuccess = true;
       
     } catch (error) {
       console.error(`Error executing ord wallet send: ${error.message}`);
+      transferError = error.message; // Store error
+      // Do not return immediately, proceed to WS update and then return error response
+    }
+
+    // --- WebSocket Update START ---
+    const transactionData = {
+        txid: transferSuccess ? txid : `pending-${Date.now()}`, // Use real txid or placeholder
+        type: 'TRANSFER',
+        amount: amount, // Raw amount
+        fromAddress: fromAddress,
+        toAddress: toAddress,
+        timestamp: Date.now(),
+        status: transferSuccess ? 'submitted' : 'failed',
+        confirmations: 0,
+        runeId: actualRuneId,
+        error: transferError // Include error if transfer failed
+    };
+
+    // Send OVT_TRANSACTION_ADDED update regardless of success/failure
+    // This signals the frontend to update history and potentially re-fetch balances
+    sendWebSocketBroadcast('OVT_TRANSACTION_ADDED', transactionData);
+    // --- WebSocket Update END ---
+    
+    // 3. Return the response based on transfer success
+    if (!transferSuccess) {
       return res.status(500).json({
         success: false,
-        error: `Failed to execute transfer: ${error.message}`
+        transaction: transactionData, // Include data with failed status
+        error: `Failed to execute transfer: ${transferError || 'Unknown transfer error'}`
       });
     }
     
-    // 3. Return the transaction details
+    // 4. Return the transaction details
     res.json({
       success: true,
       transaction: {
