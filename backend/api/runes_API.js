@@ -901,15 +901,24 @@ runesRouter.get('/ovt/distribution', async (req, res) => {
     return res.json({ success: true, distributionStats });
 
   } catch (error) {
-    console.error('Error getting OVT distribution:', error);
-    // Fallback to mock data on error IF NEEDED, otherwise return error
-    // For now, let's return the error to diagnose issues
+    // --- MODIFIED CATCH BLOCK ---
+    console.error('!!! Critical Error in /ovt/distribution route handler !!!');
+    console.error('Error details:', error);
+    // Log the specific error message if available
+    if (error instanceof Error) {
+      console.error('Error message:', error.message);
+      console.error('Error stack:', error.stack);
+    } else {
+      console.error('Caught non-Error object:', error);
+    }
+    // Return a 500 status with the error
     res.status(500).json({
       success: false,
-      error: error.toString(),
-      // Optionally include mock data here for specific error cases
-      // mockData: MOCK_DATA.distribution.distributionStats 
+      error: 'Failed to get OVT distribution due to internal error.',
+      // Optionally include error details in non-production environments
+      details: process.env.NODE_ENV !== 'production' ? error.toString() : undefined
     });
+    // --- END MODIFIED CATCH BLOCK ---
   }
 });
 
