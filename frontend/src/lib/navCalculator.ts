@@ -30,8 +30,6 @@ export function getCurrentBitcoinPrice(): number {
 export interface NAVResult {
   navSats: number;           // NAV in satoshis
   navUsd: number;            // NAV in USD
-  formattedNavSats: string;  // Formatted NAV in sats/BTC
-  formattedNavUsd: string;   // Formatted NAV in USD
   pricePerToken: number;     // Price per token in sats
   pricePerTokenUsd: number;  // Price per token in USD
   totalTokenSupply: number;  // Total OVT token supply
@@ -103,30 +101,6 @@ export function calculateNAV(
     // Calculate price per token in USD
     const pricePerTokenUsd = navUsd / effectiveSupply;
     
-    // Format NAV in sats
-    let formattedNavSats: string;
-    if (navSats >= 10000000) { // 0.1 BTC or more
-      formattedNavSats = `₿${(navSats / SATS_PER_BTC).toFixed(2)}`;
-    } else if (navSats >= 1000000) {
-      formattedNavSats = `${(navSats / 1000000).toFixed(2)}M sats`;
-    } else if (navSats >= 1000) {
-      formattedNavSats = `${(navSats / 1000).toFixed(1)}k sats`;
-    } else {
-      formattedNavSats = `${Math.floor(navSats)} sats`;
-    }
-    
-    // Format NAV in USD
-    let formattedNavUsd: string;
-    if (navUsd >= 1000000) {
-      formattedNavUsd = `$${(navUsd / 1000000).toFixed(2)}M`;
-    } else if (navUsd >= 1000) {
-      formattedNavUsd = `$${(navUsd / 1000).toFixed(1)}k`;
-    } else if (navUsd >= 100) {
-      formattedNavUsd = `$${Math.floor(navUsd)}`;
-    } else {
-      formattedNavUsd = `$${navUsd.toFixed(2)}`;
-    }
-    
     // Calculate change percentage (day over day)
     // For now use a placeholder or calculated value
     let changePercentage = calculateChangePercentage(positions);
@@ -146,8 +120,6 @@ export function calculateNAV(
     return {
       navSats,
       navUsd,
-      formattedNavSats,
-      formattedNavUsd,
       pricePerToken,
       pricePerTokenUsd,
       totalTokenSupply: effectiveSupply,
@@ -159,8 +131,6 @@ export function calculateNAV(
     return {
       navSats: 1000000000,
       navUsd: 50000,
-      formattedNavSats: '10M sats',
-      formattedNavUsd: '$50,000.00',
       pricePerToken: 476,
       pricePerTokenUsd: 23.81,
       totalTokenSupply: 2100000,

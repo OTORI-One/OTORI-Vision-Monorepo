@@ -1,24 +1,21 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { NAVResult } from '../lib/navCalculator';
 import { useCurrencyToggle, Currency } from './useCurrencyToggle';
-import { formatValue, SATS_PER_BTC } from '../lib/formatting';
-import { getPriceStore, NAVData } from '../services/priceService';
+import { SATS_PER_BTC } from '../lib/formatting';
+import { getPriceStore, NAVData, BitcoinPrice } from '../services/priceService';
 
 interface NAVHookResult {
   nav: NAVResult;
   loading: boolean; // True if WebSocket is connecting or initial data hasn't arrived
   error: string | null; // Connection errors or data issues
   isConnected: boolean; // Expose WebSocket connection status
-  // refreshNAV: () => void; // Removed - updates are pushed via WebSocket
-  formattedNAV: string;
+  btcPriceData: BitcoinPrice | null; // ADD BTC price data for formatting
 }
 
-// Default NAV result if not yet loaded
+// Default NAV result if not yet loaded - ONLY RAW VALUES
 const defaultNAV: NAVResult = {
   navSats: 0,
   navUsd: 0,
-  formattedNavSats: '0 sats',
-  formattedNavUsd: '$0.00',
   pricePerToken: 0,
   pricePerTokenUsd: 0,
   totalTokenSupply: 2100000,
@@ -32,18 +29,22 @@ const defaultNAV: NAVResult = {
 export function useNAV(): NAVHookResult {
   const priceStore = useMemo(() => getPriceStore(), []);
 
-  // Initialize state from PriceStore's current cached data or default
-  const [navData, setNavData] = useState<NAVResult>(() => {
+  // State for NAV Result (raw data)
+  const [navDataResult, setNavDataResult] = useState<NAVResult>(() => {
     const currentStoreData = priceStore.navData;
     if (currentStoreData) {
-      return mapStoreDataToNavResult(currentStoreData);
+      // Ensure mapStoreDataToNavResult exists and handles potential missing btcPrice initially
+      return mapStoreDataToNavResult(currentStoreData, priceStore.btcPrice); 
     }
     return defaultNAV;
   });
+  
+  // State for BTC Price Data
+  const [btcPriceData, setBtcPriceData] = useState<BitcoinPrice | null>(priceStore.btcPrice);
 
   // Loading state is derived from connection status and whether we have initial data
   const [isConnected, setIsConnected] = useState<boolean>(priceStore.isConnected);
-  const [loading, setLoading] = useState<boolean>(!priceStore.isConnected || !priceStore.navData);
+  const [loading, setLoading] = useState<boolean>(!priceStore.isConnected || !priceStore.navData || !priceStore.btcPrice);
   const [error, setError] = useState<string | null>(null);
 
   const { currency } = useCurrencyToggle();
@@ -53,41 +54,50 @@ export function useNAV(): NAVHookResult {
   const refreshNAV = useCallback(() => { ... }, [priceStore, loading]);
   */
 
-  // Effect for subscribing to PriceStore updates (data and connection status)
+  // Effect for subscribing to PriceStore updates (NAV, BTC, Connection)
   useEffect(() => {
     let isMounted = true;
 
     // 1. Subscribe to NAV data updates
     const handleNavUpdate = (storeData: NAVData) => {
       if (isMounted) {
-        const mappedData = mapStoreDataToNavResult(storeData);
-        setNavData(mappedData);
-        setError(null); // Clear previous errors on successful update
-        // Loading is false if we have data, even if temporarily disconnected
+        // Pass current btcPriceData for mapping
+        const mappedData = mapStoreDataToNavResult(storeData, btcPriceData); 
+        setNavDataResult(mappedData);
+        setError(null); 
         setLoading(false); 
       }
     };
     const unsubscribeNav = priceStore.subscribeToNavUpdates(handleNavUpdate);
+    
+    // 2. Subscribe to BTC price updates
+    const handleBtcUpdate = (newBtcData: BitcoinPrice) => {
+        if (isMounted) {
+            setBtcPriceData(newBtcData);
+            // Re-map NAV data with the new BTC price if NAV data exists
+            if (priceStore.navData) {
+                const mappedData = mapStoreDataToNavResult(priceStore.navData, newBtcData);
+                setNavDataResult(mappedData);
+            }
+        }
+    };
+    const unsubscribeBtc = priceStore.subscribeToBtcUpdates(handleBtcUpdate);
 
-    // 2. Subscribe to WebSocket connection status changes
+    // 3. Subscribe to WebSocket connection status changes
     const handleConnectionChange = (status: boolean) => {
       if (isMounted) {
-        // console.log(`useNAV: Connection status changed: ${status}`);
         setIsConnected(status);
         if (!status) {
-          // If disconnected, set loading true *only if* we don't have any data yet
           if (!priceStore.navData) {
               setLoading(true);
-              setError("Connecting to real-time updates..."); // Informative message
+              setError("Connecting to real-time updates...");
           } else {
-              // We have stale data, but show disconnected state
                setError("Real-time connection lost. Displaying last known data.");
-               setLoading(false); // Not strictly loading, just potentially stale
+               setLoading(false);
           }
         } else {
-          // Connected: clear connection errors, loading depends on data arrival
           setError(null);
-          setLoading(!priceStore.navData); // Loading if connected but no data yet
+          setLoading(!priceStore.navData || !priceStore.btcPrice); // Loading if missing NAV OR BTC data
         }
       }
     };
@@ -96,71 +106,58 @@ export function useNAV(): NAVHookResult {
     // Initial state check after subscriptions are set up
     if (isMounted) {
        setIsConnected(priceStore.isConnected);
-       setLoading(!priceStore.isConnected || !priceStore.navData);
-       if (!priceStore.isConnected && !priceStore.navData) {
+       setBtcPriceData(priceStore.btcPrice);
+       setLoading(!priceStore.isConnected || !priceStore.navData || !priceStore.btcPrice);
+       if (!priceStore.isConnected && (!priceStore.navData || !priceStore.btcPrice)) {
           setError("Connecting to real-time updates...");
        }
-       // If store already had data when mounting, apply it immediately
-       if (priceStore.navData) {
-           setNavData(mapStoreDataToNavResult(priceStore.navData));
+       if (priceStore.navData && priceStore.btcPrice) {
+           setNavDataResult(mapStoreDataToNavResult(priceStore.navData, priceStore.btcPrice));
            setLoading(false);
        }
     }
-
-    // REMOVED: Initial fetch logic - PriceStore handles its initialization
-    /*
-    if (!priceStore.navData) {
-        console.log('useNAV: Initializing NAV fetch via PriceStore.');
-        setLoading(true);
-        priceStore.fetchNAVData(false) ...
-    }
-    */
 
     // Clean up subscriptions on unmount
     return () => {
       isMounted = false;
       unsubscribeNav();
+      unsubscribeBtc(); // Unsubscribe BTC listener
       unsubscribeConnection();
     };
-  }, [priceStore]); // priceStore is stable
+  }, [priceStore, btcPriceData]); // Add btcPriceData dependency for re-mapping on BTC price change
 
-  // Memoized formatted NAV calculation (no changes needed)
-  const getFormattedNAV = useCallback((navResult: NAVResult, activeCurrency: Currency): string => {
-    if (!navResult) return activeCurrency === 'usd' ? '$0.00' : '₿0.00';
-    
-    return activeCurrency === 'usd' 
-      ? navResult.formattedNavUsd 
-      : navResult.formattedNavSats;
-  }, []);
-  
-  const formattedNAV = useMemo(() => {
-    return getFormattedNAV(navData, currency);
-  }, [getFormattedNAV, navData, currency]);
+  // REMOVED pre-formatted NAV calculation
+  /*
+  const getFormattedNAV = useCallback(...);
+  const formattedNAV = useMemo(...);
+  */
 
   return {
-    nav: navData,
+    nav: navDataResult, // Use the state holding the NAVResult object
     loading,
     error,
     isConnected,
-    // refreshNAV, // Removed
-    formattedNAV,
+    btcPriceData, // Return the BTC price data object
   };
 }
 
-// Helper function to map store data to hook data structure
-function mapStoreDataToNavResult(storeData: NAVData): NAVResult {
-    const pricePerTokenUsd = storeData.btcPrice && storeData.ovtPrice
-        ? (storeData.ovtPrice / SATS_PER_BTC) * storeData.btcPrice
+// Helper function to map store data to hook data structure (RAW VALUES ONLY)
+// Now requires btcPriceData for calculating pricePerTokenUsd
+function mapStoreDataToNavResult(storeData: NAVData, btcPriceData: BitcoinPrice | null): NAVResult {
+    // Use price from btcPriceData if available
+    const currentBtcPrice = btcPriceData?.price ?? 0; 
+    
+    const pricePerTokenUsd = currentBtcPrice && storeData.ovtPrice
+        ? (storeData.ovtPrice / SATS_PER_BTC) * currentBtcPrice
         : 0;
         
+    // Return raw values. Formatting happens in the display component.
     return {
         navSats: storeData.totalValueSats,
         navUsd: storeData.totalValueUSD,
-        formattedNavSats: storeData.formattedTotalValueSats,
-        formattedNavUsd: storeData.formattedTotalValueUSD,
-        pricePerToken: storeData.ovtPrice, // Assuming ovtPrice in store is per token in sats
+        pricePerToken: storeData.ovtPrice, 
         pricePerTokenUsd: pricePerTokenUsd, 
-        totalTokenSupply: storeData.circulatingSupply || 2100000, // Fallback if needed
+        totalTokenSupply: storeData.circulatingSupply || 2100000, 
         changePercentage: storeData.changePercentage || 0
     };
 }

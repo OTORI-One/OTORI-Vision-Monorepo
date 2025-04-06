@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
+import { formatSatsToCurrency } from '../src/utils/formatters';
 
 interface NAVDisplayProps {
   size?: 'sm' | 'md' | 'lg';
@@ -11,16 +12,14 @@ interface NAVDisplayProps {
 // The simplified component implementation
 function NAVDisplayComponent({ size = 'md', showChange = true }: NAVDisplayProps) {
   // Use the centralized NAV hook for data, loading, and error states
-  const { nav, loading, error, formattedNAV } = useNAV();
+  const { nav, loading, error, isConnected, btcPriceData } = useNAV();
   const { currency } = useCurrencyToggle();
   
   // Format values directly from the useNAV hook's data
-  // And ensure consistent rendering between server and client
   const formattedValues = useMemo(() => {
-    // Use the formattedNAV from the hook, which already considers currency
-    const formattedTotalValue = currency === 'usd' 
-      ? nav.formattedNavUsd
-      : nav.formattedNavSats;
+    // Use the imported formatter function with raw values
+    const btcPrice = btcPriceData?.price ?? null; // Get raw BTC price or null
+    const formattedTotalValue = formatSatsToCurrency(nav.navSats, currency, btcPrice);
     
     // Format change percentage with safety checks
     let changePercentage = nav.changePercentage ?? 0;
@@ -32,7 +31,7 @@ function NAVDisplayComponent({ size = 'md', showChange = true }: NAVDisplayProps
       formattedChangePercentage,
       isPositive
     };
-  }, [currency, nav]); // Depend only on currency and nav data from the hook
+  }, [currency, nav, btcPriceData]);
   
   // Size classes
   const sizes = {

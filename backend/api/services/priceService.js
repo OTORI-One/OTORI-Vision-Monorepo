@@ -1386,7 +1386,7 @@ function handleNewWebSocketClient(ws) {
     // Optional: Send current state immediately upon connection
     try {
         if (priceState && priceState.totalNAV !== undefined) { 
-            ws.send(JSON.stringify({ type: 'NAV_UPDATE'NAV_UPDATE, payload: { 
+            ws.send(JSON.stringify({ type: 'NAV_UPDATE', payload: { 
               totalNAV: priceState.totalNAV, 
               lastUpdate: Date.now(), 
               totalValueSats: priceState.totalNAV, 
