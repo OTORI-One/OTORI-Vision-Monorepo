@@ -875,32 +875,66 @@ runesRouter.get('/ovt/balances', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Address query parameter is required' });
     }
 
-    // Execute the local ord command to get all balances per address
-    const commandResult = await execOrdCommand('wallet addresses'); // Correct command
-    
-    if (!commandResult.success || !commandResult.result) {
-      throw new Error(commandResult.error || 'Failed to execute ord wallet addresses command');
+    // Construct the URL for the local ord server's address endpoint
+    const ordServerUrl = `${REMOTE_RUNES_API}/address/${address}`;
+    console.log(`Querying local ord server for balance: ${ordServerUrl}`);
+
+    let ovtBalanceAmount = 0;
+    try {
+      const response = await axios.get(ordServerUrl, {
+        headers: {
+          'Accept': 'application/json'
+        },
+        timeout: 5000 // Add a timeout
+      });
+
+      // Parse the JSON response to find the OVT balance
+      // *** Assumption about JSON structure ***
+      // Based on HTML, might be in `rune_balances`. Adjust if needed.
+      if (response.data && response.data.rune_balances && response.data.rune_balances[OVT_RUNE_SYMBOL]) {
+        ovtBalanceAmount = parseInt(response.data.rune_balances[OVT_RUNE_SYMBOL], 10) || 0;
+        console.log(`Found OVT balance via ord server API: ${ovtBalanceAmount}`);
+      } else {
+        console.log('OVT balance not found in ord server response structure.', response.data);
+      }
+
+    } catch (error) {
+        const errorMessage = error.response ? JSON.stringify(error.response.data) : error.message;
+        console.error(`Error querying local ord server at ${ordServerUrl}: ${errorMessage}`);
+        // If querying the ord server fails, we might fall back or just return error
+        // For now, let's return an error indicating the failure.
+        return res.status(502).json({ // 502 Bad Gateway suggests upstream issue
+          success: false, 
+          error: 'Failed to retrieve balance from local ord server.',
+          details: errorMessage
+        });
     }
 
-    // Parse the balances output
-    const allBalances = parseRuneBalances(commandResult.result);
+    // Determine if this is a treasury or LP address
+    const isTreasury = address === OVT_TREASURY_ADDRESS || address === OVT_TREASURY_ADDRESS_2;
+    const isLP = address === LP_ADDRESS || (LP_ADDRESS_2 && address === LP_ADDRESS_2);
 
-    // Find the balance for the requested address
-    const userBalance = allBalances.find(b => b.address === address);
-
-    // Return the specific balance or a default structure if not found
+    // Return the balance information
     const responsePayload = {
         success: true,
-        balances: userBalance ? [userBalance] : [] // Return array with single balance or empty array
+        // Return balance info only if amount > 0 or if it's a known special address
+        balances: (ovtBalanceAmount > 0 || isTreasury || isLP) ? [{
+            address,
+            amount: ovtBalanceAmount,
+            isTreasury,
+            isLP
+        }] : [] 
     };
 
     return res.json(responsePayload);
 
   } catch (error) {
-    console.error('Error getting OVT balances:', error);
+    // Catch any unexpected errors during the process
+    console.error('Error in /ovt/balances handler:', error);
     res.status(500).json({
       success: false,
-      error: error.toString()
+      error: 'Internal server error while getting OVT balance.',
+      details: error.toString()
     });
   }
 });
