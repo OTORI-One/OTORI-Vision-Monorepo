@@ -69,7 +69,7 @@ const LP_ADDRESS_2 = process.env.NEXT_PUBLIC_LP_ADDRESS_2 || '';
 const REMOTE_RUNES_API = process.env.REMOTE_RUNES_API || 'http://192.168.178.54:9191';
 
 // Add a DEBUG_MODE flag to force using mock data
-const DEBUG_MODE = process.env.DEBUG_MODE === 'true' || true; // Set to true to force using fallback data
+const DEBUG_MODE = process.env.DEBUG_MODE || false; // Set this to true to force using fallback data
 
 // Fallback system configuration
 const FAILURE_THRESHOLD = 3; // Number of consecutive failures before switching to fallback mode
@@ -858,17 +858,32 @@ runesRouter.get('/ovt/balances', async (req, res) => {
 
 runesRouter.get('/ovt/distribution', async (req, res) => {
   try {
-    const result = await getRemoteDistributionStats();
-    if (result.success) {
-      return res.json(result.result);
-    } else {
-      throw new Error(result.error);
+    // Directly execute the 'wallet addresses' command to get all balances
+    console.log('Fetching all balances for distribution calculation...');
+    const commandResult = await execOrdCommand('wallet addresses');
+    
+    if (!commandResult.success || !commandResult.result) {
+      throw new Error(commandResult.error || 'Failed to execute ord wallet addresses command for distribution');
     }
+
+    // Parse the raw output to get balances
+    const allBalances = parseRuneBalances(commandResult.result);
+    
+    // Calculate distribution stats from the parsed balances
+    const distributionStats = calculateDistributionStats(allBalances);
+    
+    // Return the calculated stats
+    return res.json({ success: true, distributionStats });
+
   } catch (error) {
     console.error('Error getting OVT distribution:', error);
+    // Fallback to mock data on error IF NEEDED, otherwise return error
+    // For now, let's return the error to diagnose issues
     res.status(500).json({
       success: false,
-      error: error.toString()
+      error: error.toString(),
+      // Optionally include mock data here for specific error cases
+      // mockData: MOCK_DATA.distribution.distributionStats 
     });
   }
 });
