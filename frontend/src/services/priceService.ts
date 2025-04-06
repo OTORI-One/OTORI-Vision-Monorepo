@@ -106,7 +106,8 @@ class PriceStore {
       return;
     }
 
-    console.log(`Attempting to connect WebSocket to ${this.wsUrl}...`);
+    // --- ADDED LOG ---
+    console.log(`[Price WS] Attempting to connect WebSocket to ${this.wsUrl}...`);
     // Use W3CWebSocket constructor
     this.ws = new W3CWebSocket(this.wsUrl);
     this.setupWebSocketListeners();
@@ -136,7 +137,8 @@ class PriceStore {
     if (!this.ws) return;
 
     this.ws.onopen = () => {
-      console.log('WebSocket connected successfully.');
+      // --- MODIFIED LOG ---
+      console.log('[Price WS] WebSocket connected successfully.');
       this._isConnected = true;
       this.reconnectAttempts = 0; // Reset attempts on successful connection
       if (this.reconnectTimeout) {
@@ -149,17 +151,21 @@ class PriceStore {
     };
 
     this.ws.onmessage = (event: IMessageEvent) => {
+      // --- ADDED LOG ---
+      console.log('[Price WS] Raw message received:', event.data);
       try {
         const message = JSON.parse(event.data.toString());
         // console.log('WebSocket message received:', message); // Verbose logging
 
         switch (message.type) {
           case 'NAV_UPDATE':
+             // --- ADDED LOG ---
+            console.log('[Price WS] Received NAV_UPDATE message type.');
             if (message.payload && !this.hasInfinityValues(message.payload)) {
-               // console.log('Updating NAV data from WS:', message.payload);
+               console.log('[Price WS] Updating NAV data from WS payload:', message.payload);
                this.navData = message.payload as NAVData; // Use setter to notify listeners
             } else {
-                console.warn('Received invalid NAV_UPDATE payload:', message.payload);
+                console.warn('[Price WS] Received invalid NAV_UPDATE payload:', message.payload);
             }
             break;
           case 'OVT_PRICE_UPDATE':
@@ -249,27 +255,31 @@ class PriceStore {
              // console.log('Received pong from server');
              break;
           default:
-            console.warn('Received unknown WebSocket message type:', message.type);
+            // --- MODIFIED LOG ---
+            console.warn('[Price WS] Received unknown WebSocket message type:', message.type);
         }
       } catch (error) {
-        console.error('Error processing WebSocket message:', error, 'Raw data:', event.data);
+        // --- MODIFIED LOG ---
+        console.error('[Price WS] Error processing WebSocket message:', error, 'Raw data:', event.data);
       }
     };
 
     this.ws.onerror = (error: Error) => {
-      console.error('WebSocket error:', error);
+      // --- MODIFIED LOG ---
+      console.error('[Price WS] WebSocket error:', error);
       // The 'onclose' event will likely follow, triggering reconnection logic
     };
 
     this.ws.onclose = (event: ICloseEvent) => {
-      console.log(`WebSocket closed. Code: ${event.code}, Reason: ${event.reason}. Clean close: ${event.wasClean}`);
+       // --- MODIFIED LOG ---
+      console.log(`[Price WS] WebSocket closed. Code: ${event.code}, Reason: ${event.reason}. Clean close: ${event.wasClean}`);
       this._isConnected = false;
       this.ws = null; // Ensure ws instance is cleared
       this.notifyConnectionListeners();
       if (!event.wasClean) { // Only attempt reconnect on unclean close
           this.scheduleReconnect();
       } else {
-           console.log("WebSocket closed cleanly, not attempting reconnect.");
+           console.log("[Price WS] WebSocket closed cleanly, not attempting reconnect.");
       }
     };
   }
@@ -280,7 +290,8 @@ class PriceStore {
           return;
       }
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      console.error(`Max WebSocket reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Giving up.`);
+      // --- MODIFIED LOG ---
+      console.error(`[Price WS] Max WebSocket reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached. Giving up.`);
       this.reconnectAttempts = 0; // Reset for potential future manual connect
       return;
     }
@@ -292,8 +303,8 @@ class PriceStore {
         MAX_RECONNECT_DELAY
     );
 
-
-    console.log(`WebSocket disconnected. Attempting reconnect #${this.reconnectAttempts} in ${(delay / 1000).toFixed(1)}s...`);
+    // --- MODIFIED LOG ---
+    console.log(`[Price WS] WebSocket disconnected. Attempting reconnect #${this.reconnectAttempts} in ${(delay / 1000).toFixed(1)}s...`);
 
     this.reconnectTimeout = setTimeout(() => {
         this.reconnectTimeout = null; // Clear the timeout handle before attempting connection
