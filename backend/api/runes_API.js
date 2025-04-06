@@ -79,6 +79,11 @@ let lastRemoteAttemptTimestamp = 0; // Timestamp of last attempt to use remote A
 
 // Function to determine if we should use fallback data
 const shouldUseFallback = () => {
+  // --- TEMPORARY CHANGE: Always return false to disable fallback ---
+  return false;
+  // --- END TEMPORARY CHANGE ---
+
+  /* // Original logic (commented out)
   // Always use fallback in debug mode
   if (DEBUG_MODE) {
     return true;
@@ -98,6 +103,7 @@ const shouldUseFallback = () => {
   
   // Still in fallback period
   return true;
+  */
 };
 
 // Mock data for when remote API is not reachable
@@ -877,6 +883,10 @@ runesRouter.get('/ovt/distribution', async (req, res) => {
     console.log('Fetching all balances for distribution calculation...');
     const commandResult = await execOrdCommand('wallet addresses');
     
+    // --- ADDED LOGGING ---
+    console.log('Raw command result in /ovt/distribution:', commandResult);
+    // --- END ADDED LOGGING ---
+
     if (!commandResult.success || !commandResult.result) {
       throw new Error(commandResult.error || 'Failed to execute ord wallet addresses command for distribution');
     }
