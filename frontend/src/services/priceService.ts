@@ -1154,6 +1154,7 @@ export interface BitcoinPrice {
 }
 
 export interface NAVData {
+  // RESTORE: Original fields expected by frontend
   totalValueSats: number;
   totalValueUSD: number;
   formattedTotalValueSats: string;
@@ -1162,8 +1163,8 @@ export interface NAVData {
   btcPrice: number;
   ovtPrice: number;
   circulatingSupply: number;
-  lastUpdate: number;
-  timestamp: number;
+  lastUpdate: number; // Keep lastUpdate if backend sends it, or calculate if needed
+  timestamp: number; // Timestamp of calculation
 }
 
 export interface PriceHistoryPoint {

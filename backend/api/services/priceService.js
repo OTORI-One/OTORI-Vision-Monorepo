@@ -606,7 +606,19 @@ async function updatePrices() {
     calculateOVTPrice(); // This updates priceState.totalNAV and priceState.ovtPrice
     
     // Broadcast NAV update (totalNAV is updated in calculateOVTPrice)
-    broadcastUpdate('NAV_UPDATE', { totalNAV: priceState.totalNAV, lastUpdate: Date.now() /* Add other relevant NAV fields */ });
+    broadcastUpdate('NAV_UPDATE', { 
+      totalNAV: priceState.totalNAV, 
+      lastUpdate: Date.now(), 
+      totalValueSats: priceState.totalNAV, 
+      totalValueUSD: priceState.totalNAV / priceState.btcPrice, 
+      formattedTotalValueSats: priceState.totalNAV.toLocaleString(), 
+      formattedTotalValueUSD: (priceState.totalNAV / priceState.btcPrice).toLocaleString(),
+      changePercentage: priceState.changePercentage, 
+      btcPrice: priceState.btcPrice,
+      ovtPrice: priceState.ovtPrice,
+      circulatingSupply: priceState.ovtCirculatingSupply,
+      timestamp: Date.now(),
+    });
 
     // Broadcast OVT price update if it changed
     if (priceState.ovtPrice !== oldOvtPrice) {
@@ -1374,7 +1386,19 @@ function handleNewWebSocketClient(ws) {
     // Optional: Send current state immediately upon connection
     try {
         if (priceState && priceState.totalNAV !== undefined) { 
-            ws.send(JSON.stringify({ type: 'NAV_UPDATE', payload: { totalNAV: priceState.totalNAV, lastUpdate: priceState.lastUpdate /* Add other NAV fields */ } }));
+            ws.send(JSON.stringify({ type: 'NAV_UPDATE'NAV_UPDATE, payload: { 
+              totalNAV: priceState.totalNAV, 
+              lastUpdate: Date.now(), 
+              totalValueSats: priceState.totalNAV, 
+              totalValueUSD: priceState.totalNAV / priceState.btcPrice, 
+              formattedTotalValueSats: priceState.totalNAV.toLocaleString(), 
+              formattedTotalValueUSD: (priceState.totalNAV / priceState.btcPrice).toLocaleString(),
+              changePercentage: priceState.changePercentage, 
+              btcPrice: priceState.btcPrice,
+              ovtPrice: priceState.ovtPrice,
+              circulatingSupply: priceState.ovtCirculatingSupply,
+              timestamp: Date.now(),
+            } }));
         }
         if (priceState && priceState.ovtPrice !== undefined) {
             ws.send(JSON.stringify({ type: 'OVT_PRICE_UPDATE', payload: { price: priceState.ovtPrice, circulatingSupply: priceState.ovtCirculatingSupply /* Add other OVT fields */ } }));

@@ -60,9 +60,7 @@ export function useNAV(): NAVHookResult {
     // 1. Subscribe to NAV data updates
     const handleNavUpdate = (storeData: NAVData) => {
       if (isMounted) {
-        console.log('useNAV: Received NAV update via subscription. Store Data:', storeData);
         const mappedData = mapStoreDataToNavResult(storeData);
-        console.log('useNAV: Mapped data before setting state:', mappedData);
         setNavData(mappedData);
         setError(null); // Clear previous errors on successful update
         // Loading is false if we have data, even if temporarily disconnected
