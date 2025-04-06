@@ -1652,38 +1652,18 @@ runesRouter.get('/ovt/transactions', async (req, res) => {
     
     console.log(`Fetching transaction history for address: ${address}`);
     
-    // In a real implementation, we would fetch transactions from the blockchain
-    // For now, we'll return mock data
-    const transactions = [
-      {
-        txid: 'tx-1234567890abcdef',
-        type: 'BUY',
-        amount: 100,
-        price: 700,
-        totalCost: 70000,
-        fromAddress: address,
-        toAddress: LP_ADDRESS,
-        timestamp: Date.now() - 86400000, // 1 day ago
-        status: 'confirmed',
-        confirmations: 6
-      },
-      {
-        txid: 'tx-abcdef1234567890',
-        type: 'SELL',
-        amount: 50,
-        price: 710,
-        totalReturn: 35500,
-        fromAddress: address,
-        toAddress: LP_ADDRESS,
-        timestamp: Date.now() - 43200000, // 12 hours ago
-        status: 'confirmed',
-        confirmations: 3
-      }
-    ];
+    // Fetch actual transaction history using the helper function
+    // Note: Current getTransactionHistory might fetch for the whole wallet, 
+    // not filtered by the specific address parameter yet.
+    const transactions = await getTransactionHistory(OVT_RUNE_ID);
+    
+    // TODO: Potentially filter transactions further based on the `address` parameter 
+    // if the `getTransactionHistory` result includes sender/receiver info.
+    // For now, returning all OVT transactions found in the wallet.
     
     res.json({
       success: true,
-      transactions,
+      transactions, // Use actual transactions
       count: transactions.length
     });
   } catch (error) {
