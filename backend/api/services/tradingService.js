@@ -15,6 +15,10 @@ const axios = require('axios');
 const utxoService = require('./utxoService');
 const commandService = require('./commandExecutionService');
 
+// WebSocket Internal Broadcast Configuration
+const INTERNAL_BROADCAST_URL = process.env.INTERNAL_BROADCAST_URL || 'http://localhost:3033/api/price/internal/broadcast'; // Ensure this matches otori-price-api endpoint
+const INTERNAL_BROADCAST_SECRET = process.env.INTERNAL_BROADCAST_SECRET; // Optional shared secret
+
 // Load environment variables for accessing remote OrdPi
 const LP_ADDRESS = process.env.NEXT_PUBLIC_LP_ADDRESS || 'tb1p3vn6wc0dlud3tvckv95datu3stq4qycz7vj9mzpclfkrv9rh8jqsjrw38f';
 const OVT_RUNE_ID = process.env.NEXT_PUBLIC_OVT_RUNE_ID || '240249:101';
@@ -581,6 +585,7 @@ async function executeBuyOrder(order) {
     if (!transferResult.isMock) {
       // Log the buy transaction if not already logged in transferTokensFromLP
       if (process.env.ENABLE_REAL_TRANSACTIONS === 'true') {
+        // Use await here since logTransaction is async now
         await logTransaction({
           txid: transferResult.txid,
           type: 'BUY',
@@ -593,7 +598,7 @@ async function executeBuyOrder(order) {
       }
     }
     
-    return {
+    const executionResult = {
       success: true,
       orderId: `buy-${Date.now()}`,
       txid: transferResult.txid,
@@ -602,8 +607,26 @@ async function executeBuyOrder(order) {
       totalCost: totalCostSats,
       recipient: address,
       timestamp: Date.now(),
-      isMock: transferResult.isMock
+      isMock: transferResult.isMock,
+      side: 'buy'
     };
+
+    // --- WebSocket Broadcast ---
+    // Broadcast TRADE_UPDATE after successful execution
+    // Use the structure from executionResult as the payload
+    // Ensure frontend expects this structure or adapt as needed
+    await broadcastInternalUpdate('TRADE_UPDATE', executionResult);
+
+    // Broadcast ORDER_BOOK_UPDATE as a buy consumes liquidity
+    try {
+        const currentOrderbook = await getOrderbook(); // Fetch current state
+        await broadcastInternalUpdate('ORDER_BOOK_UPDATE', currentOrderbook);
+    } catch (orderbookError) {
+        console.error("Failed to fetch or broadcast orderbook after buy execution:", orderbookError);
+    }
+    // --- End WebSocket Broadcast ---
+
+    return executionResult;
   } catch (error) {
     console.error(`Failed to execute buy order: ${error.message}`);
     throw new Error(`Buy order execution failed: ${error.message}`);
@@ -1006,6 +1029,29 @@ async function verifyWalletForOVT() {
   } catch (error) {
     console.error(`Error verifying wallet: ${error.message}`);
     return { verified: false, error: error.message };
+  }
+}
+
+/**
+ * Helper function to broadcast updates internally to the Price API WebSocket service
+ * @param {string} type - The message type (e.g., 'TRADE_UPDATE', 'ORDER_BOOK_UPDATE')
+ * @param {any} payload - The data payload for the message
+ */
+async function broadcastInternalUpdate(type, payload) {
+  if (!INTERNAL_BROADCAST_URL) {
+    console.warn('INTERNAL_BROADCAST_URL not set. Skipping WebSocket broadcast.');
+    return;
+  }
+  try {
+    const headers = {};
+    if (INTERNAL_BROADCAST_SECRET) {
+      headers['X-Internal-Secret'] = INTERNAL_BROADCAST_SECRET;
+    }
+    console.log(`Broadcasting internal update: ${type}`);
+    await axios.post(INTERNAL_BROADCAST_URL, { type, payload }, { headers });
+  } catch (error) {
+    console.error(`Failed to broadcast internal update (${type}):`, error.message || error);
+    // Non-fatal error, log and continue
   }
 }
 
