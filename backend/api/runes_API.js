@@ -334,17 +334,31 @@ const execOrdCommand = async (command) => {
     return { success: true, result: stdout };
   } catch (error) {
     console.error(`Error executing command: ${command}`, error);
-    
+    // Add more detailed logging of the error object
+    console.error('Full error object:', JSON.stringify(error, null, 2));
+    if (error.stdout) { console.error('Error stdout:', error.stdout); }
+    if (error.stderr) { console.error('Error stderr:', error.stderr); }
+
+    // --- TEMPORARY CHANGE: Re-throw the error instead of returning fallback ---
+    // Increment failure counter (optional, depends if we want this failure to trigger fallback for *other* calls)
+    // consecutiveRemoteFailures++;
+    // console.warn(`Command execution failed. Consecutive failures: ${consecutiveRemoteFailures}`);
+
+    // Throw the error to prevent fallback for command execution issues
+    throw error; 
+    // --- END TEMPORARY CHANGE ---
+
+    /*  // Original fallback logic (commented out for now)
     // Increment failure counter
     consecutiveRemoteFailures++;
     console.warn(`SSH command failed. Consecutive failures: ${consecutiveRemoteFailures}`);
-    
+
     // If we've hit the threshold, log a more prominent warning
     if (consecutiveRemoteFailures >= FAILURE_THRESHOLD) {
       console.warn(`==== WARNING: ${consecutiveRemoteFailures} consecutive remote failures. ====`);
       console.warn(`==== Using fallback data for the next ${RETRY_INTERVAL_MS/1000/60} minutes. ====`);
     }
-    
+
     // Return appropriate mock data based on command
     if (command.includes('wallet balance')) {
       return { success: true, result: '0.00050000 BTC' };
@@ -372,6 +386,7 @@ const execOrdCommand = async (command) => {
     } else {
       return { success: true, result: 'Command simulated with fallback data' };
     }
+    */
   }
 };
 
