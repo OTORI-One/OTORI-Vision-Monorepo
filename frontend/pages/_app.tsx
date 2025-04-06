@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { ensurePortfolioDataLoaded } from '../src/utils/portfolioLoader';
 import { useBitcoinPrice } from '../src/hooks/useBitcoinPrice';
 import { CurrencyProvider } from '../src/hooks/useCurrencyToggle';
+import { getPriceStore } from '../src/services/priceService';
 import '@/styles/globals.css';
 
 // Initialize global BTC price for formatting utilities
@@ -47,6 +48,19 @@ export default function App({ Component, pageProps }: AppProps) {
       console.log('[_app.tsx] Updated global BTC price:', btcPrice);
     }
   }, [btcPrice]);
+  
+  // Initialize PriceStore WebSocket connection on app mount
+  useEffect(() => {
+    console.log('App mounted, initializing PriceStore...');
+    const priceStore = getPriceStore();
+    priceStore.initialize();
+
+    // Optional: Clean disconnect on unmount (though usually not needed for app lifecycle)
+    // return () => {
+    //   console.log('App unmounting, disconnecting PriceStore WebSocket...');
+    //   priceStore.disconnectWebSocket(); 
+    // };
+  }, []);
   
   console.log('[_app.tsx] Initializing LaserEyesProvider with config:', {
     network: BaseNetwork.SIGNET,
