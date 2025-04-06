@@ -28,7 +28,8 @@ import {
   getHybridModeConfig
 } from '../lib/hybridModeUtils';
 import { ensurePortfolioDataLoaded } from '../utils/portfolioLoader';
-import { SATS_PER_BTC, formatValue as formatValueUtils } from '../lib/formatting';
+import { SATS_PER_BTC } from '../lib/formatting';
+import { formatSatsToCurrency } from '../utils/formatters';
 import { 
   simulatePortfolioPriceMovements, 
   PortfolioPosition,
@@ -78,34 +79,15 @@ const archClient = new ArchClient({
 });
 
 // Helper function to format values consistently
+// DEPRECATED LOCAL HELPER - Use formatters from ../utils/formatters directly
+/*
 const formatValue = (value: number, displayMode: 'btc' | 'usd' = 'btc', btcPrice?: number | null): string => {
-  // Wrap the entire function in a try-catch to ensure it never throws
-  try {
-    // Early validation to prevent infinity issues - before ANY calculations
-    if (value === null || value === undefined || !Number.isFinite(value)) {
-      // Use a fixed default value instead of propagating Infinity
-      console.error('formatValue received non-finite value - using default value', new Error().stack);
-      return displayMode === 'usd' ? '$0.00' : '0 sats';
-    }
-
-    // Return safe default if the btcPrice is needed but invalid
-    if (displayMode === 'usd' && (btcPrice === null || btcPrice === undefined || !Number.isFinite(btcPrice) || btcPrice <= 0)) {
-      return '$0.00';
-    }
-
-    // Don't do any calculations here - just use the centralized formatting utility
-    return formatValueUtils(value, displayMode, btcPrice);
-  } catch (error) {
-    console.error('Fatal error in formatValue:', error);
-    return displayMode === 'usd' ? '$0.00' : '0 sats';
-  }
+  // ... implementation ...
+  // Replace formatValueUtils with formatSatsToCurrency
+  // Need to handle potential missing btcPrice for USD mode if this was ever used directly
+  // return formatSatsToCurrency(value, displayMode, btcPrice ?? null); 
 };
-
-// Add a specialized currency formatter that follows the frontend-specific-dev-rules
-const formatCurrencyValueLocal = (value: number, currency: 'btc' | 'usd' = 'usd'): string => {
-  // Delegate to the centralized formatting utility
-  return formatValueUtils(value, currency);
-};
+*/
 
 // Add global store for currency and price to maintain consistency across page navigations
 let globalBaseCurrency: 'btc' | 'usd' = 'usd';
@@ -328,8 +310,14 @@ export function useOVTClient() {
   
   // Construct the legacy NAVData object from the useNAV hook
   const legacyNavData = useMemo(() => {
+      // Use the formatter function here
+      const formattedTotalValue = formatSatsToCurrency(
+          nav.navSats, 
+          baseCurrencyFromToggle, 
+          bitcoinHookPrice // Use the BTC price from the useBitcoinPrice hook
+      );
       return {
-          totalValue: baseCurrencyFromToggle === 'usd' ? nav.formattedNavUsd : nav.formattedNavSats,
+          totalValue: formattedTotalValue, // Use the newly formatted value
           totalValueSats: nav.navSats,
           changePercentage: `${(nav.changePercentage || 0).toFixed(2)}%`,
           portfolioItems: portfolioPositions, // Still using mock/local portfolio state
@@ -341,7 +329,7 @@ export function useOVTClient() {
               distributionEvents: [] // TODO: Populate if needed
           }
       };
-  }, [nav, baseCurrencyFromToggle, portfolioPositions]);
+  }, [nav, baseCurrencyFromToggle, portfolioPositions, bitcoinHookPrice]);
 
   return {
     isLoading,
@@ -350,7 +338,8 @@ export function useOVTClient() {
     baseCurrency: baseCurrencyFromToggle, // Use currency from the hook
     btcPrice: bitcoinHookPrice, // Use the renamed variable from useBitcoinPrice
     portfolioPositions,
-    formatValue: formatValueUtils, // Export the centralized utility
+    // Export the correct centralized utility directly
+    formatValue: formatSatsToCurrency, 
     getTransactionHistory,
     handleCurrencyChange,
     setBaseCurrency: handleCurrencyChange,
