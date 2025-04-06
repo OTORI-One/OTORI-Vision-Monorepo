@@ -876,7 +876,9 @@ runesRouter.get('/ovt/balances', async (req, res) => {
     }
 
     // Construct the URL for the local ord server's address endpoint
-    const ordServerUrl = `${REMOTE_RUNES_API}/address/${address}`;
+    // Use localhost since runes_API and ord server run on the same OrdPi
+    const ordServerHost = 'http://localhost:9191'; // Use localhost
+    const ordServerUrl = `${ordServerHost}/address/${address}`;
     console.log(`Querying local ord server for balance: ${ordServerUrl}`);
 
     let ovtBalanceAmount = 0;
@@ -888,15 +890,23 @@ runesRouter.get('/ovt/balances', async (req, res) => {
         timeout: 5000 // Add a timeout
       });
 
-      // Parse the JSON response to find the OVT balance
-      // *** Assumption about JSON structure ***
-      // Based on HTML, might be in `rune_balances`. Adjust if needed.
-      if (response.data && response.data.rune_balances && response.data.rune_balances[OVT_RUNE_SYMBOL]) {
+      // --- Refined Parsing Logic --- 
+      console.log("Ord server response data:", JSON.stringify(response.data, null, 2)); // Log the structure
+      
+      // Check common possible locations for rune balances in the JSON response
+      if (response.data && response.data[OVT_RUNE_SYMBOL]) {
+        // Case 1: Balance directly keyed by rune symbol in the root object
+        ovtBalanceAmount = parseInt(response.data[OVT_RUNE_SYMBOL], 10) || 0;
+        console.log(`Found OVT balance directly keyed by symbol: ${ovtBalanceAmount}`);
+      } else if (response.data && response.data.rune_balances && response.data.rune_balances[OVT_RUNE_SYMBOL]) {
+        // Case 2: Balance under a 'rune_balances' object keyed by symbol (original attempt)
         ovtBalanceAmount = parseInt(response.data.rune_balances[OVT_RUNE_SYMBOL], 10) || 0;
-        console.log(`Found OVT balance via ord server API: ${ovtBalanceAmount}`);
+        console.log(`Found OVT balance under 'rune_balances' key: ${ovtBalanceAmount}`);
       } else {
-        console.log('OVT balance not found in ord server response structure.', response.data);
+        // Add more checks if other structures are possible
+        console.log('OVT balance not found in known ord server response structures.');
       }
+      // --- End Refined Parsing Logic --- 
 
     } catch (error) {
         const errorMessage = error.response ? JSON.stringify(error.response.data) : error.message;
