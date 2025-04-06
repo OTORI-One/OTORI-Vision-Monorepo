@@ -651,8 +651,8 @@ async function updateOVTCirculatingSupply() {
     
     // Try to fetch circulating supply from the Runes API endpoint
     try {
-      // Use the /ovt/distribution endpoint on the determined Runes API URL
-      const targetUrl = `${runesApiUrl}/ovt/distribution`; 
+      // Use the /api/runes/ovt/distribution endpoint on the determined Runes API URL
+      const targetUrl = `${runesApiUrl}/api/runes/ovt/distribution`; 
       console.log(`Attempting to fetch OVT distribution from: ${targetUrl}`);
       
       const response = await axios.get(targetUrl, {
@@ -681,7 +681,7 @@ async function updateOVTCirculatingSupply() {
       }
     } catch (error) {
       // Log the specific URL that failed
-      const failedUrl = `${runesApiUrl}/ovt/distribution`; // Reconstruct for logging
+      const failedUrl = `${runesApiUrl}/api/runes/ovt/distribution`; // Reconstruct for logging
       console.error(`Error fetching OVT distribution data from ${failedUrl}:`, error.message);
       if (error.response) {
         console.error('Response Status:', error.response.status);
