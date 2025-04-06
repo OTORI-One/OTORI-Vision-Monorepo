@@ -15,6 +15,10 @@ const axios = require('axios');
 const utxoService = require('./utxoService');
 const commandService = require('./commandExecutionService');
 
+// Simple queue for serializing ord commands
+const { Mutex } = require('async-mutex');
+const ordCommandMutex = new Mutex();
+
 // WebSocket Internal Broadcast Configuration
 const INTERNAL_BROADCAST_URL = process.env.INTERNAL_BROADCAST_URL || 'http://localhost:3033/api/price/internal/broadcast'; // Ensure this matches otori-price-api endpoint
 const INTERNAL_BROADCAST_SECRET = process.env.INTERNAL_BROADCAST_SECRET; // Optional shared secret
@@ -71,6 +75,10 @@ let orderMatchingServiceActive = false;
  * @returns {Object} The result from the command
  */
 async function executeOrdCommand(command, options = {}) {
+  // Acquire the mutex lock before executing the command
+  const release = await ordCommandMutex.acquire();
+  console.log(`Trading: Acquired mutex for command: ${command}`);
+
   try {
     // Get wallet name from options, env var, or default - this is handled by ord.yaml now
     // const walletName = options.wallet || process.env.BITCOIN_WALLET || "ovt-LP-wallet";
@@ -102,6 +110,10 @@ async function executeOrdCommand(command, options = {}) {
       error: error.message || error.toString(),
       isSync: true // Flag to indicate this was a synchronous error
     };
+  } finally {
+    // Ensure the mutex lock is always released
+    release();
+    console.log(`Trading: Released mutex for command: ${command}`);
   }
 }
 
