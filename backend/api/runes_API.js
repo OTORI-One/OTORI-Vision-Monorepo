@@ -12,6 +12,10 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+// Simple queue for serializing ord commands (shared instance or separate? Using separate for now)
+const { Mutex } = require('async-mutex');
+const runesOrdCommandMutex = new Mutex();
+
 // WebSocket Broadcast Helpers START
 // Helper function to send broadcast messages via internal HTTP call
 const OTORI_PRICE_API_ENDPOINT = process.env.OTORI_PRICE_API_ENDPOINT || 'http://localhost:3033'; // Ensure otori-price-api runs on 3033
@@ -307,6 +311,10 @@ const getRemoteLPInfo = async () => {
 // Helper function to execute ord commands with proper configuration
 // Refactored to use local executeCommand
 const execOrdCommand = async (command) => {
+  // Acquire the mutex lock before executing the command
+  const release = await runesOrdCommandMutex.acquire();
+  console.log(`RunesAPI: Acquired mutex for command: ${command}`);
+
   // Check if we should use fallback based on previous failures
   if (shouldUseFallback()) {
     console.log(`[FALLBACK MODE] Simulating command: ${command}`);
@@ -421,6 +429,10 @@ const execOrdCommand = async (command) => {
       return { success: true, result: 'Command simulated with fallback data' };
     }
     */
+  } finally {
+    // Ensure the mutex lock is always released
+    release();
+    console.log(`RunesAPI: Released mutex for command: ${command}`);
   }
 };
 
