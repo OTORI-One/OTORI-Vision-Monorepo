@@ -9,6 +9,7 @@ const path = require('path');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const app = express();
+const cheerio = require('cheerio'); // Add cheerio import
 app.use(cors());
 app.use(bodyParser.json());
 
@@ -20,7 +21,7 @@ const runesOrdCommandMutex = new Mutex();
 // Helper function to send broadcast messages via internal HTTP call
 const OTORI_PRICE_API_ENDPOINT = process.env.OTORI_PRICE_API_ENDPOINT || 'http://localhost:3033'; // Ensure otori-price-api runs on 3033
 const INTERNAL_BROADCAST_URL = `${OTORI_PRICE_API_ENDPOINT}/api/price/internal/broadcast`;
-// const INTERNAL_SECRET = process.env.INTERNAL_API_SECRET; // Add this if implementing shared secret
+const INTERNAL_SECRET = process.env.INTERNAL_API_SECRET; // Use the generic API secret name
 
 async function sendWebSocketBroadcast(type, payload) {
     // Prevent broadcast in test environments if needed
@@ -33,7 +34,7 @@ async function sendWebSocketBroadcast(type, payload) {
         // console.debug("Payload:", payload); // Optional: log payload details if needed
         await axios.post(INTERNAL_BROADCAST_URL, { type, payload }, {
             timeout: 2000, // Add a timeout to prevent hanging
-            // headers: { 'X-Internal-Secret': INTERNAL_SECRET } // Uncomment if secret is used
+            headers: { 'X-Internal-Secret': INTERNAL_SECRET } // Ensure this uses the correct variable
         });
         console.log(`[WebSocket Broadcast] Successfully sent type: ${type}`);
     } catch (error) {
@@ -881,53 +882,67 @@ runesRouter.get('/ovt/info', async (req, res) => {
 // Update the other endpoints to use the remote API functions
 runesRouter.get('/ovt/balances', async (req, res) => {
   try {
-    // Get the specific address from the query parameter
     const address = req.query.address;
     if (!address) {
       return res.status(400).json({ success: false, error: 'Address query parameter is required' });
     }
 
-    // Construct the URL for the local ord server's address endpoint
-    // Use localhost since runes_API and ord server run on the same OrdPi
     const ordServerHost = 'http://localhost:9191'; // Use localhost
     const ordServerUrl = `${ordServerHost}/address/${address}`;
     console.log(`Querying local ord server for balance: ${ordServerUrl}`);
 
     let ovtBalanceAmount = 0;
+    let satBalanceAmount = 0;
+
     try {
+      // Fetch HTML content from the ord server address page
       const response = await axios.get(ordServerUrl, {
-        headers: {
-          'Accept': 'application/json'
-        },
+        // Remove 'Accept: application/json' header if present, default is usually fine for HTML
         timeout: 5000 // Add a timeout
       });
 
-      // --- Refined Parsing Logic --- 
-      console.log("Ord server response data:", JSON.stringify(response.data, null, 2)); // Log the structure
-      
-      // Check common possible locations for rune balances in the JSON response
-      if (response.data && response.data[OVT_RUNE_SYMBOL]) {
-        // Case 1: Balance directly keyed by rune symbol in the root object
-        ovtBalanceAmount = parseInt(response.data[OVT_RUNE_SYMBOL], 10) || 0;
-        console.log(`Found OVT balance directly keyed by symbol: ${ovtBalanceAmount}`);
-      } else if (response.data && response.data.rune_balances && response.data.rune_balances[OVT_RUNE_SYMBOL]) {
-        // Case 2: Balance under a 'rune_balances' object keyed by symbol (original attempt)
-        ovtBalanceAmount = parseInt(response.data.rune_balances[OVT_RUNE_SYMBOL], 10) || 0;
-        console.log(`Found OVT balance under 'rune_balances' key: ${ovtBalanceAmount}`);
-      } else {
-        // Add more checks if other structures are possible
-        console.log('OVT balance not found in known ord server response structures.');
+      // Load the HTML into cheerio for parsing
+      const $ = cheerio.load(response.data);
+
+      // Extract Sat Balance
+      $('dt').each((index, element) => {
+        const dtText = $(element).text().trim();
+        if (dtText === 'sat balance') {
+          const ddValue = $(element).next('dd').text().trim();
+          satBalanceAmount = parseInt(ddValue, 10) || 0;
+          console.log(`Parsed sat balance: ${satBalanceAmount}`);
+        }
+      });
+
+      // Extract Rune Balance for OVT
+      $('dt').each((index, element) => {
+          const dtText = $(element).text().trim();
+          if (dtText === 'rune balances') {
+              // Find the specific OVT rune link within the corresponding <dd>
+              const ovtLink = $(element).next('dd').find(`a[href='/rune/${OVT_RUNE_SYMBOL.replace(/•/g, '%E2%80%A2')}']`); // URL encode the dot
+              if (ovtLink.length > 0) {
+                  // Extract the text content after the link (the balance)
+                  const fullText = ovtLink.parent().text(); // Get text of the <dd> or surrounding element
+                  const balanceMatch = fullText.match(/:\s*([\d,]+)⊙/); // Match ": amount⊙"
+                  if (balanceMatch && balanceMatch[1]) {
+                      ovtBalanceAmount = parseInt(balanceMatch[1].replace(/,/g, ''), 10) || 0; // Remove commas before parsing
+                      console.log(`Parsed OVT balance: ${ovtBalanceAmount}`);
+                  }
+              }
+          }
+      });
+
+      if (ovtBalanceAmount === 0) {
+          console.log(`OVT balance not found for address ${address} in HTML.`);
       }
-      // --- End Refined Parsing Logic --- 
 
     } catch (error) {
-        const errorMessage = error.response ? JSON.stringify(error.response.data) : error.message;
-        console.error(`Error querying local ord server at ${ordServerUrl}: ${errorMessage}`);
-        // If querying the ord server fails, we might fall back or just return error
-        // For now, let's return an error indicating the failure.
+        const errorMessage = error.response ? `Status ${error.response.status} - ${JSON.stringify(error.response.data)}` : error.message;
+        console.error(`Error querying or parsing local ord server HTML at ${ordServerUrl}: ${errorMessage}`);
+        // If querying the ord server fails, return an error.
         return res.status(502).json({ // 502 Bad Gateway suggests upstream issue
-          success: false, 
-          error: 'Failed to retrieve balance from local ord server.',
+          success: false,
+          error: 'Failed to retrieve or parse balance from local ord server.',
           details: errorMessage
         });
     }
@@ -937,15 +952,18 @@ runesRouter.get('/ovt/balances', async (req, res) => {
     const isLP = address === LP_ADDRESS || (LP_ADDRESS_2 && address === LP_ADDRESS_2);
 
     // Return the balance information
+    // Include sat balance as well, might be useful for frontend fee checks
     const responsePayload = {
         success: true,
-        // Return balance info only if amount > 0 or if it's a known special address
-        balances: (ovtBalanceAmount > 0 || isTreasury || isLP) ? [{
+        balances: (ovtBalanceAmount > 0 || isTreasury || isLP || satBalanceAmount > 0) ? [{
             address,
-            amount: ovtBalanceAmount,
+            runeId: OVT_RUNE_ID, // Include rune ID for clarity
+            runeSymbol: OVT_RUNE_SYMBOL,
+            amount: ovtBalanceAmount, // OVT amount
+            sats: satBalanceAmount, // Sats amount
             isTreasury,
             isLP
-        }] : [] 
+        }] : []
     };
 
     return res.json(responsePayload);
