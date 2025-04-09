@@ -13,7 +13,8 @@
 
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import axios from 'axios';
-import { useLaserEyes } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core'; // Assuming BaseNetwork might be needed
 import { getPriceStore } from '../services/priceService'; // Added import
 
 // OVT Rune constants
@@ -136,7 +137,7 @@ export interface FinalTransactionResult {
  * Hook for integrating with OVT Rune tokens using a two-step trading flow
  */
 export function useRuneIntegration() {
-  // Assume LaserEyes provides methods for sending BTC/signing PSBTs, but handle those in the UI
+  // Correct hook usage from the react package
   const { address, connected, signMessage, getUtxos } = useLaserEyes();
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);

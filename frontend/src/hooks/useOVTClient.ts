@@ -19,7 +19,8 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { ArchClient } from '../lib/archClient';
 import { RuneClient, OVT_RUNE_ID, OVT_FALLBACK_DISTRIBUTED } from '../lib/runeClient';
-import { useLaserEyes } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core'; // Assuming BaseNetwork might be needed
 import { 
   shouldUseMockData, 
   getDataSourceIndicator,
