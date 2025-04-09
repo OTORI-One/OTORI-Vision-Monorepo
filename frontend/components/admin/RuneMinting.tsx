@@ -1,5 +1,6 @@
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core';
 import React, { useState } from 'react';
-import { useLaserEyes } from '@omnisat/lasereyes';
 import MultiSigApproval from './MultiSigApproval';
 import { useOVTClient } from '../../src/hooks/useOVTClient';
 import { 

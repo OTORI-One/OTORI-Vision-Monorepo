@@ -6,14 +6,19 @@
  */
 
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { useLaserEyes } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core';
 import useRuneIntegration from '../src/hooks/useRuneIntegration';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { useOVTPrice } from '../src/hooks/useOVTPrice';
 import axios from 'axios';
 import { getPriceStore, BitcoinPrice } from '../src/services/priceService'; // Import BitcoinPrice type
-// Import the specific formatter we need from the central utility
-import { formatSatsToCurrency } from '../src/utils/formatters'; 
+import { formatSatsToCurrency, formatSats } from '../src/utils/formatters'; 
+import { 
+  ArrowPathIcon, 
+  DocumentDuplicateIcon,
+  CheckCircleIcon
+} from '@heroicons/react/24/outline';
 
 // Define UTXO interface
 interface UTXO {
@@ -88,7 +93,7 @@ const WalletTokenDisplay: React.FC<WalletTokenDisplayProps> = ({ address: propAd
   const { 
     balance: ovtBalance, // This is the raw balance (e.g., 50000000 for 500k with 2 decimals)
     getBalance, 
-    formatTokenAmount, // This formats the raw balance based on divisibility
+    formatTokenAmount,
     metadata,
     isConnected,
     isLoading: isLoadingOvt

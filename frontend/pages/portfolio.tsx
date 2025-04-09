@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import Layout from '../components/Layout';
 import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core';
 import { getDataSourceIndicator } from '../src/lib/hybridModeUtils';
 import DataSourceIndicator from '../components/DataSourceIndicator';
 import { usePortfolio } from '../src/hooks/usePortfolio';

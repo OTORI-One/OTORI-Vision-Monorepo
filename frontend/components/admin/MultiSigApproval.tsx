@@ -1,7 +1,8 @@
-import { Fragment, useState, useEffect } from 'react';
+import React, { Fragment, useState, useEffect } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
 import { XMarkIcon, KeyIcon, CheckCircleIcon } from '@heroicons/react/24/outline';
-import { useLaserEyes, XVERSE } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { XVERSE, BaseNetwork } from '@omnisat/lasereyes-core';
 
 interface MultiSigApprovalProps {
   isOpen: boolean;

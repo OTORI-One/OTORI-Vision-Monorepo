@@ -1,6 +1,11 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import { UNISAT, XVERSE, useLaserEyes, ProviderType } from '@omnisat/lasereyes';
+// Split LaserEyes imports
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { UNISAT, XVERSE, ProviderType, BaseNetwork } from '@omnisat/lasereyes-core'; // Add BaseNetwork if needed
+import { ArrowRightOnRectangleIcon, ArrowLeftOnRectangleIcon, ChevronDownIcon, CheckIcon } from '@heroicons/react/24/outline';
+import { Menu, Transition } from '@headlessui/react';
 import WalletTokenDisplay from './WalletTokenDisplay';
+import { formatSats } from '../src/utils/formatters';
 
 interface WalletConnectorProps {
   onConnect: (address: string) => void;

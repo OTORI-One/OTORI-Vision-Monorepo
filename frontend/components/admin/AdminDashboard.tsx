@@ -1,4 +1,6 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useOVTClient } from '../../src/hooks/useOVTClient';
+import NAVDisplay from '../NAVDisplay';
 import MultiSigApproval from './MultiSigApproval';
 import PositionManagement from './PositionManagement';
 import TokenMinting from './TokenMinting';
@@ -7,15 +9,16 @@ import TransactionHistory from './TransactionHistory';
 import { useNAV } from '../../src/hooks/useNAV';
 import { useOVTPrice } from '../../src/hooks/useOVTPrice';
 import { isAdminWallet, ADMIN_WALLETS } from '../../src/utils/adminUtils';
-import { useLaserEyes, XVERSE, UNISAT } from '@omnisat/lasereyes-react';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { XVERSE, UNISAT, BaseNetwork } from '@omnisat/lasereyes-core';
 import { ArrowLeftIcon } from '@heroicons/react/24/outline';
 import Link from 'next/link';
 import { getDataSourceIndicator } from '../../src/lib/hybridModeUtils';
 import { usePortfolio } from '../../src/hooks/usePortfolio';
 import { useCurrencyToggle } from '../../src/hooks/useCurrencyToggle';
-import NAVDisplay from '../NAVDisplay';
 import CurrencyToggle from '../CurrencyToggle';
 import WalletConnector from '../WalletConnector';
+import { ArrowPathIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
 
 enum AdminView {
   POSITIONS = 'positions',

@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react';
-import { useLaserEyes, XVERSE, UNISAT } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { XVERSE, UNISAT, BaseNetwork } from '@omnisat/lasereyes-core';
+import React, { useState, useEffect } from 'react';
 import Layout from '../components/Layout';
+import axios from 'axios';
 
 export default function WalletTest() {
   const { address, connect, disconnect, network } = useLaserEyes();

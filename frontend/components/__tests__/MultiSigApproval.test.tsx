@@ -1,10 +1,12 @@
 // ovt-fund/components/__tests__/MultiSigApproval.test.tsx
 
+import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { act } from 'react-dom/test-utils';
 import MultiSigApproval from '../admin/MultiSigApproval';
 import { mockAdminWallet, generateMockAdminKeys } from '../../test-utils/test-utils';
-import { useLaserEyes } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core';
 
 // Mock LaserEyes hook
 jest.mock('@omnisat/lasereyes', () => ({

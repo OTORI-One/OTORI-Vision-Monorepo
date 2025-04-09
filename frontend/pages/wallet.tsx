@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
 import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core';
+import React, { useState, useEffect } from 'react';
 import Layout from '../components/Layout';
 import WalletConnector from '../components/WalletConnector';
 import WalletTokenDisplay from '../components/WalletTokenDisplay';

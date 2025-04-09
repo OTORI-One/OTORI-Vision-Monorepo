@@ -1,7 +1,9 @@
 import { Fragment, useRef } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
 import { XMarkIcon, ExclamationTriangleIcon, CheckCircleIcon } from '@heroicons/react/24/outline';
-import { useLaserEyes } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core';
+import { formatSatsToCurrency } from '../src/utils/formatters';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 
 export interface TransactionDetails {

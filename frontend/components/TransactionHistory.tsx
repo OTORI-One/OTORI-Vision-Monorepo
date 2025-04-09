@@ -1,5 +1,6 @@
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core';
 import React, { useState, useEffect } from 'react';
-import { useLaserEyes } from '@omnisat/lasereyes';
 import { useRuneIntegration, RuneTransaction } from '../src/hooks/useRuneIntegration';
 import { formatDate } from '../src/lib/formatting';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';

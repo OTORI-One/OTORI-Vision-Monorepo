@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Layout from '../components/Layout';
-import { useLaserEyes } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
 import { getDataSourceIndicator } from '../src/lib/hybridModeUtils';
 import WalletConnector from '../components/WalletConnector';
 import CurrencyToggle from '../components/CurrencyToggle';

@@ -2,7 +2,8 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import React from 'react';
 import AdminDashboard from '../admin/AdminDashboard';
 import { useOVTClient } from '../../src/hooks/useOVTClient';
-import { useLaserEyes } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core';
 import * as adminUtils from '../../src/utils/adminUtils';
 import { act } from 'react-dom/test-utils';
 
@@ -229,7 +230,11 @@ describe('AdminDashboard', () => {
       
       // Click the token minting button
       const mintButton = navButtons.find(btn => btn.textContent === 'Token Minting');
-      fireEvent.click(mintButton);
+      if (mintButton) {
+        fireEvent.click(mintButton);
+      } else {
+        throw new Error("'Token Minting' button not found");
+      }
       
       expect(positionsButton).not.toHaveClass('bg-blue-100');
     });
