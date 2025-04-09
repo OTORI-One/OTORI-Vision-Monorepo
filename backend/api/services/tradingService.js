@@ -19,8 +19,46 @@ const commandService = require('./commandExecutionService');
 const { Mutex } = require('async-mutex');
 const ordCommandMutex = new Mutex();
 
-// Add a simple in-memory store for pending orders
-const pendingOrders = new Map(); // Stores orderId -> { fromAddress, amount, price, costSats, timestamp }
+// --- Shared Pending Order Storage (File-based) ---
+const PENDING_ORDERS_DIR = path.join(__dirname, '..', 'data');
+const PENDING_ORDERS_FILE = path.join(PENDING_ORDERS_DIR, 'pending_orders.json');
+
+// Helper to read the pending orders file
+function readPendingOrdersFile() {
+    try {
+        // Ensure directory exists
+        if (!fs.existsSync(PENDING_ORDERS_DIR)) {
+            fs.mkdirSync(PENDING_ORDERS_DIR, { recursive: true });
+            console.log(`[Trading Service] Created pending orders directory: ${PENDING_ORDERS_DIR}`);
+        }
+        // Ensure file exists
+        if (!fs.existsSync(PENDING_ORDERS_FILE)) {
+            console.log(`[Trading Service] Pending orders file not found, creating empty file: ${PENDING_ORDERS_FILE}`);
+            fs.writeFileSync(PENDING_ORDERS_FILE, JSON.stringify({}), 'utf8');
+            return {}; // Return empty object
+        }
+        const data = fs.readFileSync(PENDING_ORDERS_FILE, 'utf8');
+        return JSON.parse(data || '{}');
+    } catch (error) {
+        console.error(`[Trading Service] Error reading pending orders file (${PENDING_ORDERS_FILE}):`, error);
+        return {}; // Return empty object on error
+    }
+}
+
+// Helper to write the pending orders file
+function writePendingOrdersFile(orders) {
+    try {
+        // Ensure directory exists (might be redundant but safe)
+        if (!fs.existsSync(PENDING_ORDERS_DIR)) {
+            fs.mkdirSync(PENDING_ORDERS_DIR, { recursive: true });
+        }
+        fs.writeFileSync(PENDING_ORDERS_FILE, JSON.stringify(orders, null, 2), 'utf8');
+        // console.log(`[Trading Service] Pending orders file updated: ${PENDING_ORDERS_FILE}`); // Optional: reduce log noise
+    } catch (error) {
+        console.error(`[Trading Service] Error writing pending orders file (${PENDING_ORDERS_FILE}):`, error);
+    }
+}
+// --- End Shared Pending Order Storage ---
 
 // WebSocket Internal Broadcast Configuration
 const INTERNAL_BROADCAST_URL = process.env.INTERNAL_BROADCAST_URL || 'http://localhost:3033/api/price/internal/broadcast'; // Ensure this matches otori-price-api endpoint
@@ -544,7 +582,7 @@ async function validateTransaction(transaction) {
 }
 
 /**
- * Stores pending order details in memory.
+ * Stores pending order details in the file.
  * @param {string} orderId - Unique identifier for the order.
  * @param {Object} orderDetails - Details of the order (fromAddress, amount, price, costSats, timestamp).
  * @returns {boolean} - True if stored successfully
@@ -554,37 +592,60 @@ function storePendingOrder(orderId, orderDetails) {
         console.error('[Trading Service] Attempted to store invalid order data.');
         return false;
     }
-    console.log(`[Trading Service] Storing order: ${orderId}. Details:`, orderDetails);
-    console.log('[Trading Service] Current pendingOrders before set:', Array.from(pendingOrders.entries())); // Log map before
-    pendingOrders.set(orderId, orderDetails);
-    console.log('[Trading Service] Current pendingOrders after set:', Array.from(pendingOrders.entries())); // Log map after
-    // TODO: Implement cleanup for old/stale pending orders
-    return true;
+    try {
+        console.log(`[Trading Service] Storing order: ${orderId}. Details:`, orderDetails);
+        const orders = readPendingOrdersFile();
+        orders[orderId] = orderDetails; // Add or update the order
+        writePendingOrdersFile(orders);
+        console.log(`[Trading Service] Order ${orderId} stored in file.`);
+        return true;
+    } catch (error) {
+        console.error(`[Trading Service] Failed to store order ${orderId} in file:`, error);
+        return false;
+    }
 }
 
 /**
- * Retrieves pending order details from memory.
+ * Retrieves pending order details from the file.
  * @param {string} orderId - Unique identifier for the order.
  * @returns {Object|null} - Order details or null if not found
  */
 function getPendingOrder(orderId) {
     console.log(`[Trading Service] Getting order: ${orderId}`);
-    console.log('[Trading Service] Current pendingOrders at time of get:', Array.from(pendingOrders.entries())); // Log map contents
     if (!orderId) {
         console.warn('[Trading Service] Attempted to get order with null/undefined ID.');
         return null;
     }
-    return pendingOrders.get(orderId) || null;
+    try {
+        const orders = readPendingOrdersFile();
+        console.log(`[Trading Service] Found ${Object.keys(orders).length} orders in file at time of get.`); // Log count
+        return orders[orderId] || null;
+    } catch (error) {
+        console.error(`[Trading Service] Failed to get order ${orderId} from file:`, error);
+        return null;
+    }
 }
 
 /**
- * Remove a pending order
+ * Remove a pending order from the file
  * @param {string} orderId - The order ID
  */
 function removePendingOrder(orderId) {
-    if (pendingOrders.has(orderId)) {
-        pendingOrders.delete(orderId);
-        console.log(`[Trading Service] Pending order removed: ${orderId}`);
+    if (!orderId) {
+        console.warn('[Trading Service] Attempted to remove order with null/undefined ID.');
+        return;
+    }
+    try {
+        const orders = readPendingOrdersFile();
+        if (orders[orderId]) {
+            delete orders[orderId];
+            writePendingOrdersFile(orders);
+            console.log(`[Trading Service] Pending order removed from file: ${orderId}`);
+        } else {
+            console.log(`[Trading Service] Attempted to remove non-existent order from file: ${orderId}`);
+        }
+    } catch (error) {
+        console.error(`[Trading Service] Failed to remove order ${orderId} from file:`, error);
     }
 }
 
