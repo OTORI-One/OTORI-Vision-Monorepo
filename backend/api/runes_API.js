@@ -1303,8 +1303,26 @@ runesRouter.post('/ovt/buy', async (req, res) => {
     
     // 3. Fetch the current OVT price from price-api (Phase 2)
     // TEMPORARY PLACEHOLDER PRICE - Replace with actual API call in Phase 2
-    const currentPrice = 700; // TODO: Replace with fetch from price-api
-    console.log(`[2Step Buy Prep] Using price: ${currentPrice} sats`);
+    // const currentPrice = 700; // TODO: Replace with fetch from price-api
+    // console.log(`[2Step Buy Prep] Using price: ${currentPrice} sats`);
+
+    // 3. Fetch the current OVT price from price-api (Phase 2)
+    let currentPrice;
+    try {
+        const priceApiUrl = `${process.env.OTORI_PRICE_API_ENDPOINT || 'http://localhost:3033'}/api/price/ovt`;
+        console.log(`[2Step Buy Prep] Fetching price from: ${priceApiUrl}`);
+        const priceResponse = await axios.get(priceApiUrl, {
+            headers: { 'X-Internal-Secret': process.env.INTERNAL_API_SECRET },
+            timeout: 3000
+        });
+        currentPrice = priceResponse.data.btcPriceSats; // Use btcPriceSats field
+        if (currentPrice === undefined || currentPrice === null) throw new Error('Invalid price data received');
+        console.log(`[2Step Buy Prep] Current OVT price from price-api: ${currentPrice} sats`);
+    } catch (priceError) {
+        const errorMessage = priceError.response ? `Status ${priceError.response.status}: ${JSON.stringify(priceError.response.data)}` : priceError.message;
+        console.error(`[2Step Buy Prep] Failed to fetch OVT price: ${errorMessage}`);
+        return res.status(503).json({ success: false, error: 'Service unavailable: Could not fetch OVT price.' });
+    }
 
     if (maxPrice && currentPrice > maxPrice) {
       return res.status(400).json({
@@ -1422,11 +1440,29 @@ runesRouter.post('/ovt/sell', async (req, res) => {
     }
     
     // 3. Calculate the current price and check against minPrice if specified
-    const lpInfo = await getRemoteLPInfo();
-    const currentPrice = lpInfo.success ? 
-      lpInfo.result.lpInfo.pricing.currentPriceSats : 
-      700; // Default fallback price
+    // const lpInfo = await getRemoteLPInfo(); // REMOVED: Phase 2
+    // const currentPrice = lpInfo.success ? 
+    //   lpInfo.result.lpInfo.pricing.currentPriceSats : 
+    //   700; // Default fallback price // REMOVED: Phase 2
     
+    // 3. Fetch the current OVT price from price-api (Phase 2)
+    let currentPrice;
+    try {
+        const priceApiUrl = `${process.env.OTORI_PRICE_API_ENDPOINT || 'http://localhost:3033'}/api/price/ovt`;
+        console.log(`[Sell Prep] Fetching price from: ${priceApiUrl}`);
+        const priceResponse = await axios.get(priceApiUrl, {
+            headers: { 'X-Internal-Secret': process.env.INTERNAL_API_SECRET },
+            timeout: 3000
+        });
+        currentPrice = priceResponse.data.btcPriceSats; // Use btcPriceSats field
+        if (currentPrice === undefined || currentPrice === null) throw new Error('Invalid price data received');
+        console.log(`[Sell Prep] Current OVT price from price-api: ${currentPrice} sats`);
+    } catch (priceError) {
+        const errorMessage = priceError.response ? `Status ${priceError.response.status}: ${JSON.stringify(priceError.response.data)}` : priceError.message;
+        console.error(`[Sell Prep] Failed to fetch OVT price: ${errorMessage}`);
+        return res.status(503).json({ success: false, error: 'Service unavailable: Could not fetch OVT price.' });
+    }
+
     if (minPrice && currentPrice < minPrice) {
       return res.status(400).json({
         success: false,
