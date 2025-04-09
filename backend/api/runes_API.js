@@ -17,6 +17,43 @@ app.use(bodyParser.json());
 const { Mutex } = require('async-mutex');
 const runesOrdCommandMutex = new Mutex();
 
+// --- Caching Implementation START ---
+const CACHE_TTL_DISTRIBUTION_MS = 60 * 1000; // 1 minute
+const CACHE_TTL_TRANSACTIONS_MS = 60 * 1000; // 1 minute
+const CACHE_TTL_BALANCES_MS = 30 * 1000;     // 30 seconds
+
+let distributionCache = { data: null, timestamp: 0 };
+let transactionsCache = { data: null, timestamp: 0 };
+let addressBalanceCache = {}; // Object to store balances per address: { address: { data: {ovt, sats}, timestamp: 0 } }
+
+const isCacheValid = (cacheEntry, ttl) => {
+    // Check if cacheEntry itself exists and has data
+    return cacheEntry && cacheEntry.data && (Date.now() - cacheEntry.timestamp < ttl);
+};
+
+// Overload clearCache or make it more specific
+const clearCache = (cacheName, key = null) => {
+    console.log(`[Cache] Clearing ${cacheName}` + (key ? ` for key ${key}` : ''));
+    if (cacheName === 'distribution' || cacheName === 'all') {
+        distributionCache = { data: null, timestamp: 0 };
+    }
+    if (cacheName === 'transactions' || cacheName === 'all') {
+        transactionsCache = { data: null, timestamp: 0 };
+    }
+    if (cacheName === 'balance' || cacheName === 'all') {
+        if (key) {
+            // Clear specific address balance
+            if (addressBalanceCache[key]) {
+                delete addressBalanceCache[key];
+            }
+        } else {
+            // Clear all address balances
+            addressBalanceCache = {};
+        }
+    }
+};
+// --- Caching Implementation END ---
+
 // WebSocket Broadcast Helpers START
 // Helper function to send broadcast messages via internal HTTP call
 const OTORI_PRICE_API_ENDPOINT = process.env.OTORI_PRICE_API_ENDPOINT || 'http://localhost:3033'; // Ensure otori-price-api runs on 3033
@@ -440,75 +477,60 @@ const execOrdCommand = async (command) => {
 // Helper function to parse rune balance output
 const parseRuneBalances = (output) => {
   try {
-    // Based on the actual ord wallet balance output format
     console.log(`Parsing balance output: ${output}`);
-    
-    // Simple case: if there are no runes, return empty array
-    if (!output.includes(OVT_RUNE_ID)) {
-      return [];
-    }
-    
-    // Extract rune balances from the output
-    const balances = [];
-    
-    // Try to parse addresses with their balances - this depends on the actual output format
+
+    // Attempt to parse the output as JSON first
     try {
-      // If the output is JSON, try to parse it
       const jsonData = JSON.parse(output);
-      
+      const addressBalances = {}; // Use an object to aggregate balances per address
+
       // Iterate through addresses in the JSON
       Object.keys(jsonData).forEach(address => {
         const addressData = jsonData[address];
-        
-        // Skip if no outputs
+
+        // Skip if no outputs or not an array
         if (!Array.isArray(addressData) || addressData.length === 0) return;
-        
-        // Look for outputs with OVT runes
-        addressData.forEach(output => {
-          if (output.runes && output.runes[OVT_RUNE_SYMBOL]) {
-            const amount = parseInt(output.runes[OVT_RUNE_SYMBOL]);
-            
-            // Determine if this is a treasury or LP address
-            const isTreasury = address === OVT_TREASURY_ADDRESS || address === OVT_TREASURY_ADDRESS_2;
-            const isLP = address === LP_ADDRESS || (LP_ADDRESS_2 && address === LP_ADDRESS_2);
-            
-            balances.push({
-              address,
-              amount,
-              isTreasury,
-              isLP
-            });
+
+        // Aggregate OVT rune amounts for this address
+        let totalAmountForAddress = 0;
+        addressData.forEach(utxo => {
+          if (utxo.runes && utxo.runes[OVT_RUNE_SYMBOL]) {
+            const amount = parseInt(utxo.runes[OVT_RUNE_SYMBOL]);
+            if (!isNaN(amount)) { // Ensure amount is a valid number
+                totalAmountForAddress += amount;
+            }
           }
         });
+
+        // Store the total amount if > 0
+        if (totalAmountForAddress > 0) {
+            addressBalances[address] = totalAmountForAddress;
+        }
       });
-    } catch (e) {
-      // If JSON parsing fails, fall back to line-based parsing
-      console.log('JSON parsing failed, falling back to line parsing');
-      
-      const lines = output.split('\n').filter(line => line.trim() && line.includes(OVT_RUNE_ID));
-      
-      for (const line of lines) {
-        // Based on actual ord output format, try to extract amount and address
-        const amount = parseInt(line.match(/(\d+)/)?.[0] || '0');
-        
-        // Try to extract address, or default to treasury
-        const addressMatch = line.match(/([a-zA-Z0-9]{34,})/);
-        const address = addressMatch ? addressMatch[0] : OVT_TREASURY_ADDRESS;
-        
-        // Determine if this is a treasury or LP address
+
+      // Convert the aggregated balances into the desired array format
+      const balances = Object.keys(addressBalances).map(address => {
+        const amount = addressBalances[address];
         const isTreasury = address === OVT_TREASURY_ADDRESS || address === OVT_TREASURY_ADDRESS_2;
         const isLP = address === LP_ADDRESS || (LP_ADDRESS_2 && address === LP_ADDRESS_2);
-        
-        balances.push({
+        return {
           address,
           amount,
           isTreasury,
           isLP
-        });
-      }
+        };
+      });
+
+      console.log('Successfully parsed JSON balances:', balances);
+      return balances;
+
+    } catch (e) {
+      // If JSON parsing fails, log the error and return empty (shouldn't happen with current ord version)
+      console.error(`JSON parsing failed for balance output: ${e.message}`);
+      console.error(`Raw output causing failure: ${output}`);
+      return []; // Return empty array on failure
     }
-    
-    return balances;
+
   } catch (error) {
     console.error('Error parsing rune balances:', error);
     return [];
@@ -543,32 +565,29 @@ const calculateDistributionStats = (balances) => {
 };
 
 // Helper function to get transaction history
-const getTransactionHistory = async (runeId) => {
+const getTransactionHistory = async (/* runeId - No longer used here */) => {
   try {
     // Use the correct command for wallet transactions
-    const result = execOrdCommand(`wallet transactions`);
-    if (!result.success) return [];
-    
-    // Parse the transaction output and filter for rune transactions
-    const transactions = result.result
-      .split('\n')
-      .filter(line => line.includes(runeId))
-      .map(line => {
-        // Assuming format based on actual ord wallet transactions output
-        // Adjust parsing logic based on actual output format
-        const parts = line.split(/\s+/).filter(Boolean);
-        if (parts.length < 3) return null;
-        
-        return {
-          txid: parts[0],
-          type: parts[1].toLowerCase(),
-          amount: parseInt(parts[2]) || 0,
-          timestamp: parts[3] ? new Date(parts[3]).getTime() : Date.now()
-        };
-      })
-      .filter(Boolean);
-    
-    return transactions;
+    console.log('Executing `ord wallet transactions`...');
+    const commandResult = await execOrdCommand(`wallet transactions`);
+
+    if (!commandResult.success || !commandResult.result) {
+        console.error('Failed to execute `ord wallet transactions`', commandResult.error);
+        return []; // Return empty on failure
+    }
+
+    // Parse the JSON transaction output
+    try {
+        const transactions = JSON.parse(commandResult.result);
+        console.log(`Parsed ${transactions.length} transactions from wallet history.`);
+        // Add a timestamp to each for potential future use/sorting
+        return transactions.map(tx => ({ ...tx, fetchedAt: Date.now() }));
+    } catch (parseError) {
+        console.error(`Error parsing JSON from wallet transactions: ${parseError.message}`);
+        console.error(`Raw output: ${commandResult.result}`);
+        return []; // Return empty on parse failure
+    }
+
   } catch (error) {
     console.error('Error getting transaction history:', error);
     return [];
@@ -887,80 +906,98 @@ runesRouter.get('/ovt/balances', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Address query parameter is required' });
     }
 
-    const ordServerHost = 'http://localhost:9191'; // Use localhost
-    const ordServerUrl = `${ordServerHost}/address/${address}`;
-    console.log(`Querying local ord server for balance: ${ordServerUrl}`);
+    console.log(`Fetching balance for address: ${address}`);
 
+    // --- Caching START ---
+    const cachedEntry = addressBalanceCache[address];
+    if (isCacheValid(cachedEntry, CACHE_TTL_BALANCES_MS)) {
+        console.log(`[Cache] Using cached balance data for ${address}.`);
+        const { ovtBalanceAmount, satBalanceAmount } = cachedEntry.data;
+        const isTreasury = address === OVT_TREASURY_ADDRESS || address === OVT_TREASURY_ADDRESS_2;
+        const isLP = address === LP_ADDRESS || (LP_ADDRESS_2 && address === LP_ADDRESS_2);
+
+        return res.json({
+            success: true,
+            balances: (ovtBalanceAmount > 0 || satBalanceAmount > 0 || isTreasury || isLP) ? [{
+                address,
+                runeId: OVT_RUNE_ID,
+                runeSymbol: OVT_RUNE_SYMBOL,
+                amount: ovtBalanceAmount,
+                sats: satBalanceAmount,
+                isTreasury,
+                isLP
+            }] : []
+        });
+    }
+    // --- Caching END ---
+
+    // --- Scraping Logic START ---
     let ovtBalanceAmount = 0;
     let satBalanceAmount = 0;
+    const ordServerHost = 'http://localhost:9191'; // Use localhost for scraping
+    const ordServerUrl = `${ordServerHost}/address/${address}`;
+    console.log(`[Scraping] Querying local ord server: ${ordServerUrl}`);
 
     try {
-      // Fetch HTML content from the ord server address page
-      const response = await axios.get(ordServerUrl, {
-        // Remove 'Accept: application/json' header if present, default is usually fine for HTML
-        timeout: 5000 // Add a timeout
-      });
-
-      // Load the HTML into cheerio for parsing
+      const response = await axios.get(ordServerUrl, { timeout: 5000 });
       const $ = cheerio.load(response.data);
 
       // Extract Sat Balance
       $('dt').each((index, element) => {
-        const dtText = $(element).text().trim();
-        if (dtText === 'sat balance') {
-          const ddValue = $(element).next('dd').text().trim();
-          satBalanceAmount = parseInt(ddValue, 10) || 0;
-          console.log(`Parsed sat balance: ${satBalanceAmount}`);
+        if ($(element).text().trim() === 'sat balance') {
+          satBalanceAmount = parseInt($(element).next('dd').text().trim().replace(/,/g, ''), 10) || 0;
         }
       });
 
       // Extract Rune Balance for OVT
       $('dt').each((index, element) => {
-          const dtText = $(element).text().trim();
-          if (dtText === 'rune balances') {
-              // Find the specific OVT rune link within the corresponding <dd>
-              const ovtLink = $(element).next('dd').find(`a[href='/rune/${OVT_RUNE_SYMBOL.replace(/•/g, '%E2%80%A2')}']`); // URL encode the dot
-              if (ovtLink.length > 0) {
-                  // Extract the text content after the link (the balance)
-                  const fullText = ovtLink.parent().text(); // Get text of the <dd> or surrounding element
-                  const balanceMatch = fullText.match(/:\s*([\d,]+)⊙/); // Match ": amount⊙"
-                  if (balanceMatch && balanceMatch[1]) {
-                      ovtBalanceAmount = parseInt(balanceMatch[1].replace(/,/g, ''), 10) || 0; // Remove commas before parsing
-                      console.log(`Parsed OVT balance: ${ovtBalanceAmount}`);
-                  }
-              }
+        if ($(element).text().trim() === 'rune balances') {
+          const ovtLink = $(element).next('dd').find(`a[href='/rune/${OVT_RUNE_SYMBOL.replace(/•/g, '%E2%80%A2')}']`);
+          if (ovtLink.length > 0) {
+            const fullText = ovtLink.parent().text();
+            const balanceMatch = fullText.match(/:\s*([\d,]+)⊙/);
+            if (balanceMatch && balanceMatch[1]) {
+              ovtBalanceAmount = parseInt(balanceMatch[1].replace(/,/g, ''), 10) || 0;
+            }
           }
+        }
       });
 
-      if (ovtBalanceAmount === 0) {
-          console.log(`OVT balance not found for address ${address} in HTML.`);
-      }
+      console.log(`[Scraping] Parsed balances - OVT: ${ovtBalanceAmount}, Sats: ${satBalanceAmount}`);
+
+      // --- Caching START ---
+      console.log(`[Cache] Storing fresh balance data for ${address}.`);
+      addressBalanceCache[address] = {
+          data: { ovtBalanceAmount, satBalanceAmount },
+          timestamp: Date.now()
+      };
+      // --- Caching END ---
 
     } catch (error) {
-        const errorMessage = error.response ? `Status ${error.response.status} - ${JSON.stringify(error.response.data)}` : error.message;
-        console.error(`Error querying or parsing local ord server HTML at ${ordServerUrl}: ${errorMessage}`);
-        // If querying the ord server fails, return an error.
-        return res.status(502).json({ // 502 Bad Gateway suggests upstream issue
-          success: false,
-          error: 'Failed to retrieve or parse balance from local ord server.',
-          details: errorMessage
-        });
+      const errorMessage = error.response ? `Status ${error.response.status}` : error.message;
+      console.error(`[Scraping] Error querying or parsing ${ordServerUrl}: ${errorMessage}`);
+      // Do not cache errors, just return error response
+      return res.status(502).json({
+        success: false,
+        error: 'Failed to retrieve or parse balance from local ord server via scraping.',
+        details: errorMessage
+      });
     }
+    // --- Scraping Logic END ---
 
-    // Determine if this is a treasury or LP address
+    // Determine if this is a treasury or LP address (outside scraping block)
     const isTreasury = address === OVT_TREASURY_ADDRESS || address === OVT_TREASURY_ADDRESS_2;
     const isLP = address === LP_ADDRESS || (LP_ADDRESS_2 && address === LP_ADDRESS_2);
 
-    // Return the balance information
-    // Include sat balance as well, might be useful for frontend fee checks
+    // Return the freshly scraped and cached balance information
     const responsePayload = {
         success: true,
-        balances: (ovtBalanceAmount > 0 || isTreasury || isLP || satBalanceAmount > 0) ? [{
+        balances: (ovtBalanceAmount > 0 || satBalanceAmount > 0 || isTreasury || isLP) ? [{
             address,
-            runeId: OVT_RUNE_ID, // Include rune ID for clarity
+            runeId: OVT_RUNE_ID,
             runeSymbol: OVT_RUNE_SYMBOL,
-            amount: ovtBalanceAmount, // OVT amount
-            sats: satBalanceAmount, // Sats amount
+            amount: ovtBalanceAmount,
+            sats: satBalanceAmount,
             isTreasury,
             isLP
         }] : []
@@ -981,13 +1018,18 @@ runesRouter.get('/ovt/balances', async (req, res) => {
 
 runesRouter.get('/ovt/distribution', async (req, res) => {
   try {
+    // --- Caching START ---
+    if (isCacheValid(distributionCache, CACHE_TTL_DISTRIBUTION_MS)) {
+        console.log('[Cache] Using cached distribution data.');
+        return res.json({ success: true, distributionStats: distributionCache.data });
+    }
+    // --- Caching END ---
+
     // Directly execute the 'wallet addresses' command to get all balances
     console.log('Fetching all balances for distribution calculation...');
     const commandResult = await execOrdCommand('wallet addresses');
-    
-    // --- ADDED LOGGING ---
+
     console.log('Raw command result in /ovt/distribution:', commandResult);
-    // --- END ADDED LOGGING ---
 
     if (!commandResult.success || !commandResult.result) {
       throw new Error(commandResult.error || 'Failed to execute ord wallet addresses command for distribution');
@@ -995,10 +1037,15 @@ runesRouter.get('/ovt/distribution', async (req, res) => {
 
     // Parse the raw output to get balances
     const allBalances = parseRuneBalances(commandResult.result);
-    
+
     // Calculate distribution stats from the parsed balances
     const distributionStats = calculateDistributionStats(allBalances);
-    
+
+    // --- Caching START ---
+    console.log('[Cache] Storing fresh distribution data.');
+    distributionCache = { data: distributionStats, timestamp: Date.now() };
+    // --- Caching END ---
+
     // Return the calculated stats
     return res.json({ success: true, distributionStats });
 
@@ -1315,6 +1362,14 @@ runesRouter.post('/ovt/buy', async (req, res) => {
       },
       message: 'Buy transaction executed successfully'
     });
+
+    // --- Cache Invalidation ---
+    clearCache('distribution'); // Clear distribution cache
+    clearCache('transactions'); // Clear transaction cache
+    clearCache('balance', fromAddress); // Clear buyer's balance cache
+    clearCache('balance', LP_ADDRESS); // Clear LP's balance cache (seller)
+    // --- Cache Invalidation ---
+
   } catch (error) {
     console.error('Error processing buy transaction:', error);
     res.status(500).json({ 
@@ -1576,6 +1631,29 @@ runesRouter.post('/ovt/submit-transaction', async (req, res) => {
         'Transaction submitted successfully' : 
         'Transaction prepared but not broadcast'
     });
+
+    // --- Cache Invalidation ---
+    if (broadcastSuccess) {
+        // Clear distribution and transaction caches (covers all addresses involved)
+        clearCache('distribution');
+        clearCache('transactions');
+        // Clear specific sender/receiver balances
+        clearCache('balance', fromAddress);
+        clearCache('balance', toAddress);
+        // If it was a buy/sell involving LP, clear LP balance too
+        if (toAddress === LP_ADDRESS || fromAddress === LP_ADDRESS) {
+            clearCache('balance', LP_ADDRESS);
+        }
+        // If involving treasury, clear treasury balance
+        if (toAddress === OVT_TREASURY_ADDRESS || fromAddress === OVT_TREASURY_ADDRESS) {
+            clearCache('balance', OVT_TREASURY_ADDRESS);
+        }
+         if (toAddress === OVT_TREASURY_ADDRESS_2 || fromAddress === OVT_TREASURY_ADDRESS_2) {
+            clearCache('balance', OVT_TREASURY_ADDRESS_2);
+        }
+    }
+    // --- Cache Invalidation ---
+
   } catch (error) {
     console.error('Error submitting transaction:', error);
     res.status(500).json({ 
@@ -1703,6 +1781,14 @@ runesRouter.post('/ovt/transfer', async (req, res) => {
       },
       message: 'Transfer submitted successfully'
     });
+
+    // --- Cache Invalidation ---
+    clearCache('distribution'); // Clear distribution cache
+    clearCache('transactions'); // Clear transaction cache
+    clearCache('balance', fromAddress); // Clear sender balance
+    clearCache('balance', toAddress); // Clear recipient balance
+    // --- Cache Invalidation ---
+
   } catch (error) {
     console.error('Error preparing transfer:', error);
     res.status(500).json({ 
@@ -1715,30 +1801,49 @@ runesRouter.post('/ovt/transfer', async (req, res) => {
 // Add transaction history endpoint
 runesRouter.get('/ovt/transactions', async (req, res) => {
   try {
-    const address = req.query.address;
-    
-    if (!address) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Address parameter is required' 
-      });
+    const address = req.query.address; // Keep address param for potential future filtering
+
+    // if (!address) { // Optional: Remove if address filtering isn't implemented here
+    //   return res.status(400).json({ 
+    //     success: false, 
+    //     error: 'Address parameter is required' 
+    //   });
+    // }
+
+    console.log(`Fetching transaction history (currently for entire wallet)...`);
+
+    // --- Caching START ---
+    if (isCacheValid(transactionsCache, CACHE_TTL_TRANSACTIONS_MS)) {
+        console.log('[Cache] Using cached transaction data.');
+        // Note: This cache is for the *entire wallet's* BTC transaction history
+        // Filtering by address would happen here if needed.
+        return res.json({
+            success: true,
+            transactions: transactionsCache.data,
+            count: transactionsCache.data.length,
+            note: 'Wallet transaction history (not filtered by address or rune)'
+        });
     }
-    
-    console.log(`Fetching transaction history for address: ${address}`);
-    
+    // --- Caching END ---
+
     // Fetch actual transaction history using the helper function
-    // Note: Current getTransactionHistory might fetch for the whole wallet, 
-    // not filtered by the specific address parameter yet.
-    const transactions = await getTransactionHistory(OVT_RUNE_ID);
-    
-    // TODO: Potentially filter transactions further based on the `address` parameter 
-    // if the `getTransactionHistory` result includes sender/receiver info.
-    // For now, returning all OVT transactions found in the wallet.
-    
+    // Pass OVT_RUNE_ID although it's not used by the refactored helper anymore
+    const transactions = await getTransactionHistory();
+
+    // --- Caching START ---
+    console.log('[Cache] Storing fresh transaction data.');
+    transactionsCache = { data: transactions, timestamp: Date.now() };
+    // --- Caching END ---
+
+    // TODO: Potentially filter transactions further based on the `address` parameter
+    // by fetching details for each txid (expensive).
+    // For now, returning all BTC transactions found in the wallet.
+
     res.json({
       success: true,
       transactions, // Use actual transactions
-      count: transactions.length
+      count: transactions.length,
+      note: 'Wallet transaction history (not filtered by address or rune)'
     });
   } catch (error) {
     console.error('Error fetching transaction history:', error);
