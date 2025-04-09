@@ -1266,6 +1266,9 @@ runesRouter.use((req, res, next) => {
 const pendingOrders = new Map(); // Stores orderId -> { fromAddress, amount, price, timestamp }
 
 runesRouter.post('/ovt/buy', async (req, res) => {
+  // ---> ADDED ENTRY LOGGING <---
+  console.log(`[POST /ovt/buy] Request received. Body:`, req.body);
+  // ---> END ENTRY LOGGING <---
   try {
     const { fromAddress, amount, maxPrice, signature, pubkey } = req.body;
     
