@@ -1,7 +1,8 @@
-import { PublicKey } from '@omnisat/lasereyes';
+import { PublicKey } from '@omnisat/lasereyes-core';
 
-// Add a type declaration to fix the missing type
-declare module '@omnisat/lasereyes' {
+// Target the core package for module augmentation
+declare module '@omnisat/lasereyes-core' {
+  // Ensure PublicKey is exported correctly or adjust augmentation if needed
   export class PublicKey {
     toString(): string;
     toBuffer(): Buffer;
