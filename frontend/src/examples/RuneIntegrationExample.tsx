@@ -7,7 +7,8 @@
 
 import React, { useState } from 'react';
 import useRuneIntegration from '../hooks/useRuneIntegration';
-import { useLaserEyes, UNISAT, XVERSE } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
+import { UNISAT, XVERSE } from '@omnisat/lasereyes-core';
 
 const RuneIntegrationExample: React.FC = () => {
   const laserEyes = useLaserEyes();
