@@ -399,7 +399,10 @@ export function useRuneIntegration() {
     try {
       console.log(`Confirming buy payment for order ${orderId} with BTC tx ${btcTxId}`);
       // Use TRADING_API_URL for the confirmation endpoint
-      const response = await axios.post<FinalTransactionResult>(`${TRADING_API_URL}/confirm-buy-payment`, {         btcTxId
+      console.log('Confirming Buy URL:', `${TRADING_API_URL}/confirm-buy-payment`);
+      const response = await axios.post<FinalTransactionResult>(`${TRADING_API_URL}/confirm-buy-payment`, {
+          orderId,
+          btcTxId
       });
       console.log('Confirm buy OVT response:', response.data);
 
