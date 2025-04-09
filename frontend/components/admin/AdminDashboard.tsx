@@ -7,7 +7,7 @@ import TransactionHistory from './TransactionHistory';
 import { useNAV } from '../../src/hooks/useNAV';
 import { useOVTPrice } from '../../src/hooks/useOVTPrice';
 import { isAdminWallet, ADMIN_WALLETS } from '../../src/utils/adminUtils';
-import { useLaserEyes, XVERSE, UNISAT } from '@omnisat/lasereyes';
+import { useLaserEyes, XVERSE, UNISAT } from '@omnisat/lasereyes-react';
 import { ArrowLeftIcon } from '@heroicons/react/24/outline';
 import Link from 'next/link';
 import { getDataSourceIndicator } from '../../src/lib/hybridModeUtils';

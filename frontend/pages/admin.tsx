@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import Layout from '../components/Layout';
 import AdminDashboard from '../components/admin/AdminDashboard';
-import { useLaserEyes } from '@omnisat/lasereyes';
+import { useLaserEyes } from '@omnisat/lasereyes-react';
 import { isAdminWallet } from '../src/utils/adminUtils';
 
 export default function AdminPage() {
