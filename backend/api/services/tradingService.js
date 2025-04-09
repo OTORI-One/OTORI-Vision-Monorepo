@@ -544,25 +544,36 @@ async function validateTransaction(transaction) {
 }
 
 /**
- * Store a pending order (moved from runes_API)
- * @param {string} orderId - Unique order ID
- * @param {Object} orderDetails - { fromAddress, amount, price, costSats, timestamp }
+ * Stores pending order details in memory.
+ * @param {string} orderId - Unique identifier for the order.
+ * @param {Object} orderDetails - Details of the order (fromAddress, amount, price, costSats, timestamp).
  * @returns {boolean} - True if stored successfully
  */
 function storePendingOrder(orderId, orderDetails) {
-    if (!orderId || !orderDetails) return false;
+    if (!orderId || !orderDetails) {
+        console.error('[Trading Service] Attempted to store invalid order data.');
+        return false;
+    }
+    console.log(`[Trading Service] Storing order: ${orderId}. Details:`, orderDetails);
+    console.log('[Trading Service] Current pendingOrders before set:', Array.from(pendingOrders.entries())); // Log map before
     pendingOrders.set(orderId, orderDetails);
-    console.log(`[Trading Service] Pending order stored: ${orderId}`);
+    console.log('[Trading Service] Current pendingOrders after set:', Array.from(pendingOrders.entries())); // Log map after
     // TODO: Implement cleanup for old/stale pending orders
     return true;
 }
 
 /**
- * Get details for a pending order
- * @param {string} orderId - The order ID
+ * Retrieves pending order details from memory.
+ * @param {string} orderId - Unique identifier for the order.
  * @returns {Object|null} - Order details or null if not found
  */
 function getPendingOrder(orderId) {
+    console.log(`[Trading Service] Getting order: ${orderId}`);
+    console.log('[Trading Service] Current pendingOrders at time of get:', Array.from(pendingOrders.entries())); // Log map contents
+    if (!orderId) {
+        console.warn('[Trading Service] Attempted to get order with null/undefined ID.');
+        return null;
+    }
     return pendingOrders.get(orderId) || null;
 }
 
@@ -586,11 +597,16 @@ function removePendingOrder(orderId) {
 async function confirmBuyPayment(orderId, btcTxId) {
     console.log(`[Confirm Buy] Received confirmation request for order ${orderId}, BTC TX ${btcTxId}`);
 
+    if (!orderId || !btcTxId) {
+        console.error('[Confirm Buy] Missing orderId or btcTxId');
+        return { success: false, error: 'Missing orderId or btcTxId' };
+    }
+
     // 1. Retrieve Pending Order
-    const orderDetails = getPendingOrder(orderId);
+    const orderDetails = getPendingOrder(orderId); // Use synchronous version
     if (!orderDetails) {
         console.error(`[Confirm Buy] Order ID not found: ${orderId}`);
-        return { success: false, error: 'Order ID not found or expired.' };
+        return { success: false, error: `Order ID not found: ${orderId}` };
     }
 
     const { fromAddress, amount, costSats } = orderDetails;

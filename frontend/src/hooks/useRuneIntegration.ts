@@ -147,7 +147,7 @@ export function useRuneIntegration() {
   const priceStore = useMemo(() => getPriceStore(), []);
 
   const API_BASE_URL = process.env.NEXT_PUBLIC_RUNE_ENDPOINT || 'http://localhost:3032';
-  const TRADING_API_URL = process.env.NEXT_PUBLIC_TRADING_ENDPOINT || API_BASE_URL; // Use same base if not specified
+  const TRADING_API_URL = process.env.NEXT_PUBLIC_TRADING_API_URL || API_BASE_URL; // Use correct env var name
 
   // --- Utility Functions (Moved formatTokenAmount earlier) ---
   const formatTokenAmount = useCallback((amount: number, divisibility: number = metadata?.divisibility ?? 2): string => {
