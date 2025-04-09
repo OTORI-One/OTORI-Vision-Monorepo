@@ -14,10 +14,43 @@ import { usePortfolio } from '../src/hooks/usePortfolio';
 import { useOVTPrice } from '../src/hooks/useOVTPrice';
 import dynamic from 'next/dynamic';
 import useRuneIntegration from '../src/hooks/useRuneIntegration';
+import axios from 'axios';
+import { base64ToHex } from '../src/utils/hexUtils';
 
 // Import client-only components with dynamic imports
 const PriceChart = dynamic(() => import('../components/PriceChart'), { ssr: false });
 const NAVDisplay = dynamic(() => import('../components/NAVDisplay'), { ssr: false });
+
+// Define the broadcast function
+const broadcastTransaction = async (signedPsbtBase64: string): Promise<{ txid: string }> => {
+  try {
+    const psbtHex = base64ToHex(signedPsbtBase64);
+    console.log("Broadcasting PSBT Hex:", psbtHex);
+    
+    // Use Signet API endpoint
+    const response = await axios.post('https://mempool.space/signet/api/tx', psbtHex, {
+      headers: {
+        'Content-Type': 'text/plain' // Required by mempool.space API
+      }
+    });
+
+    if (response.status !== 200 || typeof response.data !== 'string' || response.data.length !== 64) {
+      console.error("Broadcast failed. Response Status:", response.status, "Data:", response.data);
+      throw new Error(`Failed to broadcast transaction. API returned status ${response.status}: ${response.data}`);
+    }
+    
+    const txid = response.data;
+    console.log("Broadcast successful. TXID:", txid);
+    return { txid };
+
+  } catch (error) {
+    console.error("Error broadcasting transaction:", error);
+    const message = axios.isAxiosError(error) && error.response?.data 
+      ? `Broadcast failed: ${error.response.data}` 
+      : error instanceof Error ? error.message : "Unknown broadcast error";
+    throw new Error(message);
+  }
+};
 
 export default function Dashboard() {
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
@@ -27,7 +60,7 @@ export default function Dashboard() {
   const [networkError, setNetworkError] = useState<string | null>(null);
   const [isTradingActionLoading, setIsTradingActionLoading] = useState<boolean>(false);
   const [currentStepMessage, setCurrentStepMessage] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<React.ReactNode | null>(null);
   const previousNavRef = useRef<number>(0);
   const lastCurrencyRef = useRef<string | null>(null);
   
@@ -77,7 +110,7 @@ export default function Dashboard() {
   
   useEffect(() => {
     if (typeof window === 'undefined') return; 
-    const walletAddress = address || network;
+    const walletAddress = address;
     if (walletAddress) {
       setConnectedAddress(walletAddress);
       setIsAdmin(isAdminWallet(walletAddress));
@@ -85,63 +118,87 @@ export default function Dashboard() {
       setConnectedAddress(null);
       setIsAdmin(false);
     }
-  }, [network, address]);
+  }, [address]);
   
   const handleBuy = async () => {
     if (!connectedAddress || typeof sendBTC !== 'function') {
         setNetworkError("Wallet not connected or sendBTC function unavailable.");
+        setCurrentStepMessage(null);
+        setIsTradingActionLoading(false);
         return;
     }
     if (!buyAmount || parseFloat(buyAmount) <= 0) {
         setNetworkError("Please enter a valid amount to buy.");
+        setCurrentStepMessage(null);
+        setIsTradingActionLoading(false);
         return;
     }
     if (!metadata) {
         setNetworkError("Token metadata not loaded yet. Please wait.");
+        setCurrentStepMessage(null);
+        setIsTradingActionLoading(false);
         return;
     }
 
     setNetworkError(null);
     setSuccessMessage(null);
     setIsTradingActionLoading(true);
-    setCurrentStepMessage("Preparing buy transaction...");
+    setCurrentStepMessage("Step 1/3: Preparing buy transaction...");
 
     try {
       const amount = parseFloat(buyAmount);
       const prepResult = await prepareBuyOVT(amount);
 
       if (!prepResult.success || !prepResult.orderId || !prepResult.paymentDetails) {
-        throw new Error(prepResult.error || "Failed to prepare buy transaction.");
+        throw new Error(prepResult.error || "Failed to prepare buy transaction. Check backend logs.");
       }
 
       const { orderId, paymentDetails } = prepResult;
       const { recipientAddress, amountSats, memo } = paymentDetails;
 
-      setCurrentStepMessage(`Prepared Order ${orderId}. Please confirm sending ${amountSats} sats to ${recipientAddress} in your wallet.`);
+      setCurrentStepMessage(`Step 2/3: Please confirm sending ${amountSats} sats to the LP in your wallet.`);
 
       console.log(`Requesting BTC payment via LaserEyes: ${amountSats} sats to ${recipientAddress}`);
-      const txid = await sendBTC(recipientAddress, amountSats);
+      const txid = await sendBTC(recipientAddress, Number(amountSats));
 
       if (!txid) {
-          throw new Error("BTC payment failed or was cancelled by the user (no txid returned).");
+          throw new Error("BTC payment failed or was cancelled in wallet.");
       }
       const btcTxId = txid;
-      console.log(`BTC Payment successful: ${btcTxId}`);
-      setCurrentStepMessage(`Payment sent (${btcTxId}). Confirming OVT transfer...`);
+      console.log(`BTC Payment broadcasted: ${btcTxId}`);
+      setCurrentStepMessage(`Step 3/3: Payment sent (${btcTxId.substring(0, 10)}...). Confirming OVT transfer with backend...`);
 
       const confirmResult = await confirmBuyOVT(orderId, btcTxId);
 
       if (!confirmResult.success) {
-        throw new Error(confirmResult.error || "Failed to confirm purchase after payment.");
+        const errorDetail = confirmResult.error ? `: ${confirmResult.error}` : '. Check backend logs.';
+        throw new Error(`Failed to confirm purchase after payment${errorDetail}`);
       }
 
       console.log("Buy Confirmation successful:", confirmResult);
-      setSuccessMessage(`Successfully purchased ${amount} OVT! OVT TxID: ${confirmResult.ovtTxId || confirmResult.txid}`);
+      const displayAmount = formatTokenAmount(amount * Math.pow(10, metadata.divisibility), metadata.divisibility);
+      const ovtTxId = confirmResult.ovtTxId || confirmResult.txid;
+      const ovtTxLink = ovtTxId ? `https://mempool.space/signet/tx/${ovtTxId}` : null;
+      
+      setSuccessMessage(
+        <span>
+          Successfully initiated purchase of {displayAmount} OVT! 
+          {ovtTxLink ? (
+            <a href={ovtTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800">
+              View OVT Tx ({ovtTxId?.substring(0, 10)}...)
+            </a>
+          ) : (
+            `(OVT Tx: ${ovtTxId?.substring(0, 10)}...)`
+          )}
+        </span>
+      );
       setBuyAmount('');
 
     } catch (error) {
        console.error('Buy process failed:', error);
-       setNetworkError(error instanceof Error ? error.message : "An unknown error occurred during the buy process.");
+       const message = error instanceof Error ? error.message : "An unknown error occurred during the buy process.";
+       const stepInfo = currentStepMessage ? ` (Failed at: ${currentStepMessage})` : '';
+       setNetworkError(`${message}${stepInfo}`);
     } finally {
       setIsTradingActionLoading(false);
       setCurrentStepMessage(null);
@@ -150,81 +207,94 @@ export default function Dashboard() {
   
   const handleSell = async () => {
     if (!connectedAddress || typeof signPsbt !== 'function') {
-        setNetworkError("Wallet not connected or signing function unavailable (verify LaserEyes API).");
+        setNetworkError("Wallet not connected or signing function unavailable.");
+        setCurrentStepMessage(null);
+        setIsTradingActionLoading(false);
         return;
     }
      if (!sellAmount || parseFloat(sellAmount) <= 0) {
         setNetworkError("Please enter a valid amount to sell.");
+        setCurrentStepMessage(null);
+        setIsTradingActionLoading(false);
         return;
     }
      if (!metadata) {
         setNetworkError("Token metadata not loaded yet. Please wait.");
+        setCurrentStepMessage(null);
+        setIsTradingActionLoading(false);
         return;
     }
 
     setNetworkError(null);
     setSuccessMessage(null);
     setIsTradingActionLoading(true);
-    setCurrentStepMessage("Preparing sell transaction...");
+    setCurrentStepMessage("Step 1/4: Preparing sell transaction...");
 
     try {
       const amount = parseFloat(sellAmount);
       const prepResult = await prepareSellOVT(amount);
 
       if (!prepResult.success || !prepResult.orderId || !prepResult.psbtBase64) {
-          throw new Error(prepResult.error || "Failed to prepare sell transaction. Invalid response.");
+          throw new Error(prepResult.error || "Failed to prepare sell transaction. Check backend logs.");
       }
       
-      const { orderId, psbtBase64 } = prepResult;
+      const { orderId, psbtBase64, amountOvtRaw } = prepResult;
+      const displayAmount = formatTokenAmount(amountOvtRaw, metadata.divisibility);
       
-      setCurrentStepMessage(`Prepared Order ${orderId}. Please sign the transaction in your wallet to transfer OVT.`);
+      setCurrentStepMessage(`Step 2/4: Please sign the transaction in your wallet to transfer ${displayAmount} OVT to the LP.`);
 
-      console.log("Requesting PSBT signature via LaserEyes for PSBT:", psbtBase64);
+      console.log("Requesting PSBT signature via LaserEyes for PSBT:", psbtBase64.substring(0, 30) + "...");
       const signedPsbtResult = await signPsbt(psbtBase64);
 
       if (!signedPsbtResult || !signedPsbtResult.signedPsbtBase64) {
-          throw new Error("PSBT signing failed or was cancelled by the user.");
+          throw new Error("PSBT signing failed or was cancelled in wallet.");
       }
       const signedPsbtBase64 = signedPsbtResult.signedPsbtBase64;
-      console.log(`PSBT Signed successfully (Base64):`, signedPsbtBase64);
-      setCurrentStepMessage(`Transaction signed. Broadcasting OVT transfer...`);
+      console.log(`PSBT Signed successfully.`);
+      setCurrentStepMessage(`Step 3/4: Transaction signed. Broadcasting OVT transfer...`);
 
-      const broadcastResponse = await mockBroadcastTransaction(signedPsbtBase64);
+      const broadcastResponse = await broadcastTransaction(signedPsbtBase64);
       
-      if (!broadcastResponse || !broadcastResponse.txid) {
-          throw new Error("Failed to broadcast the signed OVT transfer transaction.");
-      }
       const ovtTxId = broadcastResponse.txid;
       console.log(`OVT Transfer broadcasted: ${ovtTxId}`);
-      setCurrentStepMessage(`OVT transfer broadcasted (${ovtTxId}). Confirming sale and BTC payment...`);
+      setCurrentStepMessage(`Step 4/4: OVT transfer broadcasted (${ovtTxId.substring(0,10)}...). Confirming sale and BTC payment from LP...`);
 
       const confirmResult = await confirmSellOVT(orderId, ovtTxId);
 
       if (!confirmResult.success) {
-        throw new Error(confirmResult.error || "Failed to confirm sale after OVT transfer.");
+         const errorDetail = confirmResult.error ? `: ${confirmResult.error}` : '. Check backend logs.';
+        throw new Error(`Failed to confirm sale after OVT transfer${errorDetail}`);
       }
 
       console.log("Sell Confirmation successful:", confirmResult);
-      setSuccessMessage(`Successfully sold ${amount} OVT! Payment TxID: ${confirmResult.btcTxId || confirmResult.txid}`);
+      const btcTxId = confirmResult.btcTxId || confirmResult.txid;
+      const btcTxLink = btcTxId ? `https://mempool.space/signet/tx/${btcTxId}` : null;
+      
+      setSuccessMessage(
+        <span>
+          Successfully initiated sale of {displayAmount} OVT! 
+          {btcTxLink ? (
+            <a href={btcTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800">
+              View Payment Tx ({btcTxId?.substring(0, 10)}...)
+            </a>
+          ) : (
+            `(Payment Tx: ${btcTxId?.substring(0, 10)}...)`
+          )}
+        </span>
+      );
       setSellAmount('');
 
     } catch (error) {
       console.error('Sell process failed:', error);
-      setNetworkError(error instanceof Error ? error.message : "An unknown error occurred during the sell process.");
+      const message = error instanceof Error ? error.message : "An unknown error occurred during the sell process.";
+       const stepInfo = currentStepMessage ? ` (Failed at: ${currentStepMessage})` : '';
+       setNetworkError(`${message}${stepInfo}`);
     } finally {
       setIsTradingActionLoading(false);
       setCurrentStepMessage(null);
     }
   };
   
-  const mockBroadcastTransaction = async (signedPsbtBase64: string): Promise<{ txid: string } | null> => {
-    console.warn("Using MOCK broadcastTransaction. Replace with actual implementation.");
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    const mockTx = "mock_ovt_tx_" + Date.now().toString().slice(-6);
-    console.log("Mock Broadcast TXID:", mockTx);
-    return { txid: mockTx };
-  };
-
   const isActionLoading = isTradingActionLoading || runesHookLoading || ovtPriceLoading;
 
   return (
@@ -288,22 +358,22 @@ export default function Dashboard() {
         </div>
         
         {currentStepMessage && (
-            <div className="bg-blue-100 border border-blue-400 text-blue-700 p-4 mb-4 rounded-lg"> 
-                <p>{currentStepMessage}</p> 
+            <div className="bg-blue-100 border border-blue-400 text-blue-700 p-4 mb-4 rounded-lg mx-auto max-w-4xl"> 
+                 <p><ArrowPathIcon className="h-5 w-5 inline-block animate-spin mr-2"/> {currentStepMessage}</p> 
             </div> 
         )} 
         {networkError && ( 
-          <div className="bg-red-100 border border-red-400 text-red-700 p-4 mb-4 rounded-lg"> 
+          <div className="bg-red-100 border border-red-400 text-red-700 p-4 mb-4 rounded-lg mx-auto max-w-4xl"> 
             <p>{networkError}</p> 
           </div> 
         )} 
         {successMessage && ( 
-          <div className="bg-green-100 border border-green-400 text-green-700 p-4 mb-4 rounded-lg"> 
+          <div className="bg-green-100 border border-green-400 text-green-700 p-4 mb-4 rounded-lg mx-auto max-w-4xl"> 
             <p>{successMessage}</p> 
           </div> 
         )} 
         
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 px-4">
           <div className="lg:col-span-2 bg-white border border-primary rounded-lg shadow-sm p-4">
             <div className="flex justify-between items-center mb-4">
               <h2 className="text-xl font-semibold text-primary">Portfolio Performance</h2>
@@ -332,15 +402,19 @@ export default function Dashboard() {
                 <div className="flex justify-between items-center">
                   <span className="text-primary">Current Price:</span>
                   <span className="text-primary font-medium text-lg">
-                    {currency === 'usd' ? usdPriceFormatted : btcPriceFormatted}
+                    {ovtPriceLoading ? 'Loading...' : (currency === 'usd' ? usdPriceFormatted : btcPriceFormatted)}
                   </span>
                 </div>
                 
                 <div className="flex justify-between items-center">
                   <span className="text-primary">24h Change:</span>
-                  <span className={`font-medium ${displayedChangePercentage.isPositive ? 'text-success' : 'text-error'}`}>
-                    {displayedChangePercentage.changeText}
-                  </span>
+                   {ovtPriceLoading ? (
+                     <span className="text-primary font-medium">Loading...</span>
+                   ) : (
+                     <span className={`font-medium ${displayedChangePercentage.isPositive ? 'text-success' : 'text-error'}`}>
+                       {displayedChangePercentage.changeText}
+                     </span>
+                   )}
                 </div>
               </div>
             </div>
@@ -356,16 +430,18 @@ export default function Dashboard() {
                       type="number"
                       value={buyAmount}
                       onChange={(e) => setBuyAmount(e.target.value)}
-                      className="flex-grow bg-white border border-primary border-opacity-20 text-primary rounded p-2"
-                      placeholder="Amount (e.g. 100.00)"
+                      className="flex-grow bg-white border border-primary border-opacity-20 text-primary rounded p-2 focus:ring-2 focus:ring-success focus:border-transparent"
+                      placeholder={`Amount (e.g. ${metadata ? formatTokenAmount(100 * Math.pow(10, metadata.divisibility), metadata.divisibility) : '100.00'})`}
+                      min="0"
+                      step={metadata ? (1 / Math.pow(10, metadata.divisibility)).toString() : "0.01"}
                       disabled={isActionLoading}
                     />
                     <button
                       onClick={handleBuy}
-                      disabled={isActionLoading || !buyAmount}
-                      className="bg-success hover:bg-success/80 text-white rounded px-4 py-2 disabled:opacity-50"
+                      disabled={isActionLoading || !buyAmount || parseFloat(buyAmount) <= 0}
+                      className="bg-success hover:bg-success/80 text-white rounded px-4 py-2 disabled:opacity-50 flex items-center justify-center min-w-[80px]"
                     >
-                      {isTradingActionLoading ? 'Processing...' : 'Buy'}
+                       {isActionLoading && currentStepMessage?.includes('buy') ? <ArrowPathIcon className="h-5 w-5 animate-spin"/> : 'Buy'}
                     </button>
                   </div>
                 </div>
@@ -377,16 +453,18 @@ export default function Dashboard() {
                       type="number"
                       value={sellAmount}
                       onChange={(e) => setSellAmount(e.target.value)}
-                      className="flex-grow bg-white border border-primary border-opacity-20 text-primary rounded p-2"
-                      placeholder="Amount (e.g. 50.00)"
+                      className="flex-grow bg-white border border-primary border-opacity-20 text-primary rounded p-2 focus:ring-2 focus:ring-error focus:border-transparent"
+                      placeholder={`Amount (e.g. ${metadata ? formatTokenAmount(50 * Math.pow(10, metadata.divisibility), metadata.divisibility) : '50.00'})`}
+                      min="0"
+                      step={metadata ? (1 / Math.pow(10, metadata.divisibility)).toString() : "0.01"}
                       disabled={isActionLoading}
                     />
                     <button
                       onClick={handleSell}
-                      disabled={isActionLoading || !sellAmount}
-                      className="bg-error hover:bg-error/80 text-white rounded px-4 py-2 disabled:opacity-50"
+                      disabled={isActionLoading || !sellAmount || parseFloat(sellAmount) <= 0}
+                      className="bg-error hover:bg-error/80 text-white rounded px-4 py-2 disabled:opacity-50 flex items-center justify-center min-w-[80px]"
                     >
-                       {isTradingActionLoading ? 'Processing...' : 'Sell'}
+                       {isActionLoading && currentStepMessage?.includes('sell') ? <ArrowPathIcon className="h-5 w-5 animate-spin"/> : 'Sell'}
                     </button>
                   </div>
                 </div>
@@ -395,6 +473,11 @@ export default function Dashboard() {
                  )} 
               </div>
             )}
+             {!connectedAddress && (
+                 <div className="bg-white border border-primary rounded-lg shadow-sm p-4 text-center">
+                     <p className="text-primary">Connect your wallet to trade OVT.</p>
+                 </div>
+             )}
           </div>
         </div>
       </div>

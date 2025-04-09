@@ -5,7 +5,7 @@
  * Shows both Bitcoin and OVT token balances.
  */
 
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { useLaserEyes } from '@omnisat/lasereyes';
 import useRuneIntegration from '../src/hooks/useRuneIntegration';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
@@ -70,7 +70,9 @@ const WalletTokenDisplay: React.FC<WalletTokenDisplayProps> = ({ address: propAd
   const { currency } = useCurrencyToggle(); 
   const { price: ovtPriceSats } = useOVTPrice();
   const [btcBalanceSats, setBtcBalanceSats] = useState<number>(0);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoadingBtc, setIsLoadingBtc] = useState<boolean>(true);
+  const [isUpdatingOvt, setIsUpdatingOvt] = useState<boolean>(false);
+  const prevOvtBalanceRef = useRef<number>();
   
   const priceStore = useMemo(() => getPriceStore(), []);
   const [btcPrice, setBtcPrice] = useState<number>(priceStore.btcPrice?.price || 0);
@@ -88,14 +90,16 @@ const WalletTokenDisplay: React.FC<WalletTokenDisplayProps> = ({ address: propAd
     getBalance, 
     formatTokenAmount, // This formats the raw balance based on divisibility
     metadata,
-    isConnected
+    isConnected,
+    isLoading: isLoadingOvt
   } = useRuneIntegration();
 
   const address = propAddress || walletAddress;
   
   // Fetch Bitcoin balance when address changes
   useEffect(() => {
-    setIsLoading(true);
+    let isMounted = true;
+    setIsLoadingBtc(true);
     setBtcBalanceSats(0); // Reset balance on address change
     
     // Only fetch balances if we have an address
@@ -106,24 +110,24 @@ const WalletTokenDisplay: React.FC<WalletTokenDisplayProps> = ({ address: propAd
           // First try using LaserEyes
           const utxos = await getUtxos(address);
           const totalSats = utxos.reduce((sum: number, utxo: UTXO) => sum + utxo.value, 0);
-          setBtcBalanceSats(Number(totalSats) || 0); // Ensure it's a number
+          if (isMounted) setBtcBalanceSats(Number(totalSats) || 0); // Ensure it's a number
         } catch (error) {
           console.warn('Error fetching BTC balance from LaserEyes, falling back to mempool.space:', error);
           // Fallback to direct signet mempool.space API if LaserEyes fails
           try {
             const response = await axios.get(`https://mempool.space/signet/api/address/${address}/utxo`);
-            if (response.data && Array.isArray(response.data)) {
+            if (isMounted && response.data && Array.isArray(response.data)) {
               const totalSats = response.data.reduce((sum: number, utxo: any) => sum + utxo.value, 0);
-              setBtcBalanceSats(Number(totalSats) || 0); // Ensure it's a number
+              if (isMounted) setBtcBalanceSats(Number(totalSats) || 0); // Ensure it's a number
             } else {
-              setBtcBalanceSats(0);
+              if (isMounted) setBtcBalanceSats(0);
             }
           } catch (signetError) {
             console.error('Error fetching BTC balance from signet explorer:', signetError);
-            setBtcBalanceSats(0);
+            if (isMounted) setBtcBalanceSats(0);
           }
         } finally {
-          setIsLoading(false);
+          if (isMounted) setIsLoadingBtc(false);
         }
       };
       
@@ -132,10 +136,24 @@ const WalletTokenDisplay: React.FC<WalletTokenDisplayProps> = ({ address: propAd
       // Assuming useRuneIntegration fetches its own balance internally now
       // getBalance(address).catch(console.error);
     } else {
-      setIsLoading(false);
+      setIsLoadingBtc(false);
     }
+    
+    return () => { isMounted = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [address, getUtxos]);
+  
+  // Effect to detect OVT balance changes and trigger flash
+  useEffect(() => {
+    // Only trigger flash if balance has actually changed and is not the initial undefined/null value
+    if (prevOvtBalanceRef.current !== undefined && ovtBalance !== prevOvtBalanceRef.current) {
+      setIsUpdatingOvt(true);
+      const timer = setTimeout(() => setIsUpdatingOvt(false), 1500); // Flash duration 1.5s
+      return () => clearTimeout(timer);
+    }
+    // Store current balance for next comparison
+    prevOvtBalanceRef.current = ovtBalance;
+  }, [ovtBalance]);
   
   // Calculate OVT value in Sats for formatting
   const ovtValueSats = useMemo(() => {
@@ -156,7 +174,8 @@ const WalletTokenDisplay: React.FC<WalletTokenDisplayProps> = ({ address: propAd
   }
   
   // Show loading state
-  if (isLoading) {
+  const isLoading = isLoadingBtc || isLoadingOvt;
+  if (isLoading && ovtBalance === undefined) {
     return (
       <div className="p-4 bg-gray-100 rounded-lg">
         <p className="text-center text-gray-600">Loading balances...</p>
@@ -165,31 +184,54 @@ const WalletTokenDisplay: React.FC<WalletTokenDisplayProps> = ({ address: propAd
   }
   
   return (
-    <div className="wallet-token-display">
+    <div className="wallet-token-display space-y-4">
       <h1 className="text-2xl font-bold mb-4">Your Tokens</h1>
       
       {/* Bitcoin Balance */}
-      <TokenCard 
-        symbol="BTC" 
-        name="Bitcoin" 
-        balance={Number(btcBalanceSats) || 0} // Pass raw number
-        // Use the central formatter based on currency mode
-        formattedBalance={formatSatsToCurrency(btcBalanceSats, 'btc', btcPrice)} 
-        usdValue={formatSatsToCurrency(btcBalanceSats, 'usd', btcPrice)} 
-        icon="/images/bitcoin.svg" 
-      />
+      <div className="flex items-center p-4 bg-white rounded-lg shadow-md">
+        <div className="flex-shrink-0 mr-4">
+          <img src="/images/bitcoin.svg" alt="BTC icon" className="w-12 h-12" />
+        </div>
+        <div className="flex-grow">
+          <h2 className="text-xl font-semibold">Bitcoin</h2>
+          <p className="text-gray-600">BTC</p>
+        </div>
+        <div className="text-right">
+          {isLoadingBtc ? (
+            <div className="text-sm text-gray-500">Loading...</div>
+          ) : (
+            <>
+              <div className="text-xl font-bold">{formatSatsToCurrency(btcBalanceSats, 'btc', btcPrice)}</div>
+              <div className="text-sm text-gray-500">{formatSatsToCurrency(btcBalanceSats, 'usd', btcPrice)}</div>
+            </>
+          )}
+        </div>
+      </div>
       
       {/* OVT Token Balance */}
-      <TokenCard 
-        symbol="OVT" 
-        name={metadata?.name || "OTORI Vision Token"} 
-        balance={Number(ovtBalance) || 0} // Pass raw number
-        // Use formatTokenAmount for the OVT *amount* display
-        formattedBalance={formatTokenAmount(ovtBalance, metadata?.divisibility || 2)} 
-        // Use the central formatter for the OVT *value* display (in USD or BTC)
-        usdValue={formatSatsToCurrency(ovtValueSats, currency , btcPrice)} 
-        icon="/images/ovt.svg" 
-      />
+      <div className={`flex items-center p-4 bg-white rounded-lg shadow-md transition-colors duration-300 ${isUpdatingOvt ? 'balance-update-flash' : ''}`}>
+        <div className="flex-shrink-0 mr-4">
+          <img src="/images/ovt.svg" alt="OVT icon" className="w-12 h-12" />
+        </div>
+        <div className="flex-grow">
+          <h2 className="text-xl font-semibold">{metadata?.name || "OTORI Vision Token"}</h2>
+          <p className="text-gray-600">{metadata?.ticker || "OVT"}</p>
+        </div>
+        <div className="text-right">
+          {isLoadingOvt && ovtBalance === undefined ? (
+             <div className="text-sm text-gray-500">Loading...</div>
+          ) : (
+            <>
+              <div className="text-xl font-bold">
+                {formatTokenAmount(ovtBalance ?? 0, metadata?.divisibility || 2)}
+              </div>
+              <div className="text-sm text-gray-500">
+                {formatSatsToCurrency(ovtValueSats, currency , btcPrice)}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 };
