@@ -1262,7 +1262,9 @@ runesRouter.use((req, res, next) => {
   next();
 });
 
-// Update the /ovt/buy endpoint to use the trading service for real token transfers
+// Add a simple in-memory store for pending orders
+const pendingOrders = new Map(); // Stores orderId -> { fromAddress, amount, price, timestamp }
+
 runesRouter.post('/ovt/buy', async (req, res) => {
   try {
     const { fromAddress, amount, maxPrice, signature, pubkey } = req.body;
@@ -1274,58 +1276,36 @@ runesRouter.post('/ovt/buy', async (req, res) => {
       });
     }
     
-    console.log(`Processing buy request: ${amount} OVT from ${fromAddress}`);
+    console.log(`[2Step Buy Prep] Processing request: ${amount} OVT from ${fromAddress}`);
     
-    // 1. Verify the signature if provided
-    let isSignatureValid = true;
-    if (signature && pubkey) {
-      // In a real implementation, we would verify the signature here
-      // For example: isSignatureValid = verifySignature(message, signature, pubkey);
-      console.log(`Signature verification: ${isSignatureValid ? 'valid' : 'invalid'}`);
-    }
-    
-    if (!isSignatureValid) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid signature'
-      });
-    }
+    // 1. Verify the signature if provided (Optional step)
+    // ... (keep existing signature logic if needed)
     
     // 2. Check for sufficient BTC balance using CHEERIO scraping
     let btcBalance = 0;
     try {
-      // --- Reusing Cheerio logic from /ovt/balances --- 
-      const ordServerHost = 'http://localhost:9191'; // Use localhost for scraping
+      const ordServerHost = 'http://localhost:9191';
       const ordServerUrl = `${ordServerHost}/address/${fromAddress}`;
-      console.log(`[Buy Prep] Querying local ord server for balance: ${ordServerUrl}`);
-      
+      console.log(`[2Step Buy Prep] Querying user balance: ${ordServerUrl}`);
       const response = await axios.get(ordServerUrl, { timeout: 5000 });
       const $ = cheerio.load(response.data);
-      
-      // Extract Sat Balance
       $('dt').each((index, element) => {
         if ($(element).text().trim() === 'sat balance') {
           btcBalance = parseInt($(element).next('dd').text().trim().replace(/,/g, ''), 10) || 0;
         }
       });
-      console.log(`[Buy Prep] Scraped BTC balance for address ${fromAddress}: ${btcBalance} sats`);
-      // --- End Cheerio logic ---
-
+      console.log(`[2Step Buy Prep] Scraped BTC balance for ${fromAddress}: ${btcBalance} sats`);
     } catch (error) {
       const errorMessage = error.response ? `Status ${error.response.status}` : error.message;
-      console.error(`[Buy Prep] Error scraping balance for ${fromAddress}: ${errorMessage}`);
-      // Do not fall back to utxoService, fail the request if scraping fails
-      return res.status(503).json({
-        success: false,
-        error: 'Service unavailable: Could not verify user balance.'
-      });
+      console.error(`[2Step Buy Prep] Error scraping balance: ${errorMessage}`);
+      return res.status(503).json({ success: false, error: 'Service unavailable: Could not verify user balance.' });
     }
     
-    // 3. Calculate the current price and check against maxPrice if specified
-    // --- REMOVED getRemoteLPInfo ---
-    // Use NAV-based price fetched later or implement Phase 2 price fetching here
-    const currentPrice = 700; // TEMPORARY PLACEHOLDER - Phase 2 requires fetching from price-api
-    
+    // 3. Fetch the current OVT price from price-api (Phase 2)
+    // TEMPORARY PLACEHOLDER PRICE - Replace with actual API call in Phase 2
+    const currentPrice = 700; // TODO: Replace with fetch from price-api
+    console.log(`[2Step Buy Prep] Using price: ${currentPrice} sats`);
+
     if (maxPrice && currentPrice > maxPrice) {
       return res.status(400).json({
         success: false,
@@ -1333,69 +1313,67 @@ runesRouter.post('/ovt/buy', async (req, res) => {
       });
     }
     
-    // 4. Calculate total cost in sats
-    const totalCost = amount * currentPrice;
-    
-    // Add estimated fee for the transaction
-    const estimatedFee = utxoService.calculateEstimatedFee(1, 2);
-    const totalRequired = totalCost + estimatedFee;
+    // 4. Calculate total cost and check balance
+    const costSats = Math.floor(amount * currentPrice); // Ensure integer
+    // Use a generic, slightly higher fee estimate for the user's payment transaction
+    const estimatedUserFeeSats = 1000; // Example: 1000 sats, adjust as needed
+    const totalRequired = costSats + estimatedUserFeeSats;
     
     if (btcBalance < totalRequired) {
       return res.status(400).json({
         success: false,
-        error: `Insufficient balance. Required: ${totalRequired} sats (${totalCost} + ${estimatedFee} fee), Available: ${btcBalance} sats`
+        error: `Insufficient balance. Required: ~${totalRequired} sats (${costSats} + ${estimatedUserFeeSats} fee), Available: ${btcBalance} sats`
       });
     }
     
-    // 5. Execute the buy order using the trading service
-    // This will transfer OVT tokens from the LP wallet to the buyer
-    const orderResult = await tradingService.executeBuyOrder({
-      address: fromAddress,
-      amount: amount,
-      price: currentPrice
+    // 5. Generate Order ID and Store Pending Order
+    const orderId = `ovt-buy-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+    pendingOrders.set(orderId, {
+      fromAddress,
+      amount,
+      price: currentPrice, // Store the price used for this order
+      costSats,          // Store the calculated cost
+      timestamp: Date.now()
     });
-    
-    if (!orderResult.success) {
-      return res.status(500).json({
-        success: false,
-        error: `Failed to execute buy order: ${orderResult.error}`
-      });
+    console.log(`[2Step Buy Prep] Pending order stored: ${orderId}`);
+
+    // 6. Prepare Payment Details for Frontend
+    // Use an environment variable for the BTC receiving address
+    const paymentRecipientAddress = process.env.LP_BTC_RECEIVING_ADDRESS; 
+    if (!paymentRecipientAddress) {
+        console.error("[2Step Buy Prep] CRITICAL: LP_BTC_RECEIVING_ADDRESS environment variable not set!");
+        return res.status(500).json({ success: false, error: 'Internal server configuration error.' });
     }
-    
-    // 6. Return the transaction information
+
+    const paymentDetails = {
+      recipientAddress: paymentRecipientAddress,
+      amountSats: costSats, 
+      memo: `OTORI Buy ${orderId}` // Memo for user's transaction
+    };
+
+    // 7. Respond to Frontend with necessary info for Step 1 (User Payment)
     res.json({
       success: true,
-      transaction: {
-        txid: orderResult.txid,
-        type: 'BUY',
-        amount: amount,
-        price: currentPrice,
-        totalCost: totalCost,
-        estimatedFee: estimatedFee,
-        fromAddress: fromAddress,
-        toAddress: LP_ADDRESS,
-        timestamp: Date.now(),
-        status: 'confirmed',
-        rawResult: orderResult.transaction ? orderResult.transaction.rawResult : null
-      },
-      message: 'Buy transaction executed successfully'
+      orderId: orderId,
+      paymentDetails: paymentDetails,
+      message: 'Order prepared. Please send the specified BTC amount.'
     });
 
-    // --- Cache Invalidation ---
-    clearCache('distribution'); // Clear distribution cache
-    clearCache('transactions'); // Clear transaction cache
-    clearCache('balance', fromAddress); // Clear buyer's balance cache
-    clearCache('balance', LP_ADDRESS); // Clear LP's balance cache (seller)
-    // --- Cache Invalidation ---
+    // --- REMOVED executeBuyOrder and Cache Invalidation --- 
+    // Fulfillment happens in the confirmation step
 
   } catch (error) {
-    console.error('Error processing buy transaction:', error);
+    console.error('[2Step Buy Prep] Error processing buy preparation:', error);
     res.status(500).json({ 
       success: false, 
-      error: error.toString() 
+      error: 'Internal server error during buy preparation.' 
     });
   }
 });
+
+// TODO: Implement POST /api/trading/confirm-buy-payment endpoint (Phase 3, Step 2)
+// This endpoint will verify the user's BTC payment (using btcTxId) 
+// and then call tradingService.transferTokensFromLP to fulfill the order.
 
 runesRouter.post('/ovt/sell', async (req, res) => {
   try {
