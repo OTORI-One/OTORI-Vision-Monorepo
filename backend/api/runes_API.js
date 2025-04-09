@@ -1272,6 +1272,10 @@ runesRouter.post('/ovt/buy', async (req, res) => {
   try {
     const { fromAddress, amount, maxPrice, signature, pubkey } = req.body;
     
+    // --- FIX: Define divisibility early for logging ---
+    const OVT_DIVISIBILITY = 2; // Define or fetch divisibility
+    // --- END FIX ---
+
     if (!fromAddress || !amount || amount <= 0) {
       return res.status(400).json({ 
         success: false, 
@@ -1279,7 +1283,10 @@ runesRouter.post('/ovt/buy', async (req, res) => {
       });
     }
     
-    console.log(`[2Step Buy Prep] Processing request: ${amount} OVT from ${fromAddress}`);
+    // --- FIX: Log human-readable amount ---
+    const humanReadableAmountForLog = amount / Math.pow(10, OVT_DIVISIBILITY);
+    console.log(`[2Step Buy Prep] Processing request for ${humanReadableAmountForLog} OVT (Raw: ${amount}) from ${fromAddress}`);
+    // --- END FIX ---
     
     // 1. Verify the signature if provided (Optional step)
     // ... (keep existing signature logic if needed)
@@ -1336,7 +1343,6 @@ runesRouter.post('/ovt/buy', async (req, res) => {
     
     // 4. Calculate total cost and check balance
     // --- FIX: Account for divisibility (assuming 2) when calculating cost from raw amount ---
-    const OVT_DIVISIBILITY = 2; // Define or fetch divisibility
     const humanReadableAmount = amount / Math.pow(10, OVT_DIVISIBILITY);
     const costSats = Math.floor(humanReadableAmount * currentPrice); // Calculate cost based on human-readable amount
     // --- END FIX ---
