@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import Layout from '../components/Layout';
 import { useLaserEyes } from '@omnisat/lasereyes';
 import { getDataSourceIndicator } from '../src/lib/hybridModeUtils';
@@ -13,6 +13,7 @@ import useRuneIntegration from '../src/hooks/useRuneIntegration'; // Import dire
 import axios from 'axios';
 import { base64ToHex } from '../src/utils/hexUtils';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
+import { useOVTPrice } from '../src/hooks/useOVTPrice';
 // import TransactionConfirmationModal from '../components/TransactionConfirmationModal'; // Remove if not using pending tx flow from useTradingModule
 // import { useTradingModule } from '../src/hooks/useTradingModule'; // Remove useTradingModule
 
@@ -48,7 +49,7 @@ const broadcastTransaction = async (signedPsbtBase64: string): Promise<{ txid: s
 export default function TradePage() {
   const { address: walletAddress, network, sendBTC, signPsbt } = useLaserEyes(); // Get sendBTC & signPsbt
   useNAV(); 
-  useCurrencyToggle(); 
+  const { currency, formatValue } = useCurrencyToggle(); // Get formatValue
 
   const isConnected = !!walletAddress;
   
@@ -78,8 +79,17 @@ export default function TradePage() {
     error: runesHookError,
     metadata,
     formatTokenAmount,
+    balance: ovtBalance // Get balance from hook
   } = useRuneIntegration();
   
+  // Get OVT price for market display
+  const { price: ovtPriceSats, isLoading: ovtPriceLoading } = useOVTPrice();
+  
+  // Format the market price based on currency
+  const displayedMarketPrice = useMemo(() => {
+      return formatValue(ovtPriceSats); // formatValue handles sats -> currency
+  }, [formatValue, ovtPriceSats]);
+
   useEffect(() => {
     setIsMounted(true);
     if (walletAddress) {
@@ -254,7 +264,7 @@ export default function TradePage() {
   };
   // --- End Buy/Sell Handlers ---
   
-  const isActionLoading = isTradingActionLoading || runesHookLoading;
+  const isActionLoading = isTradingActionLoading || runesHookLoading || ovtPriceLoading;
 
   return (
     <Layout title="Trade OVT">
@@ -333,9 +343,6 @@ export default function TradePage() {
             walletAddress={walletAddress}
             laserEyesWallets={laserEyesWallets}
             tradingDataSource={tradingDataSource}
-            // Pass state and handlers needed by the actual TradingInterface component
-            // which is likely nested within DynamicTradingContent
-            // Example props (adjust based on TradingContent/TradingInterface needs):
             buyAmount={buyAmount}
             setBuyAmount={setBuyAmount}
             sellAmount={sellAmount}
@@ -345,6 +352,8 @@ export default function TradePage() {
             isActionLoading={isActionLoading}
             metadata={metadata}
             formatTokenAmount={formatTokenAmount}
+            ovtBalance={ovtBalance ?? 0}
+            displayedMarketPrice={displayedMarketPrice}
           />
         ) : (
            <div className="text-center p-10">Loading Trading Interface...</div>

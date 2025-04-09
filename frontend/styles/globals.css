@@ -104,4 +104,18 @@ body {
   .card {
     @apply bg-white p-6 rounded-lg shadow;
   }
-} 
+}
+
+/* Balance Update Flash Effect */
+@keyframes balance-flash {
+  0% { background-color: transparent; }
+  50% { background-color: rgba(74, 222, 128, 0.3); } /* Light green flash */
+  100% { background-color: transparent; }
+}
+
+.balance-update-flash {
+  animation: balance-flash 1.5s ease-out;
+}
+
+/* Ensure base styles allow background transitions if needed elsewhere */
+/* Example: body { transition: background-color 0.3s ease; } */ 

@@ -1,5 +1,5 @@
 import React from 'react';
-import TradingInterface from './TradingInterface';
+import { TradingInterface } from './TradingInterface';
 import { useOVTPrice } from '../src/hooks/useOVTPrice';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { useNAV } from '../src/hooks/useNAV';
@@ -27,6 +27,8 @@ interface TradingContentProps {
   isActionLoading: boolean;
   metadata: RuneMetadata | null;
   formatTokenAmount: (amount: number, divisibility?: number) => string;
+  ovtBalance: number;
+  displayedMarketPrice: string;
 }
 
 const TradingContent: React.FC<TradingContentProps> = ({
@@ -43,7 +45,9 @@ const TradingContent: React.FC<TradingContentProps> = ({
   handleSell,
   isActionLoading,
   metadata,
-  formatTokenAmount
+  formatTokenAmount,
+  ovtBalance,
+  displayedMarketPrice
 }) => {
   const { nav, loading: navLoading, error: navError } = useNAV();
   const { 
@@ -121,7 +125,7 @@ const TradingContent: React.FC<TradingContentProps> = ({
          <div className="bg-card border border-border shadow-sm p-4 rounded">
           <h3 className="text-sm font-medium text-muted-foreground pb-2">OVT Price</h3>
           <div className="text-2xl font-bold">
-             {formattedOvtPrice}
+             {displayedMarketPrice}
              {priceLoading && <span className="text-xs text-muted-foreground ml-2">(Updating...)</span>}
           </div>
         </div>
@@ -146,6 +150,8 @@ const TradingContent: React.FC<TradingContentProps> = ({
             isActionLoading={isActionLoading}
             metadata={metadata}
             formatTokenAmount={formatTokenAmount}
+            ovtBalance={ovtBalance}
+            displayedMarketPrice={displayedMarketPrice}
          />
       </div>
 
