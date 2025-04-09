@@ -6,6 +6,7 @@ import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
 import { formatSatsToCurrency, formatNumber } from '../src/utils/formatters';
 import PriceChart from './PriceChart';
+import { RuneMetadata } from '../src/hooks/useRuneIntegration';
 
 interface TradingContentProps {
   isConnected: boolean;
@@ -17,6 +18,15 @@ interface TradingContentProps {
     label: string;
     color: string;
   };
+  buyAmount: string;
+  setBuyAmount: (value: string) => void;
+  sellAmount: string;
+  setSellAmount: (value: string) => void;
+  handleBuy: () => Promise<void>;
+  handleSell: () => Promise<void>;
+  isActionLoading: boolean;
+  metadata: RuneMetadata | null;
+  formatTokenAmount: (amount: number, divisibility?: number) => string;
 }
 
 const TradingContent: React.FC<TradingContentProps> = ({
@@ -24,7 +34,16 @@ const TradingContent: React.FC<TradingContentProps> = ({
   connectedAddress,
   walletAddress,
   laserEyesWallets,
-  tradingDataSource
+  tradingDataSource,
+  buyAmount,
+  setBuyAmount,
+  sellAmount,
+  setSellAmount,
+  handleBuy,
+  handleSell,
+  isActionLoading,
+  metadata,
+  formatTokenAmount
 }) => {
   const { nav, loading: navLoading, error: navError } = useNAV();
   const { 
@@ -117,7 +136,17 @@ const TradingContent: React.FC<TradingContentProps> = ({
 
       <div className="lg:col-span-2 bg-card border border-border shadow-sm p-4 rounded">
         <h3 className="text-lg font-bold mb-4">Trade OVT</h3>
-         <TradingInterface />
+         <TradingInterface 
+            buyAmount={buyAmount}
+            setBuyAmount={setBuyAmount}
+            sellAmount={sellAmount}
+            setSellAmount={setSellAmount}
+            handleBuy={handleBuy}
+            handleSell={handleSell}
+            isActionLoading={isActionLoading}
+            metadata={metadata}
+            formatTokenAmount={formatTokenAmount}
+         />
       </div>
 
       <div className="lg:col-span-3 bg-card border border-border shadow-sm p-4 rounded h-[300px] md:h-[400px]">

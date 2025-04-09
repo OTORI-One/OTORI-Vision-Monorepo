@@ -1,7 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import Layout from '../components/Layout';
-// import TradingInterface from '../components/TradingInterface'; // Removed
-import { useOVTPrice } from '../src/hooks/useOVTPrice'; // Keep for DynamicTradingContent potentially
 import { useLaserEyes } from '@omnisat/lasereyes';
 import { getDataSourceIndicator } from '../src/lib/hybridModeUtils';
 import WalletConnector from '../components/WalletConnector';
@@ -9,11 +7,14 @@ import CurrencyToggle from '../components/CurrencyToggle';
 import NAVDisplay from '../components/NAVDisplay';
 import { isAdminWallet } from '../src/utils/adminUtils';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
-// import { usePortfolio } from '../src/hooks/usePortfolio'; // Removed
 import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
-import TransactionConfirmationModal from '../components/TransactionConfirmationModal';
-import { useTradingModule } from '../src/hooks/useTradingModule';
+import useRuneIntegration from '../src/hooks/useRuneIntegration'; // Import directly
+import axios from 'axios';
+import { base64ToHex } from '../src/utils/hexUtils';
+import { ArrowPathIcon } from '@heroicons/react/24/outline';
+// import TransactionConfirmationModal from '../components/TransactionConfirmationModal'; // Remove if not using pending tx flow from useTradingModule
+// import { useTradingModule } from '../src/hooks/useTradingModule'; // Remove useTradingModule
 
 // Import components that depend on client-side data with dynamic import and SSR disabled
 const DynamicTradingContent = dynamic(
@@ -21,130 +22,76 @@ const DynamicTradingContent = dynamic(
   { ssr: false }
 );
 
+// Define the broadcast function (copied from index.tsx)
+const broadcastTransaction = async (signedPsbtBase64: string): Promise<{ txid: string }> => {
+  try {
+    const psbtHex = base64ToHex(signedPsbtBase64);
+    console.log("Broadcasting PSBT Hex:", psbtHex);
+    const response = await axios.post('https://mempool.space/signet/api/tx', psbtHex, {
+      headers: { 'Content-Type': 'text/plain' }
+    });
+    if (response.status !== 200 || typeof response.data !== 'string' || response.data.length !== 64) {
+      throw new Error(`Failed to broadcast transaction. API returned status ${response.status}: ${response.data}`);
+    }
+    const txid = response.data;
+    console.log("Broadcast successful. TXID:", txid);
+    return { txid };
+  } catch (error) {
+    console.error("Error broadcasting transaction:", error);
+    const message = axios.isAxiosError(error) && error.response?.data 
+      ? `Broadcast failed: ${error.response.data}` 
+      : error instanceof Error ? error.message : "Unknown broadcast error";
+    throw new Error(message);
+  }
+};
+
 export default function TradePage() {
-  // Use hooks
-  const { address: walletAddress, network } = useLaserEyes();
-  // Removed unused currency variable from useCurrencyToggle
-  // const { currency } = useCurrencyToggle(); 
-  // Removed unused nav variable from useNAV
-  // const { nav } = useNAV(); 
-  useNAV(); // Call hook to ensure NAV data is fetched/subscribed for NAVDisplay
-  useCurrencyToggle(); // Call hook to ensure currency state is managed
+  const { address: walletAddress, network, sendBTC, signPsbt } = useLaserEyes(); // Get sendBTC & signPsbt
+  useNAV(); 
+  useCurrencyToggle(); 
 
   const isConnected = !!walletAddress;
   
-  // Client-side state
   const [isMounted, setIsMounted] = useState(false);
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [laserEyesWallets, setLaserEyesWallets] = useState<string[]>([]);
   
-  // Trade form state
+  // State for trading actions (mirroring index.tsx)
   const [buyAmount, setBuyAmount] = useState<string>('');
   const [sellAmount, setSellAmount] = useState<string>('');
-  const [lastTradeStatus, setLastTradeStatus] = useState<{success: boolean, message: string} | null>(null);
-  
+  const [networkError, setNetworkError] = useState<string | null>(null);
+  const [isTradingActionLoading, setIsTradingActionLoading] = useState<boolean>(false);
+  const [currentStepMessage, setCurrentStepMessage] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<React.ReactNode | null>(null); // Allow JSX
+
   // Get data source indicator for trading
   const tradingDataSource = getDataSourceIndicator('trading');
-  
-  // Confirmation modal state
-  const [showConfirmation, setShowConfirmation] = useState<boolean>(false);
-  const [isProcessingTx, setIsProcessingTx] = useState<boolean>(false);
-  
-  // Use our trading module
+
+  // Use useRuneIntegration directly
   const { 
-    buyOVT, 
-    sellOVT, 
-    // getMarketPrice, // Removed
-    isLoading,
-    // tradeHistory, // Removed
-    // error, // Removed
-    pendingTransaction,
-    setPendingTransaction,
-    executeTransaction, // Still used in handleConfirmTransaction
-    // dataSource // Removed
-  } = useTradingModule();
+    prepareBuyOVT,
+    confirmBuyOVT,
+    prepareSellOVT,
+    confirmSellOVT,
+    isLoading: runesHookLoading,
+    error: runesHookError,
+    metadata,
+    formatTokenAmount,
+  } = useRuneIntegration();
   
-  // Mark component as mounted to prevent hydration issues
   useEffect(() => {
     setIsMounted(true);
-    
-    // For development, allow any connected wallet to trade
     if (walletAddress) {
       setLaserEyesWallets([walletAddress]);
-    }
-    
-    // NAV data is now handled by the useNAV hook and WebSocket connection
-    // No need to manually refresh here
-  }, [walletAddress]);
-  
-  // Update wallet connection status when address changes
-  useEffect(() => {
-    if (walletAddress) {
       setConnectedAddress(walletAddress);
-      // Check if the connected wallet is an admin wallet
       setIsAdmin(isAdminWallet(walletAddress));
     } else {
       setConnectedAddress(null);
       setIsAdmin(false);
     }
   }, [walletAddress]);
-  
-  // Handle pending transactions (confirmation flow)
-  useEffect(() => {
-    if (pendingTransaction) {
-      setShowConfirmation(true);
-    }
-  }, [pendingTransaction]);
 
-  // Cancel a pending transaction
-  const handleCancelTransaction = () => {
-    setPendingTransaction(null);
-    setShowConfirmation(false);
-  };
-
-  // Confirm and execute a transaction
-  const handleConfirmTransaction = async () => {
-    if (!pendingTransaction) return;
-    
-    setIsProcessingTx(true);
-    setLastTradeStatus(null); // Clear previous status messages
-    
-    try {
-      const result = await executeTransaction(pendingTransaction);
-      console.log('Transaction executed:', result);
-      
-      // Show success message
-      if (pendingTransaction.type === 'buy') {
-        setLastTradeStatus({
-          success: true,
-          message: `Successfully purchased ${pendingTransaction.amount} OVT at ${pendingTransaction.price} sats per token`
-        });
-      } else {
-        setLastTradeStatus({
-          success: true,
-          message: `Successfully sold ${pendingTransaction.amount} OVT at ${pendingTransaction.price} sats per token`
-        });
-      }
-      
-      // Reset form
-      if (pendingTransaction.type === 'buy') {
-        setBuyAmount('');
-      } else {
-        setSellAmount('');
-      }
-    } catch (err) {
-      console.error('Transaction failed:', err);
-      setLastTradeStatus({
-        success: false,
-        message: err instanceof Error ? err.message : 'Transaction failed'
-      });
-    } finally {
-      setIsProcessingTx(false);
-      setShowConfirmation(false);
-    }
-  };
-  
   // Wallet connection handlers
   const handleConnectWallet = (address: string) => {
     setConnectedAddress(address);
@@ -155,156 +102,265 @@ export default function TradePage() {
     setConnectedAddress(null);
     setIsAdmin(false);
   };
-  
-  // Update buy handler
-  const handleBuy = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!isConnected) {
-      setLastTradeStatus({
-        success: false,
-        message: 'Please connect your wallet first'
-      });
-      return;
+
+  // --- Buy/Sell Handlers (copied & adapted from index.tsx) ---
+  const handleBuy = async (/* Removed e: React.FormEvent */) => {
+    // e.preventDefault(); // Not needed if called directly onClick
+
+    if (!connectedAddress || typeof sendBTC !== 'function') {
+        setNetworkError("Wallet not connected or sendBTC function unavailable.");
+        setCurrentStepMessage(null);
+        setIsTradingActionLoading(false);
+        return;
     }
-    
-    const amount = parseFloat(buyAmount);
-    if (isNaN(amount) || amount <= 0) {
-      setLastTradeStatus({
-        success: false,
-        message: 'Please enter a valid amount'
-      });
-      return;
+    if (!buyAmount || parseFloat(buyAmount) <= 0) {
+        setNetworkError("Please enter a valid amount to buy.");
+        setCurrentStepMessage(null);
+        setIsTradingActionLoading(false);
+        return;
     }
-    
+    if (!metadata) {
+        setNetworkError("Token metadata not loaded yet. Please wait.");
+        setCurrentStepMessage(null);
+        setIsTradingActionLoading(false);
+        return;
+    }
+
+    setNetworkError(null);
+    setSuccessMessage(null);
+    setIsTradingActionLoading(true);
+    setCurrentStepMessage("Step 1/3: Preparing buy transaction...");
+
     try {
-      // This will trigger the confirmation flow
-      await buyOVT(amount);
+      const amount = parseFloat(buyAmount);
+      const prepResult = await prepareBuyOVT(amount);
+
+      if (!prepResult.success || !prepResult.orderId || !prepResult.paymentDetails) {
+        throw new Error(prepResult.error || "Failed to prepare buy transaction.");
+      }
+
+      const { orderId, paymentDetails } = prepResult;
+      const { recipientAddress, amountSats } = paymentDetails;
+
+      setCurrentStepMessage(`Step 2/3: Please confirm sending ${amountSats} sats in your wallet.`);
+
+      const txid = await sendBTC(recipientAddress, Number(amountSats));
+
+      if (!txid) {
+          throw new Error("BTC payment failed or was cancelled.");
+      }
+      const btcTxId = txid;
+      setCurrentStepMessage(`Step 3/3: Payment sent (${btcTxId.substring(0, 10)}...). Confirming OVT transfer...`);
+
+      const confirmResult = await confirmBuyOVT(orderId, btcTxId);
+
+      if (!confirmResult.success) {
+        throw new Error(confirmResult.error || 'Failed to confirm purchase after payment.');
+      }
+
+      const displayAmount = formatTokenAmount(amount * Math.pow(10, metadata.divisibility), metadata.divisibility);
+      const ovtTxId = confirmResult.ovtTxId || confirmResult.txid;
+      const ovtTxLink = ovtTxId ? `https://mempool.space/signet/tx/${ovtTxId}` : null;
+      
+      setSuccessMessage(
+        <span>
+          Successfully initiated purchase of {displayAmount} OVT! 
+          {ovtTxLink ? <a href={ovtTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800">View OVT Tx ({ovtTxId?.substring(0, 10)}...)</a> : `(OVT Tx: ${ovtTxId?.substring(0, 10)}...)`}
+        </span>
+      );
+      setBuyAmount('');
+
     } catch (error) {
-      console.error('Error preparing buy transaction:', error);
-      setLastTradeStatus({
-        success: false,
-        message: error instanceof Error ? error.message : 'Failed to prepare transaction'
-      });
+       const message = error instanceof Error ? error.message : "An unknown error occurred.";
+       const stepInfo = currentStepMessage ? ` (Failed at: ${currentStepMessage})` : '';
+       setNetworkError(`${message}${stepInfo}`);
+    } finally {
+      setIsTradingActionLoading(false);
+      setCurrentStepMessage(null);
     }
   };
   
-  // Update sell handler
-  const handleSell = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!isConnected) {
-      setLastTradeStatus({
-        success: false,
-        message: 'Please connect your wallet first'
-      });
-      return;
+  const handleSell = async (/* Removed e: React.FormEvent */) => {
+    // e.preventDefault(); // Not needed
+
+    if (!connectedAddress || typeof signPsbt !== 'function') {
+        setNetworkError("Wallet not connected or signing function unavailable.");
+        return;
     }
-    
-    const amount = parseFloat(sellAmount);
-    if (isNaN(amount) || amount <= 0) {
-      setLastTradeStatus({
-        success: false,
-        message: 'Please enter a valid amount'
-      });
-      return;
+     if (!sellAmount || parseFloat(sellAmount) <= 0) {
+        setNetworkError("Please enter a valid amount to sell.");
+        return;
     }
-    
+     if (!metadata) {
+        setNetworkError("Token metadata not loaded yet. Please wait.");
+        return;
+    }
+
+    setNetworkError(null);
+    setSuccessMessage(null);
+    setIsTradingActionLoading(true);
+    setCurrentStepMessage("Step 1/4: Preparing sell transaction...");
+
     try {
-      // This will trigger the confirmation flow
-      await sellOVT(amount);
+      const amount = parseFloat(sellAmount);
+      const prepResult = await prepareSellOVT(amount);
+
+      if (!prepResult.success || !prepResult.orderId || !prepResult.psbtBase64) {
+          throw new Error(prepResult.error || "Failed to prepare sell transaction.");
+      }
+      
+      const { orderId, psbtBase64, amountOvtRaw } = prepResult;
+      const displayAmount = formatTokenAmount(amountOvtRaw, metadata.divisibility); 
+      
+      setCurrentStepMessage(`Step 2/4: Please sign the transaction to transfer ${displayAmount} OVT.`);
+
+      const signedPsbtResult = await signPsbt(psbtBase64);
+
+      if (!signedPsbtResult || !signedPsbtResult.signedPsbtBase64) {
+          throw new Error("PSBT signing failed or was cancelled.");
+      }
+      const signedPsbtBase64 = signedPsbtResult.signedPsbtBase64;
+      setCurrentStepMessage(`Step 3/4: Broadcasting OVT transfer...`);
+
+      const broadcastResponse = await broadcastTransaction(signedPsbtBase64);
+      const ovtTxId = broadcastResponse.txid;
+      setCurrentStepMessage(`Step 4/4: OVT transfer broadcasted (${ovtTxId.substring(0,10)}...). Confirming sale...`);
+
+      const confirmResult = await confirmSellOVT(orderId, ovtTxId);
+
+      if (!confirmResult.success) {
+        throw new Error(confirmResult.error || 'Failed to confirm sale after OVT transfer.');
+      }
+
+      const btcTxId = confirmResult.btcTxId || confirmResult.txid;
+      const btcTxLink = btcTxId ? `https://mempool.space/signet/tx/${btcTxId}` : null;
+      
+      setSuccessMessage(
+        <span>
+          Successfully initiated sale of {displayAmount} OVT! 
+          {btcTxLink ? <a href={btcTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800">View Payment Tx ({btcTxId?.substring(0, 10)}...)</a> : `(Payment Tx: ${btcTxId?.substring(0, 10)}...)`}
+        </span>
+      );
+      setSellAmount('');
+
     } catch (error) {
-      console.error('Error preparing sell transaction:', error);
-      setLastTradeStatus({
-        success: false,
-        message: error instanceof Error ? error.message : 'Failed to prepare transaction'
-      });
+      const message = error instanceof Error ? error.message : "An unknown error occurred.";
+      const stepInfo = currentStepMessage ? ` (Failed at: ${currentStepMessage})` : '';
+      setNetworkError(`${message}${stepInfo}`);
+    } finally {
+      setIsTradingActionLoading(false);
+      setCurrentStepMessage(null);
     }
   };
+  // --- End Buy/Sell Handlers ---
   
+  const isActionLoading = isTradingActionLoading || runesHookLoading;
+
   return (
     <Layout title="Trade OVT">
-      {/* Top Navigation Bar */}
+      {/* Top Navigation Bar (Keep existing structure) */}
       <div className="bg-white border-b border-primary shadow-sm p-4 mb-6 rounded-lg">
-        <div className="flex justify-between items-center">
-          <div className="flex items-center space-x-6">
-            {/* Logo */}
-            <div className="flex items-center">
-              <img className="h-8 w-auto mr-2" src="/logo.svg" alt="OTORI" />
-              <span className="text-lg font-bold text-primary">OTORI Vision</span>
-            </div>
-            
-            {/* Navigation Links */}
-            <nav className="flex space-x-4">
-              <a href="/" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
-                Dashboard
-              </a>
-              <a href="/trade" className="px-3 py-2 rounded-md text-sm font-medium bg-primary text-white">
-                Trade
-              </a>
-              <a href="/wallet" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
-                Wallet
-              </a>
-              {isAdmin && (
-                <>
-                  <a href="/portfolio" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
-                    Portfolio
-                  </a>
-                  <a href="/admin" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">
-                    Admin
-                  </a>
-                </>
-              )}
-            </nav>
-            
-            {/* Centralized NAV Display */}
-            <NAVDisplay showChange={true} size="md" />
-          </div>
-          
-          <div className="flex items-center space-x-4">
-            {/* Currency Toggle */}
-            <CurrencyToggle size="md" />
-            
-            {/* Wallet Connection */}
-            <WalletConnector 
-              onConnect={handleConnectWallet}
-              onDisconnect={handleDisconnectWallet}
-              connectedAddress={connectedAddress || undefined}
-            />
-          </div>
-        </div>
+         {/* ... existing nav bar JSX ... */} 
+         <div className="flex justify-between items-center">
+           <div className="flex items-center space-x-6">
+             <div className="flex items-center">
+               <img className="h-8 w-auto mr-2" src="/logo.svg" alt="OTORI" />
+               <span className="text-lg font-bold text-primary">OTORI Vision</span>
+             </div>
+             <nav className="flex space-x-4">
+               <a href="/" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">Dashboard</a>
+               <a href="/trade" className="px-3 py-2 rounded-md text-sm font-medium bg-primary text-white">Trade</a>
+               <a href="/wallet" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">Wallet</a>
+               {isAdmin && (
+                 <>
+                   <a href="/portfolio" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">Portfolio</a>
+                   <a href="/admin" className="px-3 py-2 rounded-md text-sm font-medium text-primary hover:bg-primary hover:bg-opacity-10">Admin</a>
+                 </>
+               )}
+             </nav>
+             <NAVDisplay showChange={true} size="md" />
+           </div>
+           <div className="flex items-center space-x-4">
+             <CurrencyToggle size="md" />
+             <WalletConnector 
+               onConnect={handleConnectWallet}
+               onDisconnect={handleDisconnectWallet}
+               connectedAddress={connectedAddress || undefined}
+             />
+           </div>
+         </div>
       </div>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-primary">Trading Portal</h1>
           <p className="mt-2 text-sm text-primary opacity-75">
-            Buy and sell OVT tokens on the Bitcoin testnet
+            Buy and sell OVT tokens on the Bitcoin Signet network.
+             <span 
+               className={`ml-2 px-2 py-0.5 rounded-full text-xs font-semibold ${tradingDataSource.color === 'green' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+               {tradingDataSource.label}
+             </span>
           </p>
         </div>
+
+         {/* Status/Error Messages */} 
+         {currentStepMessage && ( 
+             <div className="bg-blue-100 border border-blue-400 text-blue-700 p-4 mb-4 rounded-lg mx-auto max-w-4xl"> 
+                 <p><ArrowPathIcon className="h-5 w-5 inline-block animate-spin mr-2"/> {currentStepMessage}</p> 
+             </div> 
+         )} 
+         {networkError && ( 
+           <div className="bg-red-100 border border-red-400 text-red-700 p-4 mb-4 rounded-lg mx-auto max-w-4xl"> 
+             <p>{networkError}</p> 
+           </div> 
+         )} 
+         {successMessage && ( 
+           <div className="bg-green-100 border border-green-400 text-green-700 p-4 mb-4 rounded-lg mx-auto max-w-4xl"> 
+             <p>{successMessage}</p> 
+           </div> 
+         )} 
+         {runesHookError && !networkError && ( // Display hook error if no other error shown
+           <div className="bg-red-100 border border-red-400 text-red-700 p-4 mb-4 rounded-lg mx-auto max-w-4xl"> 
+             <p>Error: {runesHookError}</p> 
+           </div> 
+         )}
         
-        {/* Only render client-dependent content when mounted */}
-        {isMounted && (
+        {/* Main Trading Content Area - Pass handlers down */} 
+        {isMounted ? (
           <DynamicTradingContent 
             isConnected={isConnected}
             connectedAddress={connectedAddress}
             walletAddress={walletAddress}
             laserEyesWallets={laserEyesWallets}
             tradingDataSource={tradingDataSource}
+            // Pass state and handlers needed by the actual TradingInterface component
+            // which is likely nested within DynamicTradingContent
+            // Example props (adjust based on TradingContent/TradingInterface needs):
+            buyAmount={buyAmount}
+            setBuyAmount={setBuyAmount}
+            sellAmount={sellAmount}
+            setSellAmount={setSellAmount}
+            handleBuy={handleBuy} 
+            handleSell={handleSell}
+            isActionLoading={isActionLoading}
+            metadata={metadata}
+            formatTokenAmount={formatTokenAmount}
           />
+        ) : (
+           <div className="text-center p-10">Loading Trading Interface...</div>
         )}
       </div>
 
-      {/* Add the confirmation modal at the end of the component */}
-      {pendingTransaction && (
-        <TransactionConfirmationModal
-          isOpen={showConfirmation}
-          onClose={handleCancelTransaction}
-          onConfirm={handleConfirmTransaction}
-          transactionDetails={pendingTransaction}
-          isProcessing={isProcessingTx}
-        />
-      )}
+       {/* Confirmation Modal - Removed as we handle steps directly now */}
+       {/* {pendingTransaction && (
+         <TransactionConfirmationModal
+           isOpen={showConfirmation}
+           onClose={handleCancelTransaction}
+           onConfirm={handleConfirmTransaction}
+           transactionDetails={pendingTransaction}
+           isProcessing={isProcessingTx}
+         />
+       )} */}
     </Layout>
   );
 } 
