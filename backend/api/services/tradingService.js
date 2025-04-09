@@ -28,6 +28,9 @@ const INTERNAL_BROADCAST_SECRET = process.env.INTERNAL_BROADCAST_SECRET; // Opti
 
 // Load environment variables for accessing remote OrdPi
 const LP_ADDRESS = process.env.NEXT_PUBLIC_LP_ADDRESS || 'tb1p3vn6wc0dlud3tvckv95datu3stq4qycz7vj9mzpclfkrv9rh8jqsjrw38f';
+const LP_ADDRESS_2 = process.env.NEXT_PUBLIC_LP_ADDRESS_2 || ''; // Add if needed
+const OVT_TREASURY_ADDRESS = process.env.NEXT_PUBLIC_TREASURY_ADDRESS || 'tb1pglzcv7mg4xdy8nd2cdulsqgxc5yf35fxu5yvz27cf5gl6wcs4ktspjmytd';
+const OVT_TREASURY_ADDRESS_2 = process.env.NEXT_PUBLIC_TREASURY_ADDRESS_2 || 'tb1plpfgtre7sxxrrwjdpy4357qj2nr7ek06xqpdryxr4lzt5tck6x3qz07zd3';
 const OVT_RUNE_ID = process.env.NEXT_PUBLIC_OVT_RUNE_ID || '240249:101';
 const OVT_RUNE_NAME = process.env.OVT_RUNE_NAME || 'OTORI•VISION•TOKEN';
 
@@ -69,6 +72,46 @@ let orderMatchingServiceActive = false;
     orderMatchingServiceActive = false;
   }
 })();
+
+// --- Caching Implementation START ---
+// Copied from runes_API.js for consistency
+const CACHE_TTL_DISTRIBUTION_MS = 60 * 1000; // 1 minute
+const CACHE_TTL_TRANSACTIONS_MS = 60 * 1000; // 1 minute
+const CACHE_TTL_BALANCES_MS = 30 * 1000;     // 30 seconds
+
+let distributionCache = { data: null, timestamp: 0 };
+let transactionsCache = { data: null, timestamp: 0 };
+let addressBalanceCache = {}; // Object to store balances per address: { address: { data: {ovt, sats}, timestamp: 0 } }
+
+const isCacheValid = (cacheEntry, ttl) => {
+    // Check if cacheEntry itself exists and has data
+    return cacheEntry && cacheEntry.data && (Date.now() - cacheEntry.timestamp < ttl);
+};
+
+// Overload clearCache or make it more specific
+const clearCache = (cacheName, key = null) => {
+    console.log(`[Cache - TradingService] Clearing ${cacheName}` + (key ? ` for key ${key}` : ''));
+    // Note: This assumes caches are shared or need independent clearing.
+    // If caches are truly independent, this needs adjustment. For now, mirroring runes_API logic.
+    if (cacheName === 'distribution' || cacheName === 'all') {
+        distributionCache = { data: null, timestamp: 0 };
+    }
+    if (cacheName === 'transactions' || cacheName === 'all') {
+        transactionsCache = { data: null, timestamp: 0 };
+    }
+    if (cacheName === 'balance' || cacheName === 'all') {
+        if (key) {
+            // Clear specific address balance
+            if (addressBalanceCache[key]) {
+                delete addressBalanceCache[key];
+            }
+        } else {
+            // Clear all address balances
+            addressBalanceCache = {};
+        }
+    }
+};
+// --- Caching Implementation END ---
 
 /**
  * Helper function to execute ord commands locally on OrdPi
@@ -713,6 +756,18 @@ async function transferTokensFromLP(params) {
     await broadcastInternalUpdate('OVT_BALANCE_UPDATE', { address: recipient });
     await broadcastInternalUpdate('OVT_BALANCE_UPDATE', { address: LP_ADDRESS });
     // --- End WebSocket Update ---
+
+    // --- Cache Invalidation START ---
+    console.log(`[Cache - TradingService] Invalidating caches after successful transfer ${transferResult.txid}`);
+    clearCache('distribution');
+    clearCache('transactions');
+    clearCache('balance', LP_ADDRESS); // Invalidate LP balance
+    clearCache('balance', recipient);  // Invalidate recipient balance
+    // Optional: Clear other relevant addresses if needed (e.g., secondary LP)
+    if (LP_ADDRESS_2) {
+        clearCache('balance', LP_ADDRESS_2);
+    }
+    // --- Cache Invalidation END ---
 
     return {
         success: true,

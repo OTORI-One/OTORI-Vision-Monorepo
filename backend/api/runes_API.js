@@ -1337,7 +1337,12 @@ runesRouter.post('/ovt/buy', async (req, res) => {
     const estimatedUserFeeSats = 1000; // Example: 1000 sats, adjust as needed
     const totalRequired = costSats + estimatedUserFeeSats;
     
+    // ---> ADDED DEBUG LOGGING <---
+    console.log(`[2Step Buy Prep] Balance Check - Available: ${btcBalance}, Cost: ${costSats}, Fee Est: ${estimatedUserFeeSats}, Total Required: ${totalRequired}`);
+    // ---> END DEBUG LOGGING <---
+
     if (btcBalance < totalRequired) {
+      console.error(`[2Step Buy Prep] Insufficient balance detected for ${fromAddress}. Required: ~${totalRequired}, Available: ${btcBalance}`); // Added error log
       return res.status(400).json({
         success: false,
         error: `Insufficient balance. Required: ~${totalRequired} sats (${costSats} + ${estimatedUserFeeSats} fee), Available: ${btcBalance} sats`
@@ -1820,12 +1825,25 @@ runesRouter.post('/ovt/transfer', async (req, res) => {
       message: 'Transfer submitted successfully'
     });
 
-    // --- Cache Invalidation ---
-    clearCache('distribution'); // Clear distribution cache
-    clearCache('transactions'); // Clear transaction cache
-    clearCache('balance', fromAddress); // Clear sender balance
-    clearCache('balance', toAddress); // Clear recipient balance
-    // --- Cache Invalidation ---
+    // --- Cache Invalidation START ---
+    if (transferSuccess) { // Only invalidate if transfer succeeded
+        console.log(`[Cache - RunesAPI /ovt/transfer] Invalidating caches for TX: ${txid}`);
+        clearCache('distribution'); // Clear distribution cache
+        clearCache('transactions'); // Clear transaction cache
+        clearCache('balance', fromAddress); // Clear sender balance
+        clearCache('balance', toAddress); // Clear recipient balance
+        // Invalidate LP/Treasury if involved (though transfers usually aren't to/from them directly)
+        if (fromAddress === LP_ADDRESS || toAddress === LP_ADDRESS) {
+            clearCache('balance', LP_ADDRESS);
+        }
+        if (fromAddress === OVT_TREASURY_ADDRESS || toAddress === OVT_TREASURY_ADDRESS) {
+            clearCache('balance', OVT_TREASURY_ADDRESS);
+        }
+         if (fromAddress === OVT_TREASURY_ADDRESS_2 || toAddress === OVT_TREASURY_ADDRESS_2) {
+            clearCache('balance', OVT_TREASURY_ADDRESS_2);
+        }
+    }
+    // --- Cache Invalidation END ---
 
   } catch (error) {
     console.error('Error preparing transfer:', error);
