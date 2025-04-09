@@ -19,6 +19,9 @@ const commandService = require('./commandExecutionService');
 const { Mutex } = require('async-mutex');
 const ordCommandMutex = new Mutex();
 
+// Add a simple in-memory store for pending orders
+const pendingOrders = new Map(); // Stores orderId -> { fromAddress, amount, price, costSats, timestamp }
+
 // WebSocket Internal Broadcast Configuration
 const INTERNAL_BROADCAST_URL = process.env.INTERNAL_BROADCAST_URL || 'http://localhost:3033/api/price/internal/broadcast'; // Ensure this matches otori-price-api endpoint
 const INTERNAL_BROADCAST_SECRET = process.env.INTERNAL_BROADCAST_SECRET; // Optional shared secret
@@ -169,15 +172,17 @@ async function transferRunes(recipient, amount, runeId = OVT_RUNE_ID) {
     const runeAmount = amount.toString();
     
     // Use the full rune name from environment instead of the ID
-    const runeName = OVT_RUNE_NAME;
+    // const runeName = OVT_RUNE_NAME; // Keep this line commented if using RUNE_ID
     
-    // Format the asset according to documentation: AMOUNT:RUNE_NAME
-    const asset = `${runeAmount}:${runeName}`;
+    // Format the asset according to documentation: AMOUNT:RUNE_ID
+    // Use runeId directly as per the plan to use `ord wallet send` which expects ID
+    const asset = `${runeAmount}:${runeId}`;
     
     // Use ord command to create and broadcast the rune transfer
-    // Format: wallet send --fee-rate <FEE_RATE> --postage <POSTAGE> <ADDRESS> <AMOUNT>:<RUNE_NAME>
-    // Using 1 sat/vbyte for fee-rate and 777 sats for postage (instead of default 10k)
-    const transferCmd = `wallet send --fee-rate 1 --postage 777 ${recipient} "${asset}"`;
+    // Format: wallet send --fee-rate <FEE_RATE> --postage <POSTAGE> <ADDRESS> <AMOUNT>:<RUNE_ID>
+    const feeRate = process.env.BITCOIN_FEE_RATE || 1; // Default 1 sat/vB
+    const postage = process.env.ORD_POSTAGE_SATS || 777; // Use env var or 777 sats
+    const transferCmd = `wallet send --fee-rate ${feeRate} --postage ${postage} ${recipient} "${asset}"`;
     console.log(`Executing transfer command: ${transferCmd}`);
     
     // Use the refactored executeOrdCommand which now runs locally
@@ -496,78 +501,253 @@ async function validateTransaction(transaction) {
 }
 
 /**
- * Transfer OVT tokens from the LP wallet to a recipient
- * @param {Object} params - Transfer parameters
- * @param {string} params.recipient - Recipient address
- * @param {number} params.amount - Amount to transfer (in token units)
- * @param {Array<string>} [params.signatures] - Required signatures for treasury transactions
- * @returns {Promise<Object>} Transfer result
+ * Store a pending order (moved from runes_API)
+ * @param {string} orderId - Unique order ID
+ * @param {Object} orderDetails - { fromAddress, amount, price, costSats, timestamp }
+ * @returns {boolean} - True if stored successfully
  */
-async function transferTokensFromLP(params) {
-  const { recipient, amount } = params; // Removed signatures as LP transfers might not be multisig
-  const utxoService = require('./utxoService'); // Keep local require if needed here
-  const configService = require('./configService'); // Assuming configService provides LP_ADDRESS
-  const LP_ADDRESS = configService.lp.address; // Get LP address from config
-  
-  // Validate parameters
-  if (!recipient || !amount) {
-    throw new Error('Recipient and amount are required');
-  }
-  
-  // Check if this is a treasury address
-  const isFromTreasury = adminService.isTreasuryAddress(LP_ADDRESS);
-  
-  // If transferring from treasury, verify multi-signature requirements
-  if (isFromTreasury) {
-    if (!signatures || !Array.isArray(signatures) || signatures.length < adminService.config.requiredSignatures) {
-      throw new Error(`Treasury transfers require at least ${adminService.config.requiredSignatures} signatures`);
-    }
-    
-    // In a real implementation, we would verify each signature
-    // For now, we'll just check the count
-    console.log(`Multi-signature verification passed with ${signatures.length} signatures`);
-  }
-  
-  let txid = `transfer_${Date.now()}`; // Default mock txid
-  
-  // Check if real transactions are enabled (should be true for production on OrdPi)
-  const enableRealTransactions = process.env.ENABLE_REAL_TRANSACTIONS === 'true';
+function storePendingOrder(orderId, orderDetails) {
+    if (!orderId || !orderDetails) return false;
+    pendingOrders.set(orderId, orderDetails);
+    console.log(`[Trading Service] Pending order stored: ${orderId}`);
+    // TODO: Implement cleanup for old/stale pending orders
+    return true;
+}
 
-  if (enableRealTransactions) {
+/**
+ * Get details for a pending order
+ * @param {string} orderId - The order ID
+ * @returns {Object|null} - Order details or null if not found
+ */
+function getPendingOrder(orderId) {
+    return pendingOrders.get(orderId) || null;
+}
+
+/**
+ * Remove a pending order
+ * @param {string} orderId - The order ID
+ */
+function removePendingOrder(orderId) {
+    if (pendingOrders.has(orderId)) {
+        pendingOrders.delete(orderId);
+        console.log(`[Trading Service] Pending order removed: ${orderId}`);
+    }
+}
+
+/**
+ * Confirms a user's BTC payment and triggers OVT fulfillment.
+ * @param {string} orderId - The ID of the pending order.
+ * @param {string} btcTxId - The transaction ID of the user's BTC payment.
+ * @returns {Promise<Object>} - Result object { success: boolean, ovtTxId?: string, error?: string }
+ */
+async function confirmBuyPayment(orderId, btcTxId) {
+    console.log(`[Confirm Buy] Received confirmation request for order ${orderId}, BTC TX ${btcTxId}`);
+
+    // 1. Retrieve Pending Order
+    const orderDetails = getPendingOrder(orderId);
+    if (!orderDetails) {
+        console.error(`[Confirm Buy] Order ID not found: ${orderId}`);
+        return { success: false, error: 'Order ID not found or expired.' };
+    }
+
+    const { fromAddress, amount, costSats } = orderDetails;
+    const expectedRecipient = process.env.LP_BTC_RECEIVING_ADDRESS;
+    const requiredConfirmations = parseInt(process.env.BTC_CONFIRMATIONS_REQUIRED || '1', 10);
+
+    if (!expectedRecipient) {
+        console.error("[Confirm Buy] CRITICAL: LP_BTC_RECEIVING_ADDRESS environment variable not set!");
+        removePendingOrder(orderId); // Clean up stale order
+        return { success: false, error: 'Internal server configuration error.' };
+    }
+
+    // 2. Verify BTC Payment Transaction
+    let paymentVerified = false;
+    let verificationError = null;
     try {
-      // For transferring OVT FROM LP, we need to use `ord wallet send`
-      console.log(`Creating real OVT transfer: ${amount} OVT from LP ${LP_ADDRESS} to ${recipient}`);
-      
-      // Use the transferRunes function which now uses local executeOrdCommand
-      const transferResult = await transferRunes(recipient, amount); // Assumes OVT_RUNE_ID is default
-      
-      if (!transferResult.success) {
-        throw new Error(`Failed to transfer runes from LP: ${transferResult.error}`);
-      }
-      
-      txid = transferResult.txid;
-      console.log(`Real OVT transfer from LP executed: ${txid}`);
+        console.log(`[Confirm Buy] Verifying BTC TX ${btcTxId}...`);
+        // Use bitcoin-cli gettransaction to get details
+        const txDataResult = await commandService.executeBitcoinCommand(`gettransaction ${btcTxId}`);
+        const txData = JSON.parse(txDataResult); // Assuming result is JSON string
+
+        // Basic checks
+        if (!txData || !txData.txid) {
+            throw new Error('Could not retrieve transaction details.');
+        }
+        if (txData.confirmations < requiredConfirmations) {
+            throw new Error(`Transaction has only ${txData.confirmations} confirmations, requires ${requiredConfirmations}.`);
+        }
+
+        // Check details: recipient address and amount
+        let foundOutput = false;
+        if (txData.details && Array.isArray(txData.details)) {
+            for (const detail of txData.details) {
+                 // Check if category is 'receive', the address matches, and amount is sufficient
+                if (detail.category === 'receive' &&
+                    detail.address === expectedRecipient &&
+                    detail.amount * 100000000 >= costSats) { // Convert BTC amount to sats
+                    console.log(`[Confirm Buy] Found matching output: ${detail.amount} BTC to ${detail.address}`);
+                    foundOutput = true;
+                    break;
+                }
+            }
+        }
+
+        if (!foundOutput) {
+             // More detailed check if details array wasn't helpful or didn't match
+             // Decode the raw transaction to check outputs directly
+            const rawTxResult = await commandService.executeBitcoinCommand(`getrawtransaction ${btcTxId} 1`); // verbose=1 for JSON
+            const rawTxData = JSON.parse(rawTxResult);
+            if (rawTxData && rawTxData.vout && Array.isArray(rawTxData.vout)) {
+                for (const vout of rawTxData.vout) {
+                    if (vout.scriptPubKey &&
+                        vout.scriptPubKey.address === expectedRecipient &&
+                        vout.value * 100000000 >= costSats) { // Convert BTC value to sats
+                        console.log(`[Confirm Buy] Found matching raw output: ${vout.value} BTC to ${vout.scriptPubKey.address}`);
+                        foundOutput = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+
+        if (!foundOutput) {
+            throw new Error(`Transaction ${btcTxId} did not contain the expected payment of ${costSats} sats to ${expectedRecipient}.`);
+        }
+
+        paymentVerified = true;
+        console.log(`[Confirm Buy] BTC Payment Verified for order ${orderId}.`);
 
     } catch (error) {
-      console.error(`Failed to create real OVT transfer from LP: ${error.message}`);
-      // Decide if we should fallback or throw
-      // For now, let's re-throw the error to make failures explicit
-      throw error; 
-      // // Continue with mock transaction (alternative, maybe not desired)
-      // console.warn('Falling back to mock transaction ID for LP transfer');
+        console.error(`[Confirm Buy] Payment verification failed for order ${orderId}, TX ${btcTxId}: ${error.message}`);
+        verificationError = error.message;
+        // Optionally keep the order pending for retry if confirmations were low? No, let frontend retry.
     }
-  } else {
-      console.warn('Real transactions disabled, using mock transaction ID for LP transfer');
+
+    // 3. If Verified, Transfer OVT; Otherwise, Return Error
+    if (paymentVerified) {
+        try {
+            console.log(`[Confirm Buy] Payment verified. Transferring ${amount} OVT to ${fromAddress}...`);
+            const transferResult = await transferTokensFromLP({
+                recipient: fromAddress,
+                amount: amount // The amount of OVT to send
+            });
+
+            if (transferResult.success) {
+                console.log(`[Confirm Buy] OVT Transfer successful: ${transferResult.txid}`);
+                removePendingOrder(orderId); // Clean up successful order
+
+                // Broadcast success via WebSocket (already handled in transferTokensFromLP)
+
+                return { success: true, ovtTxId: transferResult.txid };
+            } else {
+                // OVT transfer failed AFTER BTC was confirmed - needs manual intervention!
+                console.error(`[Confirm Buy] CRITICAL: BTC payment confirmed for ${orderId}, but OVT transfer failed: ${transferResult.error}`);
+                // Do NOT remove the pending order yet. Mark it for retry/manual check?
+                // For now, return the transfer error.
+                return { success: false, error: `OVT transfer failed after payment confirmation: ${transferResult.error}` };
+            }
+        } catch (transferError) {
+            console.error(`[Confirm Buy] CRITICAL: BTC payment confirmed for ${orderId}, but OVT transfer threw error: ${transferError.message}`);
+            return { success: false, error: `OVT transfer failed after payment confirmation: ${transferError.message}` };
+        }
+    } else {
+        // Payment not verified
+        removePendingOrder(orderId); // Clean up failed order attempt
+        return { success: false, error: `Payment not confirmed: ${verificationError || 'Unknown reason.'}` };
+    }
+}
+
+/**
+ * Transfer OVT tokens from the LP wallet to a recipient using `ord wallet send`
+ * @param {Object} params - Transfer parameters
+ * @param {string} params.recipient - Recipient address
+ * @param {number} params.amount - Amount to transfer (in token units, not satoshis)
+ * @returns {Promise<Object>} Transfer result { success: boolean, txid?: string, error?: string }
+ */
+async function transferTokensFromLP(params) {
+  const { recipient, amount } = params;
+  const utxoService = require('./utxoService'); // Keep local require if needed here
+
+  // 1. Validate parameters
+  if (!recipient || !amount || amount <= 0) {
+    console.error('[Transfer LP] Invalid parameters:', params);
+    return { success: false, error: 'Recipient and positive amount are required' };
   }
-  
-  return {
-    success: true,
-    txid,
-    amount,
-    recipient,
-    timestamp: Date.now(),
-    isMock: true
-  };
+
+  console.log(`[Transfer LP] Initiating transfer of ${amount} OVT to ${recipient}`);
+
+  // 2. Execute `ord wallet send` command
+  let transferResult;
+  try {
+    // Use the transferRunes function which handles the ord command execution
+    // transferRunes expects the amount in base token units
+    transferResult = await transferRunes(recipient, amount, OVT_RUNE_ID);
+
+    if (!transferResult.success || !transferResult.txid) {
+      throw new Error(transferResult.error || 'ord wallet send command failed or did not return a txid');
+    }
+
+    console.log(`[Transfer LP] Real OVT transfer executed via ord. TXID: ${transferResult.txid}`);
+
+    // --- WebSocket Update ---
+    // Prepare transaction object for broadcast
+    const transactionData = {
+        txid: transferResult.txid,
+        type: 'BUY_FULFILLMENT', // Specific type for fulfillment
+        amount: amount, // Raw amount of OVT
+        fromAddress: LP_ADDRESS, // Sent from LP
+        toAddress: recipient,    // Sent to buyer
+        timestamp: Date.now(),
+        status: 'submitted', // Mark as submitted initially
+        confirmations: 0,
+        runeId: OVT_RUNE_ID,
+        // price: null // Price isn't directly relevant here, but could be added from order
+    };
+
+    // Send OVT_TRANSACTION_ADDED update
+    await broadcastInternalUpdate('OVT_TRANSACTION_ADDED', transactionData);
+
+    // Send OVT_BALANCE_UPDATE for recipient and potentially LP
+    // Recipient balance will update when TX confirms
+    await broadcastInternalUpdate('OVT_BALANCE_UPDATE', { address: recipient });
+    await broadcastInternalUpdate('OVT_BALANCE_UPDATE', { address: LP_ADDRESS });
+    // --- End WebSocket Update ---
+
+    return {
+        success: true,
+        txid: transferResult.txid,
+        amount: amount,
+        recipient: recipient,
+        timestamp: Date.now(),
+        isMock: false // This is a real transaction attempt
+    };
+
+  } catch (error) {
+    console.error(`[Transfer LP] Failed to execute ord wallet send: ${error.message}`);
+    console.error("Error details:", error); // Log full error
+
+     // --- WebSocket Update for Failure ---
+     const failureData = {
+        txid: `failed-${Date.now()}`,
+        type: 'BUY_FULFILLMENT_FAILED',
+        amount: amount,
+        fromAddress: LP_ADDRESS,
+        toAddress: recipient,
+        timestamp: Date.now(),
+        status: 'failed',
+        runeId: OVT_RUNE_ID,
+        error: error.message || 'Unknown transfer error'
+    };
+    await broadcastInternalUpdate('OVT_TRANSACTION_FAILED', failureData); // Use a specific failure type if needed
+    // --- End WebSocket Update for Failure ---
+
+    return {
+        success: false,
+        error: `Failed to transfer OVT from LP: ${error.message}`,
+        isMock: false
+    };
+  }
 }
 
 /**
@@ -1094,6 +1274,14 @@ module.exports = {
   
   // Export multi-signature helpers
   requiresMultiSignature,
+  
+  // Export pending order helpers
+  storePendingOrder,
+  getPendingOrder,
+  removePendingOrder,
+
+  // Export confirmation logic
+  confirmBuyPayment,
   
   // Export Rune-related functions
   transferRunes,

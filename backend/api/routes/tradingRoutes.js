@@ -311,4 +311,48 @@ router.get('/validation-stats', (req, res) => {
   }
 });
 
+/**
+ * @route POST /api/trading/confirm-buy-payment
+ * @description Confirm BTC payment for a buy order and trigger OVT fulfillment
+ * @access Restricted (called by frontend after user sends BTC)
+ */
+router.post('/confirm-buy-payment', async (req, res) => {
+    const { orderId, btcTxId } = req.body;
+
+    if (!orderId || !btcTxId) {
+        return res.status(400).json({
+            success: false,
+            error: 'orderId and btcTxId are required.'
+        });
+    }
+
+    try {
+        console.log(`[Route] Received confirmation: Order ${orderId}, BTC Tx ${btcTxId}`);
+        const result = await tradingService.confirmBuyPayment(orderId, btcTxId);
+
+        if (result.success) {
+            res.json({
+                success: true,
+                message: 'Payment confirmed, OVT transfer initiated.',
+                ovtTxId: result.ovtTxId
+            });
+        } else {
+            // Use 400 or 409 (Conflict) if payment wasn't confirmed, 500 for internal errors
+            const statusCode = result.error.includes('Order ID not found') ? 404 :
+                             result.error.includes('Payment not confirmed') ? 400 :
+                             result.error.includes('OVT transfer failed') ? 500 : 400;
+            res.status(statusCode).json({
+                success: false,
+                error: result.error
+            });
+        }
+    } catch (error) {
+        console.error(`[Route] Error in confirm-buy-payment for order ${orderId}:`, error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error during payment confirmation.'
+        });
+    }
+});
+
 module.exports = router; 

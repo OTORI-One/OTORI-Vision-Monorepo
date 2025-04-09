@@ -1346,14 +1346,20 @@ runesRouter.post('/ovt/buy', async (req, res) => {
     
     // 5. Generate Order ID and Store Pending Order
     const orderId = `ovt-buy-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-    pendingOrders.set(orderId, {
+    // Use tradingService to store the pending order
+    const stored = tradingService.storePendingOrder(orderId, {
       fromAddress,
       amount,
       price: currentPrice, // Store the price used for this order
       costSats,          // Store the calculated cost
       timestamp: Date.now()
     });
-    console.log(`[2Step Buy Prep] Pending order stored: ${orderId}`);
+    
+    if (!stored) {
+        console.error(`[2Step Buy Prep] Failed to store pending order: ${orderId}`);
+        return res.status(500).json({ success: false, error: 'Internal server error: Could not store order.' });
+    }
+    console.log(`[2Step Buy Prep] Pending order stored via tradingService: ${orderId}`);
 
     // 6. Prepare Payment Details for Frontend
     // Use an environment variable for the BTC receiving address
