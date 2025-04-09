@@ -626,7 +626,7 @@ async function getWalletBalance(address) {
   try {
     // For wallet balance, we need to use bitcoin-cli instead of ord
     // This is a placeholder - in a real implementation, we would use:
-    // const bitcoinCliCmd = `bitcoin-cli -signet -rpcwallet=ovt_runes_wallet getaddressbalance "${address}"`;
+    // const bitcoinCliCmd = `bitcoin-cli -signet -rpcwallet=ovt-LP-wallet getaddressbalance "${address}"`;
     // or with listunspent for more detailed data
     
     // For now, let's still use ord wallet balance but improve parsing
@@ -1291,22 +1291,40 @@ runesRouter.post('/ovt/buy', async (req, res) => {
       });
     }
     
-    // 2. Check for sufficient BTC balance using UTXO service
+    // 2. Check for sufficient BTC balance using CHEERIO scraping
     let btcBalance = 0;
     try {
-      btcBalance = await utxoService.getAddressBalance(fromAddress);
-      console.log(`BTC balance for address ${fromAddress}: ${btcBalance} sats`);
+      // --- Reusing Cheerio logic from /ovt/balances --- 
+      const ordServerHost = 'http://localhost:9191'; // Use localhost for scraping
+      const ordServerUrl = `${ordServerHost}/address/${fromAddress}`;
+      console.log(`[Buy Prep] Querying local ord server for balance: ${ordServerUrl}`);
+      
+      const response = await axios.get(ordServerUrl, { timeout: 5000 });
+      const $ = cheerio.load(response.data);
+      
+      // Extract Sat Balance
+      $('dt').each((index, element) => {
+        if ($(element).text().trim() === 'sat balance') {
+          btcBalance = parseInt($(element).next('dd').text().trim().replace(/,/g, ''), 10) || 0;
+        }
+      });
+      console.log(`[Buy Prep] Scraped BTC balance for address ${fromAddress}: ${btcBalance} sats`);
+      // --- End Cheerio logic ---
+
     } catch (error) {
-      console.error(`Error getting balance: ${error.message}`);
-      // Fallback to original method if UTXO service fails
-      btcBalance = await getWalletBalance(fromAddress);
+      const errorMessage = error.response ? `Status ${error.response.status}` : error.message;
+      console.error(`[Buy Prep] Error scraping balance for ${fromAddress}: ${errorMessage}`);
+      // Do not fall back to utxoService, fail the request if scraping fails
+      return res.status(503).json({
+        success: false,
+        error: 'Service unavailable: Could not verify user balance.'
+      });
     }
     
     // 3. Calculate the current price and check against maxPrice if specified
-    const lpInfo = await getRemoteLPInfo();
-    const currentPrice = lpInfo.success ? 
-      lpInfo.result.lpInfo.pricing.currentPriceSats : 
-      700; // Default fallback price
+    // --- REMOVED getRemoteLPInfo ---
+    // Use NAV-based price fetched later or implement Phase 2 price fetching here
+    const currentPrice = 700; // TEMPORARY PLACEHOLDER - Phase 2 requires fetching from price-api
     
     if (maxPrice && currentPrice > maxPrice) {
       return res.status(400).json({

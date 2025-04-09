@@ -14,15 +14,25 @@ priceService.initialize();
 
 // Middleware for securing internal endpoints
 const secureInternalEndpoint = (req, res, next) => {
-  const internalSecret = process.env.INTERNAL_WS_SECRET;
+  // const internalSecret = process.env.INTERNAL_WS_SECRET;
+  const internalSecret = process.env.INTERNAL_API_SECRET;
   const requestSecret = req.headers['x-internal-secret'];
+
+  // --- Added Detailed Logging START ---
+  console.log(`[Internal Auth] Checking request from IP: ${req.ip}`);
+  console.log(`[Internal Auth] Expected Secret (from env): ${internalSecret ? '*****' : 'MISSING'}`); // Avoid logging the actual secret
+  console.log(`[Internal Auth] Received Secret (from header): ${requestSecret ? '*****' : 'MISSING'}`);
+  // --- Added Detailed Logging END ---
 
   // Check if the secret is missing or doesn't match
   if (!internalSecret || requestSecret !== internalSecret) {
-    console.warn('Unauthorized attempt to access internal broadcast endpoint from IP:', req.ip);
+    // --- Modified Logging START ---
+    console.warn(`[Internal Auth] Unauthorized attempt from IP: ${req.ip}. Expected: ${internalSecret ? 'Present' : 'MISSING'}, Received: ${requestSecret ? 'Present' : 'MISSING'}`);
+    // --- Modified Logging END ---
     return res.status(403).json({ success: false, error: 'Forbidden' });
   }
 
+  console.log(`[Internal Auth] Access granted for IP: ${req.ip}`); // Log success
   next();
 };
 

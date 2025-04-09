@@ -143,7 +143,7 @@ async function executeBitcoinCommand(command, options = {}) {
   try {
     // Build the bitcoin-cli command with appropriate network and wallet parameters
     // Ensure configService provides the correct path for the *current* environment
-    let fullCommand = `${config.bitcoin.bitcoinCliPath}`; 
+    let fullCommand = `${config.bitcoin.bitcoinCliPath}`;
     
     // Add network flag
     if (config.bitcoin.network === 'testnet') {
@@ -154,32 +154,21 @@ async function executeBitcoinCommand(command, options = {}) {
       fullCommand += ' -regtest';
     }
     
-    // Add wallet if specified
+    // Add wallet if specified via environment variable set by PM2 config
     if (process.env.BITCOIN_WALLET) {
       fullCommand += ` -rpcwallet=${process.env.BITCOIN_WALLET}`;
-    } else if (config.bitcoin.walletName) {
-      fullCommand += ` -rpcwallet=${config.bitcoin.walletName}`;
-    }
-    
-    // Add RPC connection parameters if provided in environment or config
-    // Use environment variables first, then fall back to config
-    const rpcUser = process.env.BITCOIN_RPC_USER || config.bitcoin.rpcUser;
-    const rpcPassword = process.env.BITCOIN_RPC_PASSWORD || config.bitcoin.rpcPassword;
-    const rpcHost = process.env.BITCOIN_RPC_HOST || config.bitcoin.rpcHost;
-    const rpcPort = process.env.BITCOIN_RPC_PORT || config.bitcoin.rpcPort;
-    
-    if (rpcUser && rpcPassword) {
-      fullCommand += ` -rpcuser=${rpcUser} -rpcpassword=${rpcPassword}`;
-    }
-    
-    // Always include RPC connection details to avoid defaulting to incorrect values
-    fullCommand += ` -rpcconnect=${rpcHost} -rpcport=${rpcPort}`;
+    } 
+    // NOTE: Removed fallback to config.bitcoin.walletName to rely solely on PM2 env var
+
+    // --- REMOVED programmatic addition of rpcuser/pass/connect/port ---
+    // Rely on bitcoin-cli to use credentials/host/port from bitcoin.conf
+    // or default behavior if those are not set in the config.
     
     // Add the actual command
     fullCommand += ` ${command}`;
     
-    // Log the command for debugging (without sensitive info)
-    const logCommand = fullCommand.replace(/-rpcpassword=\S+/g, '-rpcpassword=[REDACTED]');
+    // Log the masked command for debugging
+    const logCommand = maskSensitiveInfo(fullCommand);
     console.log(`Bitcoin command: ${logCommand}`);
     
     // Execute the command with retry logic
@@ -193,7 +182,7 @@ async function executeBitcoinCommand(command, options = {}) {
       return stdout.trim();
     }
   } catch (error) {
-    console.error(`Error executing Bitcoin command: ${command}`, error);
+    console.error(`Error executing Bitcoin command: ${maskSensitiveInfo(command)}`, error);
     throw error;
   }
 }
