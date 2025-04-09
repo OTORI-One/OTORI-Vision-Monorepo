@@ -1,5 +1,6 @@
 import type { AppProps } from 'next/app';
-import { LaserEyesProvider, BaseNetwork } from '@omnisat/lasereyes';
+import { LaserEyesProvider } from '@omnisat/lasereyes-react';
+import { BaseNetwork } from '@omnisat/lasereyes-core';
 import { useEffect } from 'react';
 import { ensurePortfolioDataLoaded } from '../src/utils/portfolioLoader';
 import { useBitcoinPrice } from '../src/hooks/useBitcoinPrice';
