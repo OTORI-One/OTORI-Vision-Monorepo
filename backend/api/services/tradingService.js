@@ -1050,19 +1050,35 @@ async function verifyWalletForOVT() {
  * @param {any} payload - The data payload for the message
  */
 async function broadcastInternalUpdate(type, payload) {
-  if (!INTERNAL_BROADCAST_URL) {
+  const url = process.env.INTERNAL_BROADCAST_URL || 'http://localhost:3033/api/price/internal/broadcast';
+  const secret = process.env.INTERNAL_API_SECRET; // Use the correct env variable name
+
+
+  if (!url) {
     console.warn('INTERNAL_BROADCAST_URL not set. Skipping WebSocket broadcast.');
     return;
   }
+  
+  if (!secret) {
+    console.warn('INTERNAL_API_SECRET not set. Cannot send authenticated internal broadcast.');
+    // Optional: Decide if you want to proceed without auth or stop here
+    // return; // Uncomment to stop if secret is mandatory
+  }
+
   try {
     const headers = {};
-    if (INTERNAL_BROADCAST_SECRET) {
-      headers['X-Internal-Secret'] = INTERNAL_BROADCAST_SECRET;
+    if (secret) {
+      headers['X-Internal-Secret'] = secret; // Correctly add the header
     }
-    console.log(`Broadcasting internal update: ${type}`);
-    await axios.post(INTERNAL_BROADCAST_URL, { type, payload }, { headers });
+    console.log(`Broadcasting internal update: ${type} to ${url}`);
+    // --- TEMPORARY SENSITIVE LOGGING START ---
+    // IMPORTANT: REMOVE THIS AFTER DEBUGGING
+    console.log(`[Debug Internal Broadcast] Headers being sent:`, headers);
+    // --- TEMPORARY SENSITIVE LOGGING END ---
+    await axios.post(url, { type, payload }, { headers }); // Pass headers correctly
   } catch (error) {
-    console.error(`Failed to broadcast internal update (${type}):`, error.message || error);
+    const errorMessage = error.response ? JSON.stringify(error.response.data) : error.message;
+    console.error(`Failed to broadcast internal update (${type}):`, errorMessage);
     // Non-fatal error, log and continue
   }
 }
