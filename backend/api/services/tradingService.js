@@ -683,6 +683,9 @@ async function confirmBuyPayment(orderId, btcTxId) {
     // 2. Verify BTC Payment Transaction
     let paymentVerified = false;
     let verificationError = null;
+    let needsManualCheck = false;
+    let status = 'pending_verification'; // Initial status
+
     try {
         console.log(`[Confirm Buy] Verifying BTC TX ${btcTxId}...`);
         // Use bitcoin-cli gettransaction to get details
@@ -691,61 +694,81 @@ async function confirmBuyPayment(orderId, btcTxId) {
 
         // Basic checks
         if (!txData || !txData.txid) {
+            status = 'failed';
             throw new Error('Could not retrieve transaction details.');
         }
         if (txData.confirmations < requiredConfirmations) {
-            throw new Error(`Transaction has only ${txData.confirmations} confirmations, requires ${requiredConfirmations}.`);
-        }
+            status = 'pending_confirmation';
+            // Don't throw an error here, just note it and exit the try block gracefully
+            console.log(`[Confirm Buy] TX ${btcTxId} has ${txData.confirmations}/${requiredConfirmations} confirmations. Pending...`);
+            // Skip further checks for now, will be re-checked later
+        } else {
+            // Sufficient confirmations, proceed with detailed checks
+            console.log(`[Confirm Buy] TX ${btcTxId} has sufficient confirmations (${txData.confirmations}/${requiredConfirmations}). Checking details...`);
 
-        // Check details: recipient address and amount
-        let foundOutput = false;
-        if (txData.details && Array.isArray(txData.details)) {
-            for (const detail of txData.details) {
-                 // Check if category is 'receive', the address matches, and amount is sufficient
-                if (detail.category === 'receive' &&
-                    detail.address === expectedRecipient &&
-                    detail.amount * 100000000 >= costSats) { // Convert BTC amount to sats
-                    console.log(`[Confirm Buy] Found matching output: ${detail.amount} BTC to ${detail.address}`);
-                    foundOutput = true;
-                    break;
-                }
-            }
-        }
-
-        if (!foundOutput) {
-             // More detailed check if details array wasn't helpful or didn't match
-             // Decode the raw transaction to check outputs directly
-            const rawTxResult = await commandService.executeBitcoinCommand(`getrawtransaction ${btcTxId} 1`); // verbose=1 for JSON
-            const rawTxData = JSON.parse(rawTxResult);
-            if (rawTxData && rawTxData.vout && Array.isArray(rawTxData.vout)) {
-                for (const vout of rawTxData.vout) {
-                    if (vout.scriptPubKey &&
-                        vout.scriptPubKey.address === expectedRecipient &&
-                        vout.value * 100000000 >= costSats) { // Convert BTC value to sats
-                        console.log(`[Confirm Buy] Found matching raw output: ${vout.value} BTC to ${vout.scriptPubKey.address}`);
+            // Check details: recipient address and amount
+            let foundOutput = false;
+            if (txData.details && Array.isArray(txData.details)) {
+                for (const detail of txData.details) {
+                    // Check if category is 'receive', the address matches, and amount is sufficient
+                    if (detail.category === 'receive' &&
+                        detail.address === expectedRecipient &&
+                        detail.amount * 100000000 >= costSats) { // Convert BTC amount to sats
+                        console.log(`[Confirm Buy] Found matching output: ${detail.amount} BTC to ${detail.address}`);
                         foundOutput = true;
                         break;
                     }
                 }
             }
+
+            if (!foundOutput) {
+                // More detailed check if details array wasn't helpful or didn't match
+                // Decode the raw transaction to check outputs directly
+                const rawTxResult = await commandService.executeBitcoinCommand(`getrawtransaction ${btcTxId} 1`); // verbose=1 for JSON
+                const rawTxData = JSON.parse(rawTxResult);
+                if (rawTxData && rawTxData.vout && Array.isArray(rawTxData.vout)) {
+                    for (const vout of rawTxData.vout) {
+                        if (vout.scriptPubKey &&
+                            vout.scriptPubKey.address === expectedRecipient &&
+                            vout.value * 100000000 >= costSats) { // Convert BTC value to sats
+                            console.log(`[Confirm Buy] Found matching raw output: ${vout.value} BTC to ${vout.scriptPubKey.address}`);
+                            foundOutput = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!foundOutput) {
+                status = 'failed';
+                throw new Error(`Transaction ${btcTxId} did not contain the expected payment of ${costSats} sats to ${expectedRecipient}.`);
+            }
+
+            // If we reach here, confirmations and details are valid
+            paymentVerified = true;
+            status = 'verified';
+            console.log(`[Confirm Buy] BTC Payment Verified for order ${orderId}.`);
         }
-
-
-        if (!foundOutput) {
-            throw new Error(`Transaction ${btcTxId} did not contain the expected payment of ${costSats} sats to ${expectedRecipient}.`);
-        }
-
-        paymentVerified = true;
-        console.log(`[Confirm Buy] BTC Payment Verified for order ${orderId}.`);
 
     } catch (error) {
-        console.error(`[Confirm Buy] Payment verification failed for order ${orderId}, TX ${btcTxId}: ${error.message}`);
+        console.error(`[Confirm Buy] Payment verification check failed for order ${orderId}, TX ${btcTxId}: ${error.message}`);
         verificationError = error.message;
-        // Optionally keep the order pending for retry if confirmations were low? No, let frontend retry.
+
+        // Check for the specific -5 error code, treat as pending confirmation
+        if (error.code === 5 || (error.message && error.message.includes('Invalid or non-wallet transaction id'))) {
+            console.warn(`[Confirm Buy] TX ${btcTxId} returned -5 error. Treating as pending confirmation.`);
+            status = 'pending_confirmation';
+        } else if (status !== 'pending_confirmation') {
+            // Only mark as failed if it wasn't already pending confirmation
+            status = 'failed';
+        }
+        // For other errors or if status is already failed, keep it as failed.
     }
 
-    // 3. If Verified, Transfer OVT; Otherwise, Return Error
-    if (paymentVerified) {
+    // --- Decision Logic based on Status ---
+
+    if (status === 'verified') {
+        // 3. If Verified, Transfer OVT; Otherwise, Return Error (Moved from previous location)
         try {
             console.log(`[Confirm Buy] Payment verified. Transferring ${amount} OVT to ${fromAddress}...`);
             const transferResult = await transferTokensFromLP({
@@ -756,26 +779,50 @@ async function confirmBuyPayment(orderId, btcTxId) {
             if (transferResult.success) {
                 console.log(`[Confirm Buy] OVT Transfer successful: ${transferResult.txid}`);
                 removePendingOrder(orderId); // Clean up successful order
-
                 // Broadcast success via WebSocket (already handled in transferTokensFromLP)
-
-                return { success: true, ovtTxId: transferResult.txid };
+                return { success: true, status: 'completed', ovtTxId: transferResult.txid };
             } else {
                 // OVT transfer failed AFTER BTC was confirmed - needs manual intervention!
                 console.error(`[Confirm Buy] CRITICAL: BTC payment confirmed for ${orderId}, but OVT transfer failed: ${transferResult.error}`);
                 // Do NOT remove the pending order yet. Mark it for retry/manual check?
-                // For now, return the transfer error.
-                return { success: false, error: `OVT transfer failed after payment confirmation: ${transferResult.error}` };
+                // For now, return the transfer error, keep order pending.
+                updatePendingOrderStatus(orderId, 'ovt_transfer_failed'); // Update status in pending file
+                return { success: false, status: 'ovt_transfer_failed', error: `OVT transfer failed after payment confirmation: ${transferResult.error}` };
             }
         } catch (transferError) {
             console.error(`[Confirm Buy] CRITICAL: BTC payment confirmed for ${orderId}, but OVT transfer threw error: ${transferError.message}`);
-            return { success: false, error: `OVT transfer failed after payment confirmation: ${transferError.message}` };
+            updatePendingOrderStatus(orderId, 'ovt_transfer_error'); // Update status in pending file
+            return { success: false, status: 'ovt_transfer_error', error: `OVT transfer failed after payment confirmation: ${transferError.message}` };
         }
+    } else if (status === 'pending_confirmation') {
+        // Return success but indicate pending state
+        console.log(`[Confirm Buy] Order ${orderId} for TX ${btcTxId} is pending confirmation.`);
+        // Do NOT remove the pending order
+        updatePendingOrderStatus(orderId, 'pending_confirmation'); // Update status in pending file
+        return { success: true, status: 'pending_confirmation', message: 'BTC transaction awaiting sufficient confirmations.' };
     } else {
-        // Payment not verified
+        // Status is 'failed' or initial 'pending_verification' which errored out differently
+        console.log(`[Confirm Buy] Order ${orderId} verification failed. Removing pending order.`);
         removePendingOrder(orderId); // Clean up failed order attempt
-        return { success: false, error: `Payment not confirmed: ${verificationError || 'Unknown reason.'}` };
+        return { success: false, status: 'failed', error: `Payment not confirmed: ${verificationError || 'Verification process failed.'}` };
     }
+}
+
+/**
+* Updates the status of a pending order in the file.
+* @param {string} orderId - The ID of the order to update.
+* @param {string} newStatus - The new status string.
+*/
+function updatePendingOrderStatus(orderId, newStatus) {
+   const orders = readPendingOrdersFile();
+   if (orders[orderId]) {
+       orders[orderId].status = newStatus;
+       orders[orderId].lastUpdated = Date.now();
+       writePendingOrdersFile(orders);
+       console.log(`[Pending Orders] Updated status for ${orderId} to ${newStatus}`);
+   } else {
+       console.warn(`[Pending Orders] Attempted to update status for non-existent order: ${orderId}`);
+   }
 }
 
 /**
