@@ -1489,6 +1489,79 @@ async function broadcastInternalUpdate(type, payload) {
   }
 }
 
+// --- Background Polling --- START
+
+/**
+ * Polls pending orders awaiting BTC confirmation and retries verification.
+ */
+async function pollPendingConfirmations() {
+    console.log('[Polling] Checking for orders pending BTC confirmation...');
+    const orders = readPendingOrdersFile();
+    const pendingConfirmationOrders = Object.entries(orders).filter(([orderId, details]) => details.status === 'pending_confirmation');
+
+    if (pendingConfirmationOrders.length === 0) {
+        console.log('[Polling] No orders currently pending BTC confirmation.');
+        return;
+    }
+
+    console.log(`[Polling] Found ${pendingConfirmationOrders.length} orders pending confirmation. Processing...`);
+
+    for (const [orderId, orderDetails] of pendingConfirmationOrders) {
+        // Basic check for necessary details
+        if (!orderDetails.btcTxId) {
+            console.warn(`[Polling] Skipping order ${orderId}: Missing btcTxId.`);
+            continue; 
+        }
+
+        console.log(`[Polling] Retrying confirmation for order ${orderId} (BTC Tx: ${orderDetails.btcTxId})...`);
+        try {
+            // Re-run the confirmation logic for this specific order
+            const result = await confirmBuyPayment(orderId, orderDetails.btcTxId);
+            console.log(`[Polling] Confirmation result for ${orderId}: Status - ${result.status}, Success - ${result.success}`);
+            // Logging is handled within confirmBuyPayment, just log the outcome here.
+        } catch (pollError) {
+            // Catch errors specifically from the poll attempt
+            console.error(`[Polling] Error during confirmation retry for order ${orderId}:`, pollError);
+            // Optionally update status to a specific polling error state if needed
+            // updatePendingOrderStatus(orderId, 'polling_error', { error: pollError.message });
+        }
+        // Add a small delay between processing orders if needed, e.g.:
+        // await new Promise(resolve => setTimeout(resolve, 100)); 
+    }
+     console.log('[Polling] Finished processing pending confirmation orders.');
+}
+
+// Function to start the polling interval
+let pollingIntervalId = null;
+function startPolling(intervalMs = 60000) { // Default: poll every 60 seconds
+    if (pollingIntervalId) {
+        console.log('[Polling] Polling is already running.');
+        return;
+    }
+    console.log(`[Polling] Starting background polling every ${intervalMs / 1000} seconds.`);
+    pollingIntervalId = setInterval(pollPendingConfirmations, intervalMs);
+
+    // Optional: Run once immediately on start?
+    // pollPendingConfirmations(); 
+}
+
+// Function to stop the polling interval
+function stopPolling() {
+    if (pollingIntervalId) {
+        console.log('[Polling] Stopping background polling.');
+        clearInterval(pollingIntervalId);
+        pollingIntervalId = null;
+    } else {
+        console.log('[Polling] Polling is not currently running.');
+    }
+}
+
+// Ensure polling stops gracefully on application exit
+process.on('SIGINT', stopPolling);
+process.on('SIGTERM', stopPolling);
+
+// --- Background Polling --- END
+
 module.exports = {
   matchOrders,
   processMatches,
