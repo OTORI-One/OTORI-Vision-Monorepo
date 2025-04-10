@@ -751,8 +751,19 @@ async function confirmBuyPayment(orderId, btcTxId) {
         }
 
     } catch (error) {
-        console.error(`[Confirm Buy] Payment verification check failed for order ${orderId}, TX ${btcTxId}: ${error.message}`);
-        verificationError = error.message;
+        // --- Enhanced Error Logging ---
+        console.error(`[Confirm Buy] Payment verification check failed for order ${orderId}, TX ${btcTxId}.`);
+        console.error(`  Error Message: ${error.message}`);
+        if (error.code) {
+            console.error(`  Error Code: ${error.code}`);
+        }
+        if (error.stderr) {
+            console.error(`  Error Stderr: ${error.stderr.trim()}`);
+        }
+        console.error("  Full Error Object:", JSON.stringify(error, null, 2));
+        // --- End Enhanced Error Logging ---
+
+        verificationError = error.message; // Keep original message for potential return
 
         // Check for the specific -5 error code, treat as pending confirmation
         if (error.code === 5 || (error.message && error.message.includes('Invalid or non-wallet transaction id'))) {
@@ -802,9 +813,11 @@ async function confirmBuyPayment(orderId, btcTxId) {
         return { success: true, status: 'pending_confirmation', message: 'BTC transaction awaiting sufficient confirmations.' };
     } else {
         // Status is 'failed' or initial 'pending_verification' which errored out differently
-        console.log(`[Confirm Buy] Order ${orderId} verification failed. Removing pending order.`);
-        removePendingOrder(orderId); // Clean up failed order attempt
-        return { success: false, status: 'failed', error: `Payment not confirmed: ${verificationError || 'Verification process failed.'}` };
+        console.log(`[Confirm Buy] Order ${orderId} verification failed. Keeping pending order.`);
+        // --- Removed pending order removal on failure ---
+        // removePendingOrder(orderId); 
+        updatePendingOrderStatus(orderId, 'btc_verification_failed'); // Update status to reflect failure type
+        return { success: false, status: 'btc_verification_failed', error: `Payment not confirmed: ${verificationError || 'Verification process failed.'}` };
     }
 }
 
