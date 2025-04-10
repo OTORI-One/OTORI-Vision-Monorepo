@@ -670,7 +670,15 @@ async function confirmBuyPayment(orderId, btcTxId) {
       return { success: true, status: pendingOrder.status, message: `Order already processed with status: ${pendingOrder.status}` };
   }
 
-  const expectedAddress = LP_ADDRESS; // Use the defined LP address
+  // Use the specific address designated for receiving initial BTC payments
+  const expectedAddress = process.env.LP_BTC_RECEIVING_ADDRESS; 
+  if (!expectedAddress) {
+      console.error("[Trading Service] CRITICAL: LP_BTC_RECEIVING_ADDRESS environment variable is not set!");
+      // Update status to reflect internal config error
+      updatePendingOrderStatus(orderId, 'internal_config_error', { error: 'LP_BTC_RECEIVING_ADDRESS not configured.' });
+      return { success: false, status: 'internal_config_error', message: 'Internal server configuration error preventing payment verification.' };
+  }
+  
   const expectedCostSats = pendingOrder.costSats;
   const expectedCostBtc = expectedCostSats / 1e8; // Convert sats to BTC for comparison
 
