@@ -77,9 +77,13 @@ function executeCommandOnce(command, options) {
       env: { ...process.env, ...options.env },
     }, (error, stdout, stderr) => {
       if (error) {
-        error.stdout = stdout;
-        error.stderr = stderr;
-        return reject(error);
+        // Construct a new, plain error object to ensure properties are preserved
+        const executionError = new Error(error.message);
+        executionError.code = error.code; // Preserve the exit code
+        executionError.stdout = stdout;
+        executionError.stderr = stderr;
+        executionError.cmd = error.cmd; // Preserve the original command
+        return reject(executionError);
       }
       
       resolve({ stdout, stderr });
