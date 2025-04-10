@@ -1595,5 +1595,10 @@ module.exports = {
   
   // Export wallet verification functions
   getCurrentWalletInfo,
-  verifyWalletForOVT
+  verifyWalletForOVT,
+  
+  // Export polling functions
+  startPolling,
+  stopPolling,
+  pollPendingConfirmations
 }; 
