@@ -765,12 +765,22 @@ async function confirmBuyPayment(orderId, btcTxId) {
 
         verificationError = error.message; // Keep original message for potential return
 
-        // Check for the specific -5 error code, treat as pending confirmation
+        // Check for the specific -5 error code
         if (error.code === 5 || (error.message && error.message.includes('Invalid or non-wallet transaction id'))) {
-            console.warn(`[Confirm Buy] TX ${btcTxId} returned -5 error. Treating as pending confirmation.`);
-            status = 'pending_confirmation';
+            console.warn(`[Confirm Buy] TX ${btcTxId} returned -5 error from gettransaction. Checking getrawtransaction as fallback...`);
+            try {
+                // Attempt getrawtransaction to see if the TX exists at all
+                await commandService.executeBitcoinCommand(`getrawtransaction ${btcTxId}`);
+                console.log(`[Confirm Buy] getrawtransaction succeeded for ${btcTxId}. Treating as pending confirmation due to initial -5 error.`);
+                status = 'pending_confirmation';
+            } catch (rawTxError) {
+                console.error(`[Confirm Buy] Fallback getrawtransaction also failed for ${btcTxId}: ${rawTxError.message}. Marking as failed.`);
+                status = 'failed';
+                // Combine error messages or prioritize?
+                verificationError = `Initial gettransaction failed (${verificationError}), and fallback getrawtransaction failed (${rawTxError.message})`;
+            }
         } else if (status !== 'pending_confirmation') {
-            // Only mark as failed if it wasn't already pending confirmation
+            // Only mark as failed if it wasn't already pending confirmation from insufficient confs
             status = 'failed';
         }
         // For other errors or if status is already failed, keep it as failed.
