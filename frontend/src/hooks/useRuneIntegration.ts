@@ -146,7 +146,7 @@ export function useRuneIntegration() {
   const [transactions, setTransactions] = useState<RuneTransaction[]>([]);
   const priceStore = useMemo(() => getPriceStore(), []);
 
-  const API_BASE_URL = process.env.NEXT_PUBLIC_RUNE_ENDPOINT || 'http://localhost:3032';
+  const API_BASE_URL = process.env.NEXT_PUBLIC_RUNE_ENDPOINT || 'http://localhost:9192';
   const TRADING_API_URL = process.env.NEXT_PUBLIC_TRADING_API_URL || API_BASE_URL; // Use correct env var name
 
   // --- Utility Functions (Moved formatTokenAmount earlier) ---

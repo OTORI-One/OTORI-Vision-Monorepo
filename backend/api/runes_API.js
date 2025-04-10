@@ -1071,6 +1071,14 @@ runesRouter.get('/ovt/distribution', async (req, res) => {
   }
 });
 
+// --- Add Temporary Cache Clear Endpoint ---
+runesRouter.get('/ovt/clear-distribution-cache', (req, res) => {
+    console.log('[Admin] Received request to clear distribution cache.');
+    clearCache('distribution');
+    res.json({ success: true, message: 'Distribution cache cleared.' });
+});
+// --- End Temporary Cache Clear Endpoint ---
+
 runesRouter.get('/ovt/lp-info', async (req, res) => {
   try {
     const result = await getRemoteLPInfo();
