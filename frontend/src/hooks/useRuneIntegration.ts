@@ -16,7 +16,7 @@ import axios from 'axios';
 import { useLaserEyes } from '@omnisat/lasereyes-react';
 import { BaseNetwork } from '@omnisat/lasereyes-core'; // Assuming BaseNetwork might be needed
 import { getPriceStore, OrderUpdatePayload } from '../services/priceService'; // Added import
-// import { useNotifications } from '../context/NotificationContext'; // Assuming a notification context exists --> COMMENTED OUT
+import { useNotifications } from './useNotifications'; // Corrected import path for the hook
 
 // OVT Rune constants
 export const OVT_RUNE_ID = '240249:101';
@@ -147,7 +147,7 @@ export function useRuneIntegration() {
   const [transactions, setTransactions] = useState<RuneTransaction[]>([]);
   const [processingOrderId, setProcessingOrderId] = useState<string | null>(null);
   const [processingTimeoutId, setProcessingTimeoutId] = useState<NodeJS.Timeout | null>(null);
-  // const { addNotification } = useNotifications(); // <<< COMMENTED OUT
+  const { addNotification } = useNotifications(); // Use the hook
   const priceStore = useMemo(() => getPriceStore(), []);
 
   const API_BASE_URL = process.env.NEXT_PUBLIC_RUNE_ENDPOINT || 'http://localhost:9192';
@@ -548,7 +548,7 @@ export function useRuneIntegration() {
                   console.log(`Sell Order ${orderId} confirmation timed out.`);
                   setProcessingOrderId(currentOrderId => {
                      if (currentOrderId === orderId) {
-                        // addNotification({ type: 'error', message: `Order ${orderId} confirmation timed out. Please check your transaction history or contact support.` }); // <<< COMMENTED OUT
+                        addNotification({ type: 'error', message: `Order ${orderId} confirmation timed out. Please check your transaction history or contact support.` }); // Add timeout notification
                         console.error(`Sell Order ${orderId} confirmation timed out.`); // Added console log
                         return null; // Clear the processing state
                      }
@@ -565,11 +565,10 @@ export function useRuneIntegration() {
           // --- Handle Immediate Success/Failure --- 
           if (result.success) {
               console.log(`Sell Order ${orderId} confirmed immediately.`);
-              // addNotification({ type: 'success', message: `Sell order ${orderId} completed successfully!` }); // <<< COMMENTED OUT
+              addNotification({ type: 'success', message: `Sell order ${orderId} completed successfully!` }); // Add success notification
               // Optional: Refresh balance and history after successful confirmation
               if (address) {
                   await getBalance(address); // OVT balance should decrease
-                  // Need a way to check BTC balance update too
                   await getTransactionHistory(address);
               }
               return result; // Contains { success, btcTxId, ... }
@@ -587,12 +586,12 @@ export function useRuneIntegration() {
           setProcessingOrderId(null); 
           if(processingTimeoutId) clearTimeout(processingTimeoutId);
           setProcessingTimeoutId(null);
+          addNotification({ type: 'error', message: errorMessage }); // Add error notification on catch
           return { success: false, error: errorMessage, status: 'failed' }; // Structured error
       } finally {
           setIsLoading(false);
       }
-  // Removed addNotification from dependencies as it's commented out
-  }, [TRADING_API_URL, address, getBalance, getTransactionHistory, processingTimeoutId]);
+  }, [TRADING_API_URL, address, getBalance, getTransactionHistory, processingTimeoutId, addNotification]);
 
   /**
    * Get distribution statistics for OVT token
@@ -765,27 +764,33 @@ export function useRuneIntegration() {
     // *** NEW: Subscribe to Order Updates ***
     const unsubscribeOrderUpdates = priceStore.subscribeToOrderUpdates((orderUpdate: OrderUpdatePayload) => {
       if (!isMounted) return;
-      
-      // ... (log update)
-      
+
+      console.log("useRuneIntegration: Received ORDER_UPDATE via WebSocket:", orderUpdate);
+
       // Check if this update is for the order we are currently processing
       if (orderUpdate.orderId && orderUpdate.orderId === processingOrderId) {
-         // ... (log match)
-         
+         console.log(`Order update matches currently processing order: ${processingOrderId}`);
+
          // Clear the processing state and timeout
-         // ... (clear state/timeout)
+         if (processingTimeoutId) clearTimeout(processingTimeoutId);
+         setProcessingTimeoutId(null);
+         setProcessingOrderId(null); // Clear the ID now that we have a final status
 
          // Handle final status
          if (orderUpdate.status === 'completed') {
-            // addNotification({ type: 'success', message: orderUpdate.message || `Order ${orderUpdate.orderId} completed!` }); // <<< COMMENTED OUT
-            console.log(`Order ${orderUpdate.orderId} completed successfully via WS.`); // Added console log
-            // ... (refresh balances)
-         } else {
-            // addNotification({ type: 'error', message: orderUpdate.message || `Order ${orderUpdate.orderId} failed: ${orderUpdate.status}` }); // <<< COMMENTED OUT
-            console.error(`Order ${orderUpdate.orderId} failed via WS: ${orderUpdate.message || orderUpdate.status}`); // Added console log
+            addNotification({ type: 'success', message: orderUpdate.message || `Order ${orderUpdate.orderId} completed!` }); // Notify success
+            console.log(`Order ${orderUpdate.orderId} completed successfully via WS.`);
+            // Refresh balance and history
+            if (address) {
+              getBalance(address).catch(err => console.error("getBalance after WS update failed:", err));
+              getTransactionHistory(address).catch(err => console.error("getTransactionHistory after WS update failed:", err));
+            }
+         } else { // Handle failed, cancelled, etc.
+            addNotification({ type: 'error', message: orderUpdate.message || `Order ${orderUpdate.orderId} failed: ${orderUpdate.status}` }); // Notify failure
+            console.error(`Order ${orderUpdate.orderId} failed via WS: ${orderUpdate.message || orderUpdate.status}`);
          }
       } else {
-         // ... (log ignore)
+         console.log(`Received order update for ${orderUpdate.orderId}, but currently processing ${processingOrderId}. Ignoring.`);
       }
     });
 
@@ -794,18 +799,23 @@ export function useRuneIntegration() {
       console.log("useRuneIntegration: Cleaning up WebSocket subscriptions.");
       unsubscribeBalance();
       unsubscribeTransactions();
+      unsubscribeOrderUpdates(); // Ensure order updates are unsubscribed
+      // Clear any pending timeout on unmount
+      if (processingTimeoutId) {
+          clearTimeout(processingTimeoutId);
+      }
       isMounted = false;
     };
-    // Removed addNotification from dependencies as it's commented out
-  }, [ 
-      address, 
-      connected, 
-      getBalance, 
-      getTransactionHistory, 
-      getTokenMetadata, 
-      priceStore, 
-      processingOrderId, 
-      processingTimeoutId
+  }, [
+      address,
+      connected,
+      getBalance,
+      getTransactionHistory,
+      getTokenMetadata,
+      priceStore,
+      processingOrderId,
+      processingTimeoutId, // Keep timeoutId here if needed elsewhere, otherwise potentially remove
+      addNotification
   ]);
 
   return {
