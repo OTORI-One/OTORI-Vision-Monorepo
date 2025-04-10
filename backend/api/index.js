@@ -523,11 +523,13 @@ if (require.main === module) {
 
   // Only run periodic tasks relevant to the service type
   if (tradingRoutes) {
+    // Require the service once here if it's needed for multiple tasks
+    const tradingService = require('./services/tradingService');
+    
     console.log('Setting up periodic order matching task for trading service.');
     setInterval(() => {
       try {
-        // Now it's safer to require tradingService here as it's only done for relevant SERVICE_TYPEs
-        const tradingService = require('./services/tradingService');
+        // Use the already required tradingService instance
         const matches = tradingService.matchOrders();
         if (matches.length > 0) {
           console.log(`Matched ${matches.length} orders`);
@@ -535,7 +537,11 @@ if (require.main === module) {
       } catch (error) {
         console.error('Error in order matching task:', error);
       }
-    }, 60000); // Adjust interval as needed
+    }, 60000); // Order matching interval
+
+    // Start the background poller for pending confirmations - run ONCE on startup
+    console.log('Starting background polling for pending BTC confirmations.');
+    tradingService.startPolling(30000); // Poll interval (e.g., every 30 seconds)
   }
 
    if (priceRoutes) {
