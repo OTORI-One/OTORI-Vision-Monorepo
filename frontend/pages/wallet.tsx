@@ -8,6 +8,7 @@ import useRuneIntegration from '../src/hooks/useRuneIntegration';
 import { isAdminWallet } from '../src/utils/adminUtils';
 import NAVDisplay from '../components/NAVDisplay';
 import CurrencyToggle from '../components/CurrencyToggle';
+import Spinner from '../components/Spinner';
 
 export default function WalletPage() {
   const [connectedAddress, setConnectedAddress] = useState<string | null>(null);
@@ -27,8 +28,10 @@ export default function WalletPage() {
     metadata, 
     transferRune,
     getDistributionStats,
-    isLoading,
-    OVT_RUNE_ID
+    isLoading: isTransferLoading,
+    error: transferHookError,
+    OVT_RUNE_ID,
+    processingOrderId
   } = useRuneIntegration();
   
   // Distribution stats
@@ -108,6 +111,17 @@ export default function WalletPage() {
     }
   };
   
+  // Define the style/class for the processing indicator
+  // Using ring for the subtle glow effect on the balance card
+  const processingCardClass = processingOrderId 
+    ? 'ring-2 ring-offset-2 ring-[#7bc6d5] ring-opacity-75' // Vibrant Cyan ring
+    : '';
+  
+  // Class for the small status indicator (e.g., on Wallet button)
+  const processingStatusIndicatorClass = processingOrderId
+     ? 'absolute -top-1 -right-1 flex h-3 w-3'
+     : 'hidden'; // Hide when not processing
+
   return (
     <Layout title="OTORI Vision Wallet">
       {/* Top Navigation Bar */}
@@ -153,12 +167,19 @@ export default function WalletPage() {
             {/* Currency Toggle */}
             <CurrencyToggle size="sm" />
             
-            {/* Wallet Connection */}
-            <WalletConnector 
-              onConnect={handleConnectWallet}
-              onDisconnect={handleDisconnectWallet}
-              connectedAddress={connectedAddress || undefined}
-            />
+            {/* Wallet Connection with Status Indicator */}
+            <div className="relative"> 
+                <WalletConnector 
+                  onConnect={handleConnectWallet}
+                  onDisconnect={handleDisconnectWallet}
+                  connectedAddress={connectedAddress || undefined}
+                />
+                {/* Small pulsing dot indicator */}
+                <div className={processingStatusIndicatorClass}>
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#7bc6d5] opacity-75"></span> 
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-[#67a8b6]"></span> {/* Slightly darker cyan for the dot */}
+                </div>
+             </div>
           </div>
         </div>
       </div>
@@ -170,7 +191,15 @@ export default function WalletPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {/* Wallet Overview Section */}
             <div className="md:col-span-2">
-              <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
+              {/* Apply ring indicator to the balances card */}
+              <div className={`bg-white rounded-lg shadow-sm p-6 mb-6 relative overflow-hidden ${processingCardClass}`}>
+                 {/* Optional: Corner indicator with spinner */}
+                 {processingOrderId && (
+                      <div className="absolute top-2 right-2 flex items-center space-x-1 px-2 py-0.5 bg-cyan-100 text-[#7bc6d5] text-xs font-medium rounded-full z-10 border border-[#7bc6d5] border-opacity-50">
+                          <Spinner size="xs" color="text-[#7bc6d5]" /> 
+                          <span>Processing...</span>
+                      </div>
+                  )}
                 <h2 className="text-xl font-semibold mb-4">Token Balances</h2>
                 <WalletTokenDisplay address={connectedAddress} />
               </div>
@@ -219,10 +248,10 @@ export default function WalletPage() {
                   
                   <button
                     type="submit"
-                    disabled={isLoading}
+                    disabled={isTransferLoading}
                     className="w-full bg-primary text-white py-2 px-4 rounded hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-primary focus:ring-opacity-50 transition-colors"
                   >
-                    {isLoading ? 'Processing...' : 'Send OVT'}
+                    {isTransferLoading ? 'Processing...' : 'Send OVT'}
                   </button>
                 </form>
                 

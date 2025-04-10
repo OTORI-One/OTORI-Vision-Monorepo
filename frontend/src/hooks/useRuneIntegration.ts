@@ -15,7 +15,8 @@ import { useState, useCallback, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import { useLaserEyes } from '@omnisat/lasereyes-react';
 import { BaseNetwork } from '@omnisat/lasereyes-core'; // Assuming BaseNetwork might be needed
-import { getPriceStore } from '../services/priceService'; // Added import
+import { getPriceStore, OrderUpdatePayload } from '../services/priceService'; // Added import
+// import { useNotifications } from '../context/NotificationContext'; // Assuming a notification context exists --> COMMENTED OUT
 
 // OVT Rune constants
 export const OVT_RUNE_ID = '240249:101';
@@ -119,18 +120,18 @@ export interface SellPreparationResult {
   error?: string;
 }
 
-// Interface for the final transaction result after confirmation
-// Consolidating TransactionResult from before, adding potential tx ids
+// Extend FinalTransactionResult to include pending status
 export interface FinalTransactionResult {
   success: boolean;
   txid?: string; // Can be OVT txid (buy) or BTC txid (sell)
   ovtTxId?: string;
   btcTxId?: string;
-  status?: 'pending' | 'confirmed' | 'failed';
+  status?: 'pending' | 'confirmed' | 'failed' | 'pending_confirmation'; // Add pending_confirmation
   confirmations?: number;
   timestamp?: number;
   message?: string;
   error?: string;
+  orderId?: string; // Include orderId for pending status
 }
 
 /**
@@ -144,6 +145,9 @@ export function useRuneIntegration() {
   const [balance, setBalance] = useState<number>(0);
   const [metadata, setMetadata] = useState<RuneMetadata | null>(null);
   const [transactions, setTransactions] = useState<RuneTransaction[]>([]);
+  const [processingOrderId, setProcessingOrderId] = useState<string | null>(null);
+  const [processingTimeoutId, setProcessingTimeoutId] = useState<NodeJS.Timeout | null>(null);
+  // const { addNotification } = useNotifications(); // <<< COMMENTED OUT
   const priceStore = useMemo(() => getPriceStore(), []);
 
   const API_BASE_URL = process.env.NEXT_PUBLIC_RUNE_ENDPOINT || 'http://localhost:9192';
@@ -422,7 +426,7 @@ export function useRuneIntegration() {
        console.error('Error confirming buy OVT:', err);
        const errorMessage = err instanceof Error ? err.message : 'Failed to confirm buy transaction';
        setError(errorMessage);
-       return { success: false, error: errorMessage }; // Return structured error
+       return { success: false, error: errorMessage, status: 'failed' }; // Return structured error
     } finally {
       setIsLoading(false);
     }
@@ -506,40 +510,89 @@ export function useRuneIntegration() {
           throw new Error('Order ID and OVT Transaction ID are required');
       }
 
+      // Clear any previous processing state
+      if (processingTimeoutId) clearTimeout(processingTimeoutId);
+      setProcessingOrderId(null);
+      setProcessingTimeoutId(null);
+      
       setIsLoading(true);
       setError(null);
 
       try {
           console.log(`Confirming sell transfer for order ${orderId} with OVT tx ${ovtTxId}`);
-          // This endpoint needs to exist on the backend (e.g., in tradingRoutes.js)
-          const response = await axios.post<FinalTransactionResult>(`${TRADING_API_URL}/api/trading/confirm-sell-transfer`, {
-              orderId,
-              ovtTxId
+          const confirmUrl = `${TRADING_API_URL}/confirm-sell-transfer`; // Adjusted API endpoint
+          console.log('Confirming Sell URL:', confirmUrl);
+
+          // Use fetch to check status code
+          const response = await fetch(confirmUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ orderId, ovtTxId })
           });
-          console.log('Confirm sell OVT response:', response.data);
 
-          if (!response.data || !response.data.success) {
-              throw new Error(response.data?.error || 'Failed to confirm sell transfer and receive payment.');
-          }
-          
-          // Optional: Refresh balance and history after successful confirmation
-          if (address) {
-              await getBalance(address); // OVT balance should decrease
-              // Need a way to check BTC balance update too
-              await getTransactionHistory(address);
+          const result: FinalTransactionResult = await response.json();
+          console.log('Confirm sell OVT raw response:', { status: response.status, body: result });
+
+          if (!response.ok && response.status !== 202) { // Handle non-200/202 errors
+              throw new Error(result?.error || result?.message || `Failed to confirm sell transfer. Status: ${response.status}`);
           }
 
-          return response.data; // Contains { success, btcTxId, ... }
+          // --- Handle Pending Confirmation (202 Accepted or explicit status) ---
+          if (response.status === 202 || result.status === 'pending_confirmation') {
+              console.log(`Sell Order ${orderId} is pending confirmation. Setting up listener and timeout.`);
+              setProcessingOrderId(orderId);
+              
+              // Set timeout (20 minutes)
+              const timeoutDuration = 20 * 60 * 1000; 
+              const timerId = setTimeout(() => {
+                  console.log(`Sell Order ${orderId} confirmation timed out.`);
+                  setProcessingOrderId(currentOrderId => {
+                     if (currentOrderId === orderId) {
+                        // addNotification({ type: 'error', message: `Order ${orderId} confirmation timed out. Please check your transaction history or contact support.` }); // <<< COMMENTED OUT
+                        console.error(`Sell Order ${orderId} confirmation timed out.`); // Added console log
+                        return null; // Clear the processing state
+                     }
+                     return currentOrderId; 
+                  });
+                  setProcessingTimeoutId(null);
+              }, timeoutDuration);
+              setProcessingTimeoutId(timerId);
+    
+              // Return pending status
+              return { success: true, status: 'pending_confirmation', orderId: orderId }; 
+          }
+
+          // --- Handle Immediate Success/Failure --- 
+          if (result.success) {
+              console.log(`Sell Order ${orderId} confirmed immediately.`);
+              // addNotification({ type: 'success', message: `Sell order ${orderId} completed successfully!` }); // <<< COMMENTED OUT
+              // Optional: Refresh balance and history after successful confirmation
+              if (address) {
+                  await getBalance(address); // OVT balance should decrease
+                  // Need a way to check BTC balance update too
+                  await getTransactionHistory(address);
+              }
+              return result; // Contains { success, btcTxId, ... }
+          } else {
+              // Handle immediate failure response from API
+              console.error(`Sell Order ${orderId} failed immediate confirmation: ${result.error || result.message}`);
+              throw new Error(result.error || result.message || 'Failed to confirm sell transfer and receive payment.');
+          }
 
       } catch (err) {
           console.error('Error confirming sell OVT:', err);
           const errorMessage = err instanceof Error ? err.message : 'Failed to confirm sell transaction';
           setError(errorMessage);
-          return { success: false, error: errorMessage }; // Structured error
+          // Ensure processing state is cleared on error
+          setProcessingOrderId(null); 
+          if(processingTimeoutId) clearTimeout(processingTimeoutId);
+          setProcessingTimeoutId(null);
+          return { success: false, error: errorMessage, status: 'failed' }; // Structured error
       } finally {
           setIsLoading(false);
       }
-  }, [TRADING_API_URL, address, getBalance, getTransactionHistory]);
+  // Removed addNotification from dependencies as it's commented out
+  }, [TRADING_API_URL, address, getBalance, getTransactionHistory, processingTimeoutId]);
 
   /**
    * Get distribution statistics for OVT token
@@ -651,6 +704,7 @@ export function useRuneIntegration() {
    * Fetch token info and subscribe to updates
    */
   useEffect(() => {
+    let isMounted = true;
     // Initial fetch when address becomes available or changes
     if (address && connected) {
       console.log(`useRuneIntegration: Address detected (${address}), fetching initial data...`);
@@ -708,14 +762,51 @@ export function useRuneIntegration() {
         */
     });
 
+    // *** NEW: Subscribe to Order Updates ***
+    const unsubscribeOrderUpdates = priceStore.subscribeToOrderUpdates((orderUpdate: OrderUpdatePayload) => {
+      if (!isMounted) return;
+      
+      // ... (log update)
+      
+      // Check if this update is for the order we are currently processing
+      if (orderUpdate.orderId && orderUpdate.orderId === processingOrderId) {
+         // ... (log match)
+         
+         // Clear the processing state and timeout
+         // ... (clear state/timeout)
+
+         // Handle final status
+         if (orderUpdate.status === 'completed') {
+            // addNotification({ type: 'success', message: orderUpdate.message || `Order ${orderUpdate.orderId} completed!` }); // <<< COMMENTED OUT
+            console.log(`Order ${orderUpdate.orderId} completed successfully via WS.`); // Added console log
+            // ... (refresh balances)
+         } else {
+            // addNotification({ type: 'error', message: orderUpdate.message || `Order ${orderUpdate.orderId} failed: ${orderUpdate.status}` }); // <<< COMMENTED OUT
+            console.error(`Order ${orderUpdate.orderId} failed via WS: ${orderUpdate.message || orderUpdate.status}`); // Added console log
+         }
+      } else {
+         // ... (log ignore)
+      }
+    });
+
     // Cleanup function
     return () => {
       console.log("useRuneIntegration: Cleaning up WebSocket subscriptions.");
       unsubscribeBalance();
       unsubscribeTransactions();
+      isMounted = false;
     };
-    // Dependencies: address, connected, getBalance, getTransactionHistory, getTokenMetadata, priceStore
-  }, [address, connected, getBalance, getTransactionHistory, getTokenMetadata, priceStore]);
+    // Removed addNotification from dependencies as it's commented out
+  }, [ 
+      address, 
+      connected, 
+      getBalance, 
+      getTransactionHistory, 
+      getTokenMetadata, 
+      priceStore, 
+      processingOrderId, 
+      processingTimeoutId
+  ]);
 
   return {
     // State
@@ -724,6 +815,7 @@ export function useRuneIntegration() {
     balance,
     metadata,
     transactions,
+    processingOrderId,
     
     // Actions
     getBalance,

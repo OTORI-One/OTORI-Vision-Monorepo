@@ -83,6 +83,12 @@ class PriceStore {
   private MAX_CONCURRENT_REQUESTS = 1; // Limit concurrent requests
   private activeRequests = 0;
   
+  // Add state for order updates (optional, mainly rely on listeners)
+  // private _latestOrderUpdate: OrderUpdatePayload | null = null; 
+  
+  // Add listener set for order updates
+  private _orderUpdateListeners: Set<(data: OrderUpdatePayload) => void> = new Set();
+  
   // Constructor is private for singleton pattern
   private constructor() {
     // Load initial data from cache immediately
@@ -254,6 +260,22 @@ class PriceStore {
           case 'PONG': // Handle potential ping/pong
              // console.log('Received pong from server');
              break;
+          // NEW: Handle ORDER_UPDATE
+          case 'ORDER_UPDATE':
+            // Assuming payload matches OrderUpdatePayload interface
+            if (message.payload && message.payload.orderId && message.payload.status) {
+              console.log('[Price WS] Received ORDER_UPDATE from WS:', message.payload);
+              const orderUpdateData = message.payload as OrderUpdatePayload;
+              // Notify listeners with the specific order update payload
+              this._orderUpdateListeners.forEach(listener => {
+                  try { listener(orderUpdateData); } catch (e) { console.error('Error in Order Update listener:', e); }
+              });
+              // Optionally store latest update if needed elsewhere
+              // this._latestOrderUpdate = orderUpdateData; 
+            } else {
+              console.warn('[Price WS] Received invalid ORDER_UPDATE payload:', message.payload);
+            }
+            break;
           default:
             // --- MODIFIED LOG ---
             console.warn('[Price WS] Received unknown WebSocket message type:', message.type);
@@ -1118,6 +1140,15 @@ class PriceStore {
        // Placeholder: return empty if no API call implemented
        return Promise.resolve({ bids: [], asks: [] });
   }
+
+  // NEW: Subscribe to Order updates
+  public subscribeToOrderUpdates(callback: (data: OrderUpdatePayload) => void): () => void {
+    this._orderUpdateListeners.add(callback);
+    // Initial call? Probably not needed for order updates as they are event-driven.
+    return () => {
+      this._orderUpdateListeners.delete(callback);
+    };
+  }
 }
 
 // Types
@@ -1330,6 +1361,7 @@ export default {
   // NEW: Expose trade subscriptions
   subscribeToTradeUpdates: priceStore.subscribeToTradeUpdates.bind(priceStore),
   subscribeToOrderBookUpdates: priceStore.subscribeToOrderBookUpdates.bind(priceStore),
+  subscribeToOrderUpdates: priceStore.subscribeToOrderUpdates.bind(priceStore),
 }; 
 
 // --- Type Definitions (Ensure TradeTransaction and OrderBook are defined or imported) ---
@@ -1358,4 +1390,13 @@ export interface TradeTransaction {
   status: 'pending' | 'confirmed' | 'failed';
   orderType?: 'market' | 'limit'; // Optional order type
   limitPrice?: number; // Optional limit price
+}
+
+// Define the structure for order updates
+export interface OrderUpdatePayload {
+  orderId: string;
+  status: 'pending_confirmation' | 'completed' | 'btc_verification_failed' | 'ovt_transfer_failed' | 'timeout' | string; // Allow other failure types
+  message?: string;
+  ovtTxId?: string;
+  btcTxId?: string;
 } 
