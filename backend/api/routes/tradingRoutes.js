@@ -334,16 +334,31 @@ router.post('/confirm-buy-payment', async (req, res) => {
             res.json({
                 success: true,
                 message: 'Payment confirmed, OVT transfer initiated.',
-                ovtTxId: result.ovtTxId
+                status: result.status,
+                ovtTxId: result.ovtTxId,
+                btcTxId: result.btcTxId
             });
         } else {
-            // Use 400 or 409 (Conflict) if payment wasn't confirmed, 500 for internal errors
-            const statusCode = result.error.includes('Order ID not found') ? 404 :
-                             result.error.includes('Payment not confirmed') ? 400 :
-                             result.error.includes('OVT transfer failed') ? 500 : 400;
+            const errorMsg = typeof result.message === 'string' ? result.message : 'Unknown error during payment confirmation';
+            const status = result.status || 'unknown_error';
+
+            let statusCode = 400;
+            if (status === 'order_not_found') {
+                statusCode = 404;
+            } else if (status === 'ovt_transfer_failed') {
+                statusCode = 500;
+            } else if (status === 'btc_verification_failed') {
+                statusCode = 400;
+            } else if (status === 'pending_confirmation') {
+                statusCode = 202;
+            }
+            
+            console.log(`[Route] confirm-buy-payment failed. Status: ${status}, Code: ${statusCode}, Msg: ${errorMsg}`);
+
             res.status(statusCode).json({
                 success: false,
-                error: result.error
+                error: errorMsg,
+                status: status
             });
         }
     } catch (error) {
