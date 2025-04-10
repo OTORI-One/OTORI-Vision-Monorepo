@@ -765,13 +765,15 @@ async function confirmBuyPayment(orderId, btcTxId) {
 
         verificationError = error.message; // Keep original message for potential return
 
-        // Check for the specific -5 error code
-        if (error.code === 5 || (error.message && error.message.includes('Invalid or non-wallet transaction id'))) {
-            console.warn(`[Confirm Buy] TX ${btcTxId} returned -5 error from gettransaction. Checking getrawtransaction as fallback...`);
+        // Check the stderr string for the specific error message, as error.code seems unreliable
+        const isNonWalletTxError = error.stderr && error.stderr.includes('Invalid or non-wallet transaction id');
+
+        if (isNonWalletTxError) {
+            console.warn(`[Confirm Buy] TX ${btcTxId} returned non-wallet error from gettransaction. Checking getrawtransaction as fallback...`);
             try {
                 // Attempt getrawtransaction to see if the TX exists at all
                 await commandService.executeBitcoinCommand(`getrawtransaction ${btcTxId}`);
-                console.log(`[Confirm Buy] getrawtransaction succeeded for ${btcTxId}. Treating as pending confirmation due to initial -5 error.`);
+                console.log(`[Confirm Buy] getrawtransaction succeeded for ${btcTxId}. Treating as pending confirmation due to initial non-wallet error.`);
                 status = 'pending_confirmation';
             } catch (rawTxError) {
                 console.error(`[Confirm Buy] Fallback getrawtransaction also failed for ${btcTxId}: ${rawTxError.message}. Marking as failed.`);
