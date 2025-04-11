@@ -185,6 +185,11 @@ export function useRuneIntegration() {
     setIsLoading(true);
     setError(null);
 
+    // --- DEBUGGING --- 
+    console.log(`[useRuneIntegration] getBalance called for walletAddress: ${walletAddress}`);
+    console.log(`[useRuneIntegration] LaserEyes address: ${address}, connected: ${connected}`);
+    // --- END DEBUGGING ---
+
     try {
       // Call the Runes API to get balance
       const response = await axios.get(`${API_BASE_URL}/ovt/balances?address=${walletAddress}`);

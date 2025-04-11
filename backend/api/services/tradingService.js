@@ -770,7 +770,7 @@ async function confirmBuyPayment(orderId, btcTxId) {
                 console.log(`[Trading Service] BTC Payment found for order ${orderId} (Tx: ${btcTxId}) but has ${currentConfirmations} confirmations. Status remains pending_confirmation.`);
                 // Not enough confirmations yet
                 await updatePendingOrderStatus(orderId, 'pending_confirmation', { btcTxId });
-                 broadcastInternalUpdate({ type: 'ORDER_UPDATE', payload: { orderId, status: 'pending_confirmation', message: `Awaiting BTC confirmation (${currentConfirmations}/${requiredConfirmations}).` } });
+                 broadcastInternalUpdate('ORDER_UPDATE', { orderId, status: 'pending_confirmation', message: `Awaiting BTC confirmation (${currentConfirmations}/${requiredConfirmations}).` });
                 return { success: true, status: 'pending_confirmation' }; // Indicate success but pending
             }
         } else {
@@ -804,7 +804,7 @@ async function confirmBuyPayment(orderId, btcTxId) {
     } else {
          console.error(`[Trading Service] BTC verification failed for order ${orderId}. Error: ${error.message}`);
          await updatePendingOrderStatus(orderId, 'btc_verification_failed', { btcTxId, error: error.message });
-         broadcastInternalUpdate({ type: 'ORDER_UPDATE', payload: { orderId, status: 'btc_verification_failed', message: `BTC payment verification failed: ${error.message}` } });
+         broadcastInternalUpdate('ORDER_UPDATE', { orderId, status: 'btc_verification_failed', message: `BTC payment verification failed: ${error.message}` });
          return { success: false, status: 'btc_verification_failed', error: 'BTC payment verification failed.' };
     }
   }
