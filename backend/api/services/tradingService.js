@@ -687,199 +687,124 @@ async function confirmBuyPayment(orderId, btcTxId) {
   try {
     console.log(`[Trading Service] Verifying BTC Tx ${btcTxId} using getrawtransaction...`);
     
-    // --- Use getrawtransaction as the primary check ---
-    const rawTxData = await commandService.executeBitcoinCommand(
+    // Verify the BTC transaction using getrawtransaction for better reliability
+    const txData = await commandService.executeBitcoinCommand(
       `getrawtransaction ${btcTxId} true` // Add 'true' for verbose JSON output
     );
 
-    // Check if transaction exists and has confirmations
-    if (!rawTxData || typeof rawTxData !== 'object') {
-        console.error(`[Trading Service] Failed to fetch raw transaction data for ${btcTxId}. Response:`, rawTxData);
-        const errorDetails = { btcTxId: btcTxId, error: 'Failed to fetch transaction data' };
-        updatePendingOrderStatus(orderId, 'btc_verification_failed', errorDetails);
-        // Broadcast final failure status
-        broadcastInternalUpdate('ORDER_UPDATE', { orderId, status: 'btc_verification_failed', message: `Failed to fetch transaction data for ${btcTxId}.`, ...errorDetails });
-        return { success: false, status: 'btc_verification_failed', message: `Failed to fetch transaction data for ${btcTxId}.` };
+    // Check confirmations - handle undefined case
+    const currentConfirmations = txData?.confirmations ?? 0; 
+    console.log(`[Trading Service] Transaction ${btcTxId} has ${currentConfirmations} confirmations.`);
+
+    const requiredConfirmations = parseInt(process.env.MIN_CONFIRMATIONS || '1', 10);
+
+    // Find the output sent to the LP receiving address
+    const targetAddress = process.env.LP_BTC_RECEIVING_ADDRESS;
+    const expectedAmountSats = expectedCostSats; // Amount user was supposed to pay
+    let paymentOutput = null;
+
+    if (txData && txData.vout && Array.isArray(txData.vout)) {
+        paymentOutput = txData.vout.find(output =>
+            output.scriptPubKey?.address === targetAddress
+        );
     }
 
-    console.log(`[Trading Service] Raw TX data received for ${btcTxId}:`, JSON.stringify(rawTxData, null, 2)); // Log the structure
+    if (paymentOutput) {
+        const receivedAmountBTC = paymentOutput.value;
+        const receivedAmountSats = Math.round(receivedAmountBTC * 1e8);
+        console.log(`[Trading Service] Output found to ${targetAddress} with amount ${receivedAmountBTC} BTC.`);
 
-    const confirmations = rawTxData.confirmations || 0;
-    console.log(`[Trading Service] Transaction ${btcTxId} has ${confirmations} confirmations.`);
+        // Allow for small variance if needed, e.g., due to floating point math
+        const tolerance = 10; // Allow +/- 10 sats tolerance, adjust as needed
+        if (Math.abs(receivedAmountSats - expectedAmountSats) <= tolerance) {
+            console.log(`[Trading Service] Correct amount confirmed for output to ${targetAddress}.`);
 
-    // --- Verification Logic ---
-    let paymentVerified = false;
-    let foundCorrectOutput = false;
+            if (currentConfirmations >= requiredConfirmations) {
+                console.log(`[Trading Service] BTC Payment Confirmed (>=${requiredConfirmations} confs) for order ${orderId}. Proceeding with OVT transfer.`);
+                // Payment confirmed, proceed to transfer OVT
+                const transferResult = await transferTokensFromLP({
+                    recipientAddress: pendingOrder.fromAddress,
+                    amount: pendingOrder.amount, // OVT amount
+                    orderId: orderId,
+                    btcTxId: btcTxId // Pass BTC txid for logging/reference
+                });
 
-    if (rawTxData.vout && Array.isArray(rawTxData.vout)) {
-        for (const output of rawTxData.vout) {
-            if (output.scriptPubKey && output.scriptPubKey.address === expectedAddress) {
-                // Found an output to the correct address
-                const receivedAmountBtc = output.value;
-                console.log(`[Trading Service] Output found to ${expectedAddress} with amount ${receivedAmountBtc} BTC.`);
-                // Use a small tolerance for floating point comparison
-                if (Math.abs(receivedAmountBtc - expectedCostBtc) < 1e-9) { 
-                    foundCorrectOutput = true;
-                    console.log(`[Trading Service] Correct amount confirmed for output to ${expectedAddress}.`);
-                    break; // Found the matching output
+                if (transferResult.success && transferResult.ovtTxId) {
+                    console.log(`[Trading Service] OVT transfer successful for order ${orderId}. OVT TxID: ${transferResult.ovtTxId}`);
+                    
+                    // Update order status to completed and add OVT txid
+                    updatePendingOrderStatus(orderId, 'completed', { ovtTxId: transferResult.ovtTxId, btcTxId: btcTxId });
+                    // removePendingOrder(orderId); // Keep it for history unless explicitly needed otherwise
+                    
+                    const successResult = { 
+                        success: true, 
+                        status: 'completed', 
+                        message: 'Buy order completed successfully.',
+                        ovtTxId: transferResult.ovtTxId,
+                        btcTxId: btcTxId
+                    };
+                    // Broadcast final success status
+                    broadcastInternalUpdate('ORDER_UPDATE', { orderId, ...successResult }); 
+                    return successResult;
                 } else {
-                    console.warn(`[Trading Service] Output to ${expectedAddress} found, but amount mismatch. Expected: ${expectedCostBtc}, Received: ${receivedAmountBtc}`);
+                    // OVT Transfer Failed - Critical State!
+                    const errorMsg = `BTC payment confirmed, but OVT transfer failed: ${transferResult.message || transferResult.error}`; 
+                    console.error(`[Trading Service] OVT transfer FAILED for order ${orderId} after BTC confirmed. Error: ${transferResult.message || transferResult.error}. Order status set to ovt_transfer_failed.`);
+                    const errorDetails = { btcTxId: btcTxId, error: transferResult.message || transferResult.error };
+                    updatePendingOrderStatus(orderId, 'ovt_transfer_failed', errorDetails);
+                    // ** MANUAL INTERVENTION REQUIRED HERE ** 
+                    // Log this state clearly. A refund process needs to be triggered.
+                    const failureResult = { 
+                        success: false, 
+                        status: 'ovt_transfer_failed', 
+                        message: errorMsg,
+                        btcTxId: btcTxId,
+                        ...errorDetails
+                    };
+                    // Broadcast final failure status
+                    broadcastInternalUpdate('ORDER_UPDATE', { orderId, ...failureResult });
+                    return failureResult;
                 }
+            } else {
+                console.log(`[Trading Service] BTC Payment found for order ${orderId} (Tx: ${btcTxId}) but has ${currentConfirmations} confirmations. Status remains pending_confirmation.`);
+                // Not enough confirmations yet
+                await updatePendingOrderStatus(orderId, 'pending_confirmation', { btcTxId });
+                 broadcastInternalUpdate({ type: 'ORDER_UPDATE', payload: { orderId, status: 'pending_confirmation', message: `Awaiting BTC confirmation (${currentConfirmations}/${requiredConfirmations}).` } });
+                return { success: true, status: 'pending_confirmation' }; // Indicate success but pending
             }
+        } else {
+            console.error(`[Trading Service] BTC Payment amount mismatch for order ${orderId}. Expected: ${expectedAmountSats} sats, Received: ${receivedAmountSats} sats.`);
+            // Update status for payment mismatch
+            updatePendingOrderStatus(orderId, 'btc_payment_mismatch', { btcTxId, receivedAmountSats, expectedAmountSats }); 
+            broadcastInternalUpdate('ORDER_UPDATE', { orderId, status: 'btc_payment_mismatch', message: `BTC payment amount incorrect. Expected ${expectedAmountSats} sats, received ${receivedAmountSats}.` });
+            return { success: false, status: 'btc_payment_mismatch', message: 'Incorrect BTC payment amount.' };
         }
     } else {
-        console.warn(`[Trading Service] Transaction ${btcTxId} has no outputs (vout) array.`);
-    }
-
-    // Decide status based on verification and confirmations
-    if (foundCorrectOutput) {
-        if (confirmations >= 1) {
-            console.log(`[Trading Service] BTC Payment verified for order ${orderId} (Tx: ${btcTxId}, Confirmations: ${confirmations}).`);
-            paymentVerified = true;
-        } else {
-            console.log(`[Trading Service] BTC Payment found for order ${orderId} (Tx: ${btcTxId}) but has 0 confirmations. Status remains pending_confirmation.`);
-            // Pass btcTxId when updating status
-            updatePendingOrderStatus(orderId, 'pending_confirmation', { btcTxId: btcTxId }); 
-            // DO NOT broadcast here - status is not final
-            return { 
-                success: true, // Indicate the API call succeeded in finding the TX
-                status: 'pending_confirmation', 
-                message: `Transaction ${btcTxId} found but awaiting confirmation.`,
-                btcTxId: btcTxId
-             };
-        }
-    } else {
-        // If correct output wasn't found
-        const errorMsg = `Payment verification failed for ${btcTxId}. Output mismatch.`;
-        console.error(`[Trading Service] BTC verification failed for order ${orderId} (Tx: ${btcTxId}). Correct output (Address: ${expectedAddress}, Amount: ${expectedCostBtc} BTC) not found.`);
-        const errorDetails = { btcTxId: btcTxId, error: 'Output mismatch' };
-        updatePendingOrderStatus(orderId, 'btc_verification_failed', errorDetails); 
-        // Broadcast final failure status
-        broadcastInternalUpdate('ORDER_UPDATE', { orderId, status: 'btc_verification_failed', message: errorMsg, ...errorDetails });
-        return { success: false, status: 'btc_verification_failed', message: errorMsg };
-    }
-
-    // --- Proceed to OVT Transfer if BTC payment is verified ---
-    if (paymentVerified) {
-      console.log(`[Trading Service] Attempting OVT transfer for verified order ${orderId}...`);
-      try {
-        const transferParams = {
-          recipientAddress: pendingOrder.fromAddress,
-          amount: pendingOrder.amount, // OVT amount
-          orderId: orderId,
-          btcTxId: btcTxId // Pass BTC txid for logging/reference
-        };
-        
-        const transferResult = await transferTokensFromLP(transferParams);
-
-        if (transferResult.success && transferResult.ovtTxId) {
-          console.log(`[Trading Service] OVT transfer successful for order ${orderId}. OVT TxID: ${transferResult.ovtTxId}`);
-          
-          // Update order status to completed and add OVT txid
-          updatePendingOrderStatus(orderId, 'completed', { ovtTxId: transferResult.ovtTxId, btcTxId: btcTxId });
-          // removePendingOrder(orderId); // Keep it for history unless explicitly needed otherwise
-          
-          const successResult = { 
-              success: true, 
-              status: 'completed', 
-              message: 'Buy order completed successfully.',
-              ovtTxId: transferResult.ovtTxId,
-              btcTxId: btcTxId
-          };
-          // Broadcast final success status
-          broadcastInternalUpdate('ORDER_UPDATE', { orderId, ...successResult }); 
-          return successResult;
-        } else {
-          // OVT Transfer Failed - Critical State!
-          const errorMsg = `BTC payment confirmed, but OVT transfer failed: ${transferResult.message || transferResult.error}`; 
-          console.error(`[Trading Service] OVT transfer FAILED for order ${orderId} after BTC confirmed. Error: ${transferResult.message || transferResult.error}. Order status set to ovt_transfer_failed.`);
-          const errorDetails = { btcTxId: btcTxId, error: transferResult.message || transferResult.error };
-          updatePendingOrderStatus(orderId, 'ovt_transfer_failed', errorDetails);
-          // ** MANUAL INTERVENTION REQUIRED HERE ** 
-          // Log this state clearly. A refund process needs to be triggered.
-          const failureResult = { 
-              success: false, 
-              status: 'ovt_transfer_failed', 
-              message: errorMsg,
-              btcTxId: btcTxId,
-              ...errorDetails
-          };
-          // Broadcast final failure status
-          broadcastInternalUpdate('ORDER_UPDATE', { orderId, ...failureResult });
-          return failureResult;
-        }
-      } catch (transferError) {
-        // Catch errors during the transfer attempt itself
-        const errorMsg = `Exception during OVT transfer: ${transferError.message}`;
-        console.error(`[Trading Service] Exception during OVT transfer for order ${orderId}: ${transferError.message}`);
-        const errorDetails = { btcTxId: btcTxId, error: transferError.message };
-        updatePendingOrderStatus(orderId, 'ovt_transfer_failed', errorDetails);
-         // ** MANUAL INTERVENTION REQUIRED HERE **
-         const failureResult = { 
-              success: false, 
-              status: 'ovt_transfer_failed', 
-              message: errorMsg,
-              btcTxId: btcTxId,
-              ...errorDetails
-          };
-          // Broadcast final failure status
-          broadcastInternalUpdate('ORDER_UPDATE', { orderId, ...failureResult });
-          return failureResult;
-      }
-    }
-    // This part should logically not be reached if verification failed earlier, but as a fallback:
-    else {
-        const errorMsg = 'BTC verification failed or confirmations insufficient.';
-        console.error(`[Trading Service] Reached end of confirmBuyPayment for ${orderId} without resolving to a final state. Defaulting to failure.`);
-        const errorDetails = { btcTxId: btcTxId, error: 'Inconsistent state' };
-        updatePendingOrderStatus(orderId, 'btc_verification_failed', errorDetails);
-         const failureResult = { 
-              success: false, 
-              status: 'btc_verification_failed', 
-              message: errorMsg,
-              btcTxId: btcTxId,
-              ...errorDetails
-          };
-          // Broadcast final failure status
-          broadcastInternalUpdate('ORDER_UPDATE', { orderId, ...failureResult });
-          return failureResult;
+        console.error(`[Trading Service] BTC Payment output to the specified LP address (${targetAddress}) not found in transaction ${btcTxId}.`);
+        // Update status indicating output not found
+        updatePendingOrderStatus(orderId, 'btc_output_not_found', { btcTxId, targetAddress });
+        broadcastInternalUpdate('ORDER_UPDATE', { orderId, status: 'btc_output_not_found', message: `BTC payment output not found for the correct address ${targetAddress}.` });
+        return { success: false, status: 'btc_output_not_found', message: 'BTC payment output not found for the correct address.' };
     }
 
   } catch (error) {
-    console.error(`[Trading Service] Error during BTC payment confirmation for order ${orderId} (Tx: ${btcTxId}):`, error);
+    console.error(`[Trading Service] Error verifying BTC Tx ${btcTxId} for order ${orderId}:`, error.message || error);
+    // Keep status as pending_confirmation if the tx just wasn't found yet, otherwise mark as failed
+    const isTxNotFoundError = error.message?.includes('No such mempool or blockchain transaction') || (error.stderr && error.stderr.includes('No such mempool or blockchain transaction'));
 
-    // Check if the error is specifically "transaction not found" from bitcoin-cli
-    // Error structure might vary, check message or stderr if available
-    let specificErrorMsg = error.message || '';
-    if (error.stderr) {
-        specificErrorMsg += ` (stderr: ${error.stderr})`;
-    }
-
-    if (specificErrorMsg.includes('No such mempool or blockchain transaction') || specificErrorMsg.includes('transaction not found')) {
-        console.warn(`[Trading Service] Transaction ${btcTxId} not found via getrawtransaction. Treating as pending/not yet propagated.`);
-         updatePendingOrderStatus(orderId, 'pending_confirmation', { btcTxId: btcTxId }); 
-         // DO NOT broadcast here - status is not final
-         return { 
-             success: false, // Still technically not successful *yet*
-             status: 'pending_confirmation', 
-             message: `Transaction ${btcTxId} not found or not yet propagated. Awaiting confirmation.`,
-             btcTxId: btcTxId // Include in return object for consistency
-         };
+    if (isTxNotFoundError) {
+         console.log(`[Trading Service] BTC Tx ${btcTxId} not found yet for order ${orderId}. Status remains pending_confirmation.`);
+        // Update status but don't send WebSocket update unless it's the first time seeing the btcTxId
+         if (!pendingOrder.btcTxId) {
+             await updatePendingOrderStatus(orderId, 'pending_confirmation', { btcTxId });
+             // Don't broadcast here, let the initial response handle it
+         }
+         return { success: true, status: 'pending_confirmation' }; // Still pending, let poller retry
     } else {
-        // Generic error during bitcoin-cli execution or other logic
-        const errorMsg = `Error during BTC verification: ${specificErrorMsg}`;
-        const errorDetails = { btcTxId: btcTxId, error: specificErrorMsg };
-        updatePendingOrderStatus(orderId, 'btc_verification_failed', errorDetails); 
-        const failureResult = { 
-            success: false, 
-            status: 'btc_verification_failed', 
-            message: errorMsg,
-            btcTxId: btcTxId,
-            error: errorDetails.error // Include original error for debugging if helpful
-        };
-        // Broadcast final failure status
-        broadcastInternalUpdate('ORDER_UPDATE', { orderId, ...failureResult });
-        return failureResult;
+         console.error(`[Trading Service] BTC verification failed for order ${orderId}. Error: ${error.message}`);
+         await updatePendingOrderStatus(orderId, 'btc_verification_failed', { btcTxId, error: error.message });
+         broadcastInternalUpdate({ type: 'ORDER_UPDATE', payload: { orderId, status: 'btc_verification_failed', message: `BTC payment verification failed: ${error.message}` } });
+         return { success: false, status: 'btc_verification_failed', error: 'BTC payment verification failed.' };
     }
   }
 }
