@@ -1451,10 +1451,13 @@ async function broadcastInternalUpdate(type, payload) {
       headers['X-Internal-Secret'] = secret; // Correctly add the header
     }
     console.log(`Broadcasting internal update: ${type} to ${url}`);
-    await axios.post(url, { type, payload }, { headers }); // Pass headers correctly
+    // Send the object { type, payload } directly as the request body
+    await axios.post(url, { type, payload }, { headers }); 
   } catch (error) {
+    // Log the specific data being sent upon failure for better debugging
+    const requestData = JSON.stringify({ type, payload });
     const errorMessage = error.response ? JSON.stringify(error.response.data) : error.message;
-    console.error(`Failed to broadcast internal update (${type}):`, errorMessage);
+    console.error(`Failed to broadcast internal update (${type}) with data ${requestData}:`, errorMessage);
     // Non-fatal error, log and continue
   }
 }
