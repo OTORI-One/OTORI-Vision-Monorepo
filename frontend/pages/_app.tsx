@@ -6,6 +6,8 @@ import { ensurePortfolioDataLoaded } from '../src/utils/portfolioLoader';
 import { useBitcoinPrice } from '../src/hooks/useBitcoinPrice';
 import { CurrencyProvider } from '../src/hooks/useCurrencyToggle';
 import { getPriceStore } from '../src/services/priceService';
+import { NotificationProvider } from '../src/context/NotificationContext';
+import NotificationContainer from '../components/NotificationContainer';
 import '@/styles/globals.css';
 
 // Initialize global BTC price for formatting utilities
@@ -75,7 +77,10 @@ export default function App({ Component, pageProps }: AppProps) {
       }}
     >
       <CurrencyProvider initialCurrency="usd">
-        <Component {...pageProps} />
+        <NotificationProvider>
+          <Component {...pageProps} />
+          <NotificationContainer />
+        </NotificationProvider>
       </CurrencyProvider>
     </LaserEyesProvider>
   );
