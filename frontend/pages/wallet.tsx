@@ -269,7 +269,7 @@ export default function WalletPage() {
               </div>
             </div>
             
-            {/* Distribution Stats Section */}
+            {/* Distribution Stats Section - Temporarily Commented Out Until Data Source is Fixed
             <div className="md:col-span-1">
               <div className="bg-white rounded-lg shadow-sm p-6 h-full">
                 <h2 className="text-xl font-semibold mb-4">Token Statistics</h2>
@@ -278,7 +278,7 @@ export default function WalletPage() {
                   <div className="space-y-4">
                     <div>
                       <h3 className="text-sm font-medium text-gray-500">Total Supply</h3>
-                      <p className="text-lg font-bold">{formatTokenAmount(distributionStats.totalSupply, metadata?.divisibility || 2)} OVT</p>
+                      <p className="text-lg font-bold">{(distributionStats.totalSupply || 0).toLocaleString()} OVT</p>
                     </div>
                     
                     <div>
@@ -311,6 +311,7 @@ export default function WalletPage() {
                 )}
               </div>
             </div>
+            */}
           </div>
         ) : (
           <div className="bg-white rounded-lg shadow-sm p-8 text-center">
