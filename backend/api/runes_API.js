@@ -931,7 +931,7 @@ runesRouter.get('/ovt/balances', async (req, res) => {
     }
     // --- Caching END ---
 
-    // --- Scraping Logic START ---
+    // --- Scraping Logic START --- // Re-enabled
     let ovtBalanceAmount = 0;
     let satBalanceAmount = 0;
     const ordServerHost = 'http://localhost:9191'; // Use localhost for scraping
@@ -955,7 +955,8 @@ runesRouter.get('/ovt/balances', async (req, res) => {
           const ovtLink = $(element).next('dd').find(`a[href='/rune/${OVT_RUNE_SYMBOL.replace(/•/g, '%E2%80%A2')}']`);
           if (ovtLink.length > 0) {
             const fullText = ovtLink.parent().text();
-            const balanceMatch = fullText.match(/:\s*([\d,]+)⊙/);
+            // Updated Regex to handle potential spacing variations around the colon and symbol
+            const balanceMatch = fullText.match(/:\s*([\d,]+)\s*⊙/); 
             if (balanceMatch && balanceMatch[1]) {
               ovtBalanceAmount = parseInt(balanceMatch[1].replace(/,/g, ''), 10) || 0;
             }
@@ -992,16 +993,29 @@ runesRouter.get('/ovt/balances', async (req, res) => {
     // Return the freshly scraped and cached balance information
     const responsePayload = {
         success: true,
-        balances: (ovtBalanceAmount > 0 || satBalanceAmount > 0 || isTreasury || isLP) ? [{
+        // Ensure the structure matches what the frontend expects (array of balances)
+        balances: (ovtBalanceAmount > 0 || satBalanceAmount > 0 || isTreasury || isLP) ? [{ 
             address,
             runeId: OVT_RUNE_ID,
             runeSymbol: OVT_RUNE_SYMBOL,
-            amount: ovtBalanceAmount,
-            sats: satBalanceAmount,
+            amount: ovtBalanceAmount, // This is the OVT amount
+            sats: satBalanceAmount, // This is the Sats amount
             isTreasury,
             isLP
         }] : []
     };
+    
+    // --- WebSocket START ---
+    // Send update after successful scraping
+    sendWebSocketBroadcast('OVT_BALANCE_UPDATED', {
+        address: address,
+        runeId: OVT_RUNE_ID,
+        amount: ovtBalanceAmount, // Send the raw OVT amount
+        sats: satBalanceAmount,   // Optionally send sats balance too
+        formattedAmount: (ovtBalanceAmount / Math.pow(10, 2)).toFixed(2) // Hardcoding divisibility 2
+    });
+    // --- WebSocket END ---
+
 
     return res.json(responsePayload);
 
