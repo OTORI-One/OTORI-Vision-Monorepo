@@ -944,27 +944,62 @@ runesRouter.get('/ovt/balances', async (req, res) => {
 
       // Extract Sat Balance
       $('dt').each((index, element) => {
-        if ($(element).text().trim() === 'sat balance') {
-          satBalanceAmount = parseInt($(element).next('dd').text().trim().replace(/,/g, ''), 10) || 0;
+        const dtText = $(element).text().trim(); // Log DT text
+        // --- DEBUG LOG ---
+        console.log(`[Scraping Balances] Checking DT: ${dtText}`);
+        // --- END DEBUG LOG ---
+        if (dtText === 'sat balance') {
+          const ddElement = $(element).next('dd');
+          const ddText = ddElement.text().trim();
+          // --- DEBUG LOG ---
+          console.log(`[Scraping Balances] Found 'sat balance', DD text: '${ddText}'`);
+          // --- END DEBUG LOG ---
+          satBalanceAmount = parseInt(ddText.replace(/,/g, ''), 10) || 0;
+          // --- DEBUG LOG ---
+          console.log(`[Scraping Balances] Parsed satBalanceAmount: ${satBalanceAmount}`);
+          // --- END DEBUG LOG ---
         }
       });
 
       // Extract Rune Balance for OVT
       $('dt').each((index, element) => {
-        if ($(element).text().trim() === 'rune balances') {
-          const ovtLink = $(element).next('dd').find(`a[href='/rune/${OVT_RUNE_SYMBOL.replace(/•/g, '%E2%80%A2')}']`);
+        const dtText = $(element).text().trim(); // Log DT text again for clarity
+        if (dtText === 'rune balances') {
+          const ddElement = $(element).next('dd');
+          // --- DEBUG LOG ---
+          console.log(`[Scraping Balances] Found 'rune balances' DD element.`);
+          // --- END DEBUG LOG ---
+          const ovtLink = ddElement.find(`a[href='/rune/${OVT_RUNE_SYMBOL.replace(/•/g, '%E2%80%A2')}']`);
           if (ovtLink.length > 0) {
+            // --- DEBUG LOG ---
+            console.log(`[Scraping Balances] Found OVT link inside DD.`);
+            // --- END DEBUG LOG ---
             const fullText = ovtLink.parent().text();
+            // --- DEBUG LOG ---
+            console.log(`[Scraping Balances] Full text of parent DD: '${fullText}'`);
+            // --- END DEBUG LOG ---
             // Updated Regex to handle potential spacing variations around the colon and symbol
             const balanceMatch = fullText.match(/:\s*([\d,]+)\s*⊙/); 
+             // --- DEBUG LOG ---
+            console.log(`[Scraping Balances] Regex match result:`, balanceMatch);
+            // --- END DEBUG LOG ---
             if (balanceMatch && balanceMatch[1]) {
-              ovtBalanceAmount = parseInt(balanceMatch[1].replace(/,/g, ''), 10) || 0;
+              const matchedAmount = balanceMatch[1].replace(/,/g, '');
+              // --- DEBUG LOG ---
+              console.log(`[Scraping Balances] Regex matched amount string: '${matchedAmount}'`);
+              // --- END DEBUG LOG ---
+              ovtBalanceAmount = parseInt(matchedAmount, 10) || 0;
+               // --- DEBUG LOG ---
+              console.log(`[Scraping Balances] Parsed ovtBalanceAmount: ${ovtBalanceAmount}`);
+              // --- END DEBUG LOG ---
             }
           }
         }
       });
 
-      console.log(`[Scraping] Parsed balances - OVT: ${ovtBalanceAmount}, Sats: ${satBalanceAmount}`);
+      // --- DEBUG LOG (Moved outside loops for final values) ---
+      console.log(`[Scraping Balances] FINAL PARSED VALUES -> OVT: ${ovtBalanceAmount}, Sats: ${satBalanceAmount}`);
+      // --- END DEBUG LOG ---
 
       // --- Caching START ---
       console.log(`[Cache] Storing fresh balance data for ${address}.`);
