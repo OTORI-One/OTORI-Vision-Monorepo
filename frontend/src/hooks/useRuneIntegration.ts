@@ -357,7 +357,7 @@ export function useRuneIntegration() {
       // No need for frontend signing here, backend just prepares
       const requestData = {
         fromAddress: address,
-        amount: rawAmount, // Send raw amount to backend
+        amount: amount, // Send human-readable amount
         maxPrice,
         // No signature/pubkey needed for preparation
       };

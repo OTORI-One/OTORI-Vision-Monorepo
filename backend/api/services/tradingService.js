@@ -240,7 +240,7 @@ async function getRuneUtxos(address, runeId) {
 /**
  * Transfers runes from the LP wallet to a recipient
  * @param {string} recipient - Recipient address
- * @param {number} amount - Amount of runes to transfer (raw token amount, no divisibility adjustment needed)
+ * @param {number} amount - Amount of runes to transfer (human-readable token amount)
  * @param {string} runeName - Name of the rune to transfer (e.g., 'OTORI•VISION•TOKEN')
  * @returns {Promise<Object>} Transfer result with txid
  */
@@ -249,6 +249,7 @@ async function transferRunes(recipient, amount, runeName = OVT_RUNE_NAME) {
     console.log(`Transferring ${amount} of rune ${runeName} to ${recipient}`);
     
     // Ensure amount is a string for the command
+    // This amount is now the human-readable amount (e.g., 1)
     const runeAmount = amount.toString();
     
     // Format the asset according to documentation: "AMOUNT:RUNE_NAME"
