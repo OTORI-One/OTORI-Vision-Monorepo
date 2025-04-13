@@ -19,7 +19,7 @@ ord wallet send --rune <RUNE> --destination <DESTINATION>
 # Example: send 999900 OVT to an LP  address with dry-run
 
 ```bash
-ord --config ~/.ord/ord.yaml --signet wallet send --fee-rate 1 --sender tb1plpfgtre7sxxrrwjdpy4357qj2nr7ek06xqpdryxr4lzt5tck6x3qz07zd3 tb1p3vn6wc0dlud3tvckv95datu3stq4qycz7vj9mzpclfkrv9rh8jqsjrw38f "999900:OTORI•VISION•TOKEN" --dry-run
+ord --config ~/.ord/ord.yaml --signet wallet send --fee-rate --postage xxxsats 1 --sender tb1plpfgtre7sxxrrwjdpy4357qj2nr7ek06xqpdryxr4lzt5tck6x3qz07zd3 tb1p3vn6wc0dlud3tvckv95datu3stq4qycz7vj9mzpclfkrv9rh8jqsjrw38f "999900:OTORI•VISION•TOKEN" --dry-run
 ```
 
 ### Full and actual 'ord' command syntax

@@ -156,16 +156,23 @@ export function useRuneIntegration() {
   // --- Utility Functions (Moved formatTokenAmount earlier) ---
   const formatTokenAmount = useCallback((amount: number, divisibility: number = metadata?.divisibility ?? 2): string => {
     if (amount === undefined || amount === null) return '0.00'; // Handle undefined/null
+    
+    // Always ensure we're working with the raw amount
+    const rawAmount = amount;
+    
     if (divisibility === 0) {
-      return amount.toString();
+      return rawAmount.toString();
     }
+    
     const factor = Math.pow(10, divisibility);
-    // Handle potential floating point inaccuracies for display
-    const formatted = (amount / factor).toLocaleString(undefined, {
+    
+    // Format the amount properly by applying divisibility
+    const formattedValue = (rawAmount / factor).toLocaleString(undefined, {
         minimumFractionDigits: divisibility,
         maximumFractionDigits: divisibility,
     });
-    return formatted;
+    
+    return formattedValue;
   }, [metadata?.divisibility]);
 
   /**

@@ -1350,9 +1350,8 @@ runesRouter.post('/ovt/buy', async (req, res) => {
     }
     
     // 4. Calculate total cost and check balance
-    // --- FIX: Account for divisibility (assuming 2) when calculating cost from raw amount ---
-    const humanReadableAmount = amount / Math.pow(10, OVT_DIVISIBILITY);
-    const costSats = Math.floor(humanReadableAmount * currentPrice); // Calculate cost based on human-readable amount
+    // --- FIX: Treat incoming 'amount' as human-readable token amount --- 
+    const costSats = Math.floor(amount * currentPrice); // Calculate cost directly using human-readable amount
     // --- END FIX ---
     // Use a generic, slightly higher fee estimate for the user's payment transaction
     const estimatedUserFeeSats = 1000; // Example: 1000 sats, adjust as needed

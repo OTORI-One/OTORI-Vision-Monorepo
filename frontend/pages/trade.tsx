@@ -154,18 +154,26 @@ export default function TradePage() {
 
       setCurrentStepMessage(`Step 2/3: Please confirm sending ${amountSats} sats in your wallet.`);
 
-      const txid = await sendBTC(recipientAddress, Number(amountSats));
+      try {
+        console.log(`Initiating LaserEyes sendBTC to ${recipientAddress} for ${amountSats} sats`);
+        const txid = await sendBTC(recipientAddress, Number(amountSats));
+        
+        if (!txid) {
+            throw new Error("BTC payment failed or was cancelled.");
+        }
+        
+        console.log(`LaserEyes payment successful, txid: ${txid}`);
+        const btcTxId = txid;
+        setCurrentStepMessage(`Step 3/3: Payment sent (${btcTxId.substring(0, 10)}...). Confirming OVT transfer...`);
+        
+        const confirmResult = await confirmBuyOVT(orderId, btcTxId);
 
-      if (!txid) {
-          throw new Error("BTC payment failed or was cancelled.");
-      }
-      const btcTxId = txid;
-      setCurrentStepMessage(`Step 3/3: Payment sent (${btcTxId.substring(0, 10)}...). Confirming OVT transfer...`);
-
-      const confirmResult = await confirmBuyOVT(orderId, btcTxId);
-
-      if (!confirmResult.success) {
-        throw new Error(confirmResult.error || 'Failed to confirm purchase after payment.');
+        if (!confirmResult.success) {
+          throw new Error(confirmResult.error || 'Failed to confirm purchase after payment.');
+        }
+      } catch (paymentError) {
+        console.error('Payment step error:', paymentError);
+        throw new Error(`BTC payment process failed: ${paymentError instanceof Error ? paymentError.message : String(paymentError)}`);
       }
 
       const displayAmount = formatTokenAmount(amount * Math.pow(10, metadata.divisibility), metadata.divisibility);

@@ -158,42 +158,48 @@ export default function Dashboard() {
 
       setCurrentStepMessage(`Step 2/3: Please confirm sending ${amountSats} sats to the LP in your wallet.`);
 
-      console.log(`Requesting BTC payment via LaserEyes: ${amountSats} sats to ${recipientAddress}`);
-      const txid = await sendBTC(recipientAddress, Number(amountSats));
+      try {
+        console.log(`Requesting BTC payment via LaserEyes: ${amountSats} sats to ${recipientAddress}`);
+        const txid = await sendBTC(recipientAddress, Number(amountSats));
 
-      if (!txid) {
-          throw new Error("BTC payment failed or was cancelled in wallet.");
+        if (!txid) {
+            throw new Error("BTC payment failed or was cancelled in wallet.");
+        }
+        
+        console.log(`LaserEyes payment successful, txid: ${txid}`);
+        const btcTxId = txid;
+        console.log(`BTC Payment broadcasted: ${btcTxId}`);
+        setCurrentStepMessage(`Step 3/3: Payment sent (${btcTxId.substring(0, 10)}...). Confirming OVT transfer with backend...`);
+
+        const confirmResult = await confirmBuyOVT(orderId, btcTxId);
+
+        if (!confirmResult.success) {
+          const errorDetail = confirmResult.error ? `: ${confirmResult.error}` : '. Check backend logs.';
+          throw new Error(`Failed to confirm purchase after payment${errorDetail}`);
+        }
+
+        console.log("Buy Confirmation successful:", confirmResult);
+        const displayAmount = formatTokenAmount(amount * Math.pow(10, metadata.divisibility), metadata.divisibility);
+        const ovtTxId = confirmResult.ovtTxId || confirmResult.txid;
+        const ovtTxLink = ovtTxId ? `https://mempool.space/signet/tx/${ovtTxId}` : null;
+        
+        setSuccessMessage(
+          <span>
+            Successfully initiated purchase of {displayAmount} OVT! 
+            {ovtTxLink ? (
+              <a href={ovtTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800">
+                View OVT Tx ({ovtTxId?.substring(0, 10)}...)
+              </a>
+            ) : (
+              `(OVT Tx: ${ovtTxId?.substring(0, 10)}...)`
+            )}
+          </span>
+        );
+        setBuyAmount('');
+      } catch (paymentError) {
+        console.error('Payment step error:', paymentError);
+        throw new Error(`BTC payment process failed: ${paymentError instanceof Error ? paymentError.message : String(paymentError)}`);
       }
-      const btcTxId = txid;
-      console.log(`BTC Payment broadcasted: ${btcTxId}`);
-      setCurrentStepMessage(`Step 3/3: Payment sent (${btcTxId.substring(0, 10)}...). Confirming OVT transfer with backend...`);
-
-      const confirmResult = await confirmBuyOVT(orderId, btcTxId);
-
-      if (!confirmResult.success) {
-        const errorDetail = confirmResult.error ? `: ${confirmResult.error}` : '. Check backend logs.';
-        throw new Error(`Failed to confirm purchase after payment${errorDetail}`);
-      }
-
-      console.log("Buy Confirmation successful:", confirmResult);
-      const displayAmount = formatTokenAmount(amount * Math.pow(10, metadata.divisibility), metadata.divisibility);
-      const ovtTxId = confirmResult.ovtTxId || confirmResult.txid;
-      const ovtTxLink = ovtTxId ? `https://mempool.space/signet/tx/${ovtTxId}` : null;
-      
-      setSuccessMessage(
-        <span>
-          Successfully initiated purchase of {displayAmount} OVT! 
-          {ovtTxLink ? (
-            <a href={ovtTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800">
-              View OVT Tx ({ovtTxId?.substring(0, 10)}...)
-            </a>
-          ) : (
-            `(OVT Tx: ${ovtTxId?.substring(0, 10)}...)`
-          )}
-        </span>
-      );
-      setBuyAmount('');
-
     } catch (error) {
        console.error('Buy process failed:', error);
        const message = error instanceof Error ? error.message : "An unknown error occurred during the buy process.";
