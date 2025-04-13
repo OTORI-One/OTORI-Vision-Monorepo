@@ -968,31 +968,44 @@ runesRouter.get('/ovt/balances', async (req, res) => {
           const ddElement = $(element).next('dd');
           // --- DEBUG LOG ---
           console.log(`[Scraping Balances] Found 'rune balances' DD element.`);
+          console.log(`[Scraping Balances] DD HTML content: '${ddElement.html()}'`);
           // --- END DEBUG LOG ---
-          const ovtLink = ddElement.find(`a[href='/rune/${OVT_RUNE_SYMBOL.replace(/•/g, '%E2%80%A2')}']`);
-          if (ovtLink.length > 0) {
-            // --- DEBUG LOG ---
-            console.log(`[Scraping Balances] Found OVT link inside DD.`);
-            // --- END DEBUG LOG ---
-            const fullText = ovtLink.parent().text();
-            // --- DEBUG LOG ---
-            console.log(`[Scraping Balances] Full text of parent DD: '${fullText}'`);
-            // --- END DEBUG LOG ---
-            // Updated Regex to handle potential spacing variations around the colon and symbol
-            const balanceMatch = fullText.match(/:\s*([\d,]+)\s*⊙/); 
-             // --- DEBUG LOG ---
+          
+          // More robust approach: First get the HTML content as a string
+          const ddHtml = ddElement.html();
+          if (ddHtml && ddHtml.includes(OVT_RUNE_SYMBOL)) {
+            // If the HTML contains our rune symbol, get the full text content
+            const fullText = ddElement.text().trim();
+            console.log(`[Scraping Balances] Full DD text content: '${fullText}'`);
+            
+            // Improved regex to handle the OVT token symbol pattern
+            // Find OTORI•VISION•TOKEN: X⊙ where X is the amount
+            const balancePattern = new RegExp(`${OVT_RUNE_SYMBOL}\\s*:\\s*([\\d,]+)\\s*⊙`);
+            const balanceMatch = fullText.match(balancePattern);
+            
+            console.log(`[Scraping Balances] Regex pattern: ${balancePattern}`);
             console.log(`[Scraping Balances] Regex match result:`, balanceMatch);
-            // --- END DEBUG LOG ---
+            
             if (balanceMatch && balanceMatch[1]) {
               const matchedAmount = balanceMatch[1].replace(/,/g, '');
-              // --- DEBUG LOG ---
-              console.log(`[Scraping Balances] Regex matched amount string: '${matchedAmount}'`);
-              // --- END DEBUG LOG ---
+              console.log(`[Scraping Balances] Matched amount string: '${matchedAmount}'`);
               ovtBalanceAmount = parseInt(matchedAmount, 10) || 0;
-               // --- DEBUG LOG ---
               console.log(`[Scraping Balances] Parsed ovtBalanceAmount: ${ovtBalanceAmount}`);
-              // --- END DEBUG LOG ---
+            } else {
+              // Backup approach if the specific pattern fails
+              console.log(`[Scraping Balances] Primary regex failed, trying backup approach...`);
+              
+              // Try a more generic pattern to find any number followed by ⊙ symbol
+              const genericMatch = fullText.match(/(\d+[\d,]*)\s*⊙/);
+              if (genericMatch && genericMatch[1]) {
+                const matchedAmount = genericMatch[1].replace(/,/g, '');
+                console.log(`[Scraping Balances] Generic match found amount: '${matchedAmount}'`);
+                ovtBalanceAmount = parseInt(matchedAmount, 10) || 0;
+                console.log(`[Scraping Balances] Generic parsed amount: ${ovtBalanceAmount}`);
+              }
             }
+          } else {
+            console.log(`[Scraping Balances] OVT_RUNE_SYMBOL '${OVT_RUNE_SYMBOL}' not found in DD HTML: '${ddHtml}'`);
           }
         }
       });
