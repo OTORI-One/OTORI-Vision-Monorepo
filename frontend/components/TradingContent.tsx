@@ -26,7 +26,6 @@ interface TradingContentProps {
   handleSell: () => Promise<void>;
   isActionLoading: boolean;
   metadata: RuneMetadata | null;
-  formatTokenAmount: (amount: number, divisibility?: number) => string;
   ovtBalance: number;
   displayedMarketPrice: string;
 }
@@ -45,7 +44,6 @@ const TradingContent: React.FC<TradingContentProps> = ({
   handleSell,
   isActionLoading,
   metadata,
-  formatTokenAmount,
   ovtBalance,
   displayedMarketPrice
 }) => {
@@ -149,7 +147,6 @@ const TradingContent: React.FC<TradingContentProps> = ({
             handleSell={handleSell}
             isActionLoading={isActionLoading}
             metadata={metadata}
-            formatTokenAmount={formatTokenAmount}
             ovtBalance={ovtBalance}
             displayedMarketPrice={displayedMarketPrice}
          />

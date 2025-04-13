@@ -78,7 +78,6 @@ export default function TradePage() {
     isLoading: runesHookLoading,
     error: runesHookError,
     metadata,
-    formatTokenAmount,
     balance: ovtBalance // Get balance from hook
   } = useRuneIntegration();
   
@@ -186,13 +185,13 @@ export default function TradePage() {
       }
       
       // Now confirmResult is accessible here and known to be successful
-      const displayAmount = formatTokenAmount(amount * Math.pow(10, metadata.divisibility), metadata.divisibility);
+      const displayAmount = amount.toLocaleString();
       const ovtTxId = confirmResult.ovtTxId || confirmResult.txid;
       const ovtTxLink = ovtTxId ? `https://mempool.space/signet/tx/${ovtTxId}` : null;
       
       setSuccessMessage(
         <span>
-          Successfully initiated purchase of {displayAmount} OVT! 
+          Successfully initiated purchase of {displayAmount} OVT units (⊙)! 
           {ovtTxLink ? <a href={ovtTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800">View OVT Tx ({ovtTxId?.substring(0, 10)}...)</a> : `(OVT Tx: ${ovtTxId?.substring(0, 10)}...)`}
         </span>
       );
@@ -237,10 +236,10 @@ export default function TradePage() {
           throw new Error(prepResult.error || "Failed to prepare sell transaction.");
       }
       
-      const { orderId, psbtBase64, amountOvtRaw } = prepResult;
-      const displayAmount = formatTokenAmount(amountOvtRaw, metadata.divisibility); 
+      const { orderId, psbtBase64 } = prepResult;
+      const displayAmount = amount.toLocaleString();
       
-      setCurrentStepMessage(`Step 2/4: Please sign the transaction to transfer ${displayAmount} OVT.`);
+      setCurrentStepMessage(`Step 2/4: Please sign the transaction to transfer ${displayAmount} OVT units (⊙).`);
 
       const signedPsbtResult = await signPsbt(psbtBase64);
 
@@ -265,7 +264,7 @@ export default function TradePage() {
       
       setSuccessMessage(
         <span>
-          Successfully initiated sale of {displayAmount} OVT! 
+          Successfully initiated sale of {displayAmount} OVT units (⊙)! 
           {btcTxLink ? <a href={btcTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800">View Payment Tx ({btcTxId?.substring(0, 10)}...)</a> : `(Payment Tx: ${btcTxId?.substring(0, 10)}...)`}
         </span>
       );
@@ -369,7 +368,6 @@ export default function TradePage() {
             handleSell={handleSell}
             isActionLoading={isActionLoading}
             metadata={metadata}
-            formatTokenAmount={formatTokenAmount}
             ovtBalance={ovtBalance ?? 0}
             displayedMarketPrice={displayedMarketPrice}
           />

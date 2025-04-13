@@ -1353,16 +1353,16 @@ runesRouter.post('/ovt/buy', async (req, res) => {
       });
     }
     
-    // --- FIX: Treat incoming 'amount' as human-readable token amount --- 
-    const humanReadableAmount = parseFloat(amount); // Ensure it's a number
-    if (isNaN(humanReadableAmount)) {
-      return res.status(400).json({ success: false, error: 'Invalid amount format.' });
+    // --- REVERT: Expect 'amount' as raw atomic units --- 
+    const rawAmount = parseInt(amount); // Expecting raw amount directly
+    if (isNaN(rawAmount) || rawAmount <= 0) {
+      return res.status(400).json({ success: false, error: 'Invalid raw amount format.' });
     }
-    const rawAmount = Math.floor(humanReadableAmount * Math.pow(10, OVT_DIVISIBILITY)); // Calculate raw atomic amount
-    // --- END FIX ---
+    const humanReadableAmount = rawAmount / Math.pow(10, OVT_DIVISIBILITY); // Calculate human-readable for logging/cost calc
+    // --- END REVERT ---
     
     // --- FIX: Log human-readable amount ---
-    const humanReadableAmountForLog = humanReadableAmount; // Already have it
+    const humanReadableAmountForLog = humanReadableAmount; // Use calculated human-readable
     console.log(`[2Step Buy Prep] Processing request for ${humanReadableAmountForLog} OVT (Raw: ${rawAmount}) from ${fromAddress}`);
     // --- END FIX ---
     
@@ -1421,7 +1421,7 @@ runesRouter.post('/ovt/buy', async (req, res) => {
     
     // 4. Calculate total cost and check balance
     // --- FIX: Calculate cost using human-readable amount and price --- 
-    const costSats = Math.floor(humanReadableAmount * currentPrice);
+    const costSats = Math.floor(humanReadableAmount * currentPrice); // Cost based on human-readable equivalent
     // --- END FIX ---
     // Use a generic, slightly higher fee estimate for the user's payment transaction
     const estimatedUserFeeSats = 1000; // Example: 1000 sats, adjust as needed
@@ -1444,7 +1444,7 @@ runesRouter.post('/ovt/buy', async (req, res) => {
     // Use tradingService to store the pending order
     const stored = tradingService.storePendingOrder(orderId, {
       fromAddress,
-      amount: rawAmount, // <-- Store RAW amount for fulfillment
+      amount: rawAmount, // <-- Store RAW amount (as received)
       price: currentPrice, // Store the price used for this order (per human-readable unit)
       costSats,          // Store the calculated cost
       timestamp: Date.now()

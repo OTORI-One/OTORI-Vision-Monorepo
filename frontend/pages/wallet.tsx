@@ -24,7 +24,6 @@ export default function WalletPage() {
   // OVT Token integration
   const { 
     balance: ovtBalance, 
-    formatTokenAmount, 
     metadata, 
     transferRune,
     getDistributionStats,
@@ -96,8 +95,11 @@ export default function WalletPage() {
     }
     
     // Convert from human-readable to raw amount
-    const divisibility = metadata?.divisibility || 2;
-    const rawAmount = Math.floor(parseFloat(transferAmount) * Math.pow(10, divisibility));
+    const rawAmount = parseInt(transferAmount);
+    if (isNaN(rawAmount) || rawAmount <= 0) {
+      setTransferError('Invalid raw amount.');
+      return;
+    }
     
     try {
       setTransferStatus('Initiating transfer...');
@@ -224,7 +226,7 @@ export default function WalletPage() {
                   
                   <div className="mb-4">
                     <label htmlFor="amount" className="block text-sm font-medium text-gray-700 mb-1">
-                      Amount (OVT)
+                      Amount (Atomic Units)
                     </label>
                     <div className="flex">
                       <input
@@ -232,17 +234,17 @@ export default function WalletPage() {
                         id="amount"
                         value={transferAmount}
                         onChange={(e) => setTransferAmount(e.target.value)}
-                        min="0.01"
-                        step="0.01"
+                        min="1"
+                        step="1"
                         className="w-full p-2 border border-gray-300 rounded-l focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-                        placeholder="0.00"
+                        placeholder="e.g., 100"
                       />
                       <span className="inline-flex items-center px-3 py-2 rounded-r border border-l-0 border-gray-300 bg-gray-50 text-gray-500">
-                        OVT
+                        units (⊙)
                       </span>
                     </div>
                     <div className="mt-1 text-sm text-gray-500">
-                      Available: {formatTokenAmount(ovtBalance, metadata?.divisibility || 2)} OVT
+                      Available: {(ovtBalance ?? 0).toLocaleString()} units (⊙)
                     </div>
                   </div>
                   

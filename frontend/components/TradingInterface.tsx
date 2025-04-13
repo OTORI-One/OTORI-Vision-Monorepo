@@ -15,7 +15,6 @@ interface TradingInterfaceProps {
   handleSell: () => Promise<void>;
   isActionLoading: boolean;
   metadata: RuneMetadata | null; 
-  formatTokenAmount: (amount: number, divisibility?: number) => string;
   ovtBalance: number;
   displayedMarketPrice: string;
 }
@@ -31,7 +30,6 @@ export function TradingInterface(props: TradingInterfaceProps) {
     handleSell,
     isActionLoading,
     metadata,
-    formatTokenAmount,
     ovtBalance,
     displayedMarketPrice,
   } = props;
@@ -105,7 +103,7 @@ export function TradingInterface(props: TradingInterfaceProps) {
   // Placeholder/Default for formatting if metadata is null initially
   const effectiveDivisibility = metadata?.divisibility ?? 2; 
   const placeholderAmount = 100 * Math.pow(10, effectiveDivisibility);
-  const formattedPlaceholder = formatTokenAmount(placeholderAmount, effectiveDivisibility);
+  const formattedPlaceholder = formatValue(placeholderAmount, effectiveDivisibility);
 
   // Return component JSX, using props for state and handlers
   return (
@@ -142,7 +140,8 @@ export function TradingInterface(props: TradingInterfaceProps) {
           <p className="text-gray-600">Your OVT Balance</p>
           {/* Format the balance prop */} 
           <p className="text-lg font-bold text-blue-700">
-             {formatTokenAmount(ovtBalance ?? 0, effectiveDivisibility)} OVT
+             {/* Display raw balance with locale string formatting for commas */} 
+             {ovtBalance.toLocaleString()} units (⊙)
           </p>
         </div>
         
@@ -157,15 +156,15 @@ export function TradingInterface(props: TradingInterfaceProps) {
             <div className="space-y-4">
               <div>
                 <label htmlFor="buyAmount" className="block text-sm font-medium text-gray-700 mb-1">
-                  Buy Amount
+                  Buy Amount (Atomic Units)
                 </label>
                 <input
                   id="buyAmount"
-                  type="text" // Use text for better control with regex
+                  type="number" // Change to number for direct atomic input
                   value={buyAmount} // Use prop
-                  onChange={handleBuyAmountChange} // Use updated handler
+                  onChange={(e) => setBuyAmount(e.target.value)} // Simplified handler
                   className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder={`e.g., ${formattedPlaceholder}`}
+                  placeholder={`e.g., 100`} // Placeholder for atomic units
                   aria-label="Buy Amount"
                   disabled={isActionLoading} // Use prop
                 />
@@ -198,15 +197,15 @@ export function TradingInterface(props: TradingInterfaceProps) {
             <div className="space-y-4">
               <div>
                 <label htmlFor="sellAmount" className="block text-sm font-medium text-gray-700 mb-1">
-                  Sell Amount
+                  Sell Amount (Atomic Units)
                 </label>
                 <input
                   id="sellAmount"
-                  type="text" // Use text for better control with regex
+                  type="number" // Change to number for direct atomic input
                   value={sellAmount} // Use prop
-                  onChange={handleSellAmountChange} // Use updated handler
+                  onChange={(e) => setSellAmount(e.target.value)} // Simplified handler
                   className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-red-500"
-                  placeholder={`e.g., ${formatTokenAmount(placeholderAmount / 2, effectiveDivisibility)}`}
+                  placeholder={`e.g., 50`} // Placeholder for atomic units
                   aria-label="Sell Amount"
                   disabled={isActionLoading} // Use prop
                 />
