@@ -1343,7 +1343,7 @@ runesRouter.post('/ovt/buy', async (req, res) => {
     const { fromAddress, amount, maxPrice, signature, pubkey } = req.body;
     
     // --- FIX: Define divisibility early for logging ---
-    const OVT_DIVISIBILITY = 2; // Define or fetch divisibility
+    const OVT_DIVISIBILITY = metadata?.divisibility ?? 2; // Fetch or define divisibility
     // --- END FIX ---
 
     if (!fromAddress || !amount || amount <= 0) {
@@ -1353,9 +1353,17 @@ runesRouter.post('/ovt/buy', async (req, res) => {
       });
     }
     
+    // --- FIX: Treat incoming 'amount' as human-readable token amount --- 
+    const humanReadableAmount = parseFloat(amount); // Ensure it's a number
+    if (isNaN(humanReadableAmount)) {
+      return res.status(400).json({ success: false, error: 'Invalid amount format.' });
+    }
+    const rawAmount = Math.floor(humanReadableAmount * Math.pow(10, OVT_DIVISIBILITY)); // Calculate raw atomic amount
+    // --- END FIX ---
+    
     // --- FIX: Log human-readable amount ---
-    const humanReadableAmountForLog = amount / Math.pow(10, OVT_DIVISIBILITY);
-    console.log(`[2Step Buy Prep] Processing request for ${humanReadableAmountForLog} OVT (Raw: ${amount}) from ${fromAddress}`);
+    const humanReadableAmountForLog = humanReadableAmount; // Already have it
+    console.log(`[2Step Buy Prep] Processing request for ${humanReadableAmountForLog} OVT (Raw: ${rawAmount}) from ${fromAddress}`);
     // --- END FIX ---
     
     // 1. Verify the signature if provided (Optional step)
@@ -1412,8 +1420,8 @@ runesRouter.post('/ovt/buy', async (req, res) => {
     }
     
     // 4. Calculate total cost and check balance
-    // --- FIX: Treat incoming 'amount' as human-readable token amount --- 
-    const costSats = Math.floor(amount * currentPrice); // Calculate cost directly using human-readable amount
+    // --- FIX: Calculate cost using human-readable amount and price --- 
+    const costSats = Math.floor(humanReadableAmount * currentPrice);
     // --- END FIX ---
     // Use a generic, slightly higher fee estimate for the user's payment transaction
     const estimatedUserFeeSats = 1000; // Example: 1000 sats, adjust as needed
@@ -1436,8 +1444,8 @@ runesRouter.post('/ovt/buy', async (req, res) => {
     // Use tradingService to store the pending order
     const stored = tradingService.storePendingOrder(orderId, {
       fromAddress,
-      amount,
-      price: currentPrice, // Store the price used for this order
+      amount: rawAmount, // <-- Store RAW amount for fulfillment
+      price: currentPrice, // Store the price used for this order (per human-readable unit)
       costSats,          // Store the calculated cost
       timestamp: Date.now()
     });
