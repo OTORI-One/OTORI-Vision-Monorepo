@@ -93,7 +93,6 @@ const WalletTokenDisplay: React.FC<WalletTokenDisplayProps> = ({ address: propAd
   const { 
     balance: ovtBalance, // This is the raw balance (e.g., 50000000 for 500k with 2 decimals)
     getBalance, 
-    formatTokenAmount,
     metadata,
     isConnected,
     isLoading: isLoadingOvt
@@ -228,7 +227,7 @@ const WalletTokenDisplay: React.FC<WalletTokenDisplayProps> = ({ address: propAd
           ) : (
             <>
               <div className="text-xl font-bold">
-                {formatTokenAmount(ovtBalance ?? 0, metadata?.divisibility || 2)}
+                {(ovtBalance ?? 0).toLocaleString()} units (⊙)
               </div>
               <div className="text-sm text-gray-500">
                 {formatSatsToCurrency(ovtValueSats, currency , btcPrice)}
