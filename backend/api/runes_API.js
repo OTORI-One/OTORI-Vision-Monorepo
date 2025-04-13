@@ -1336,14 +1336,14 @@ runesRouter.use((req, res, next) => {
 const pendingOrders = new Map(); // Stores orderId -> { fromAddress, amount, price, timestamp }
 
 runesRouter.post('/ovt/buy', async (req, res) => {
-  // ---> ADDED ENTRY LOGGING <---
+  // ---> ADDED ENTRY LOGGING <--- 
   console.log(`[POST /ovt/buy] Request received. Body:`, req.body);
   // ---> END ENTRY LOGGING <---
   try {
     const { fromAddress, amount, maxPrice, signature, pubkey } = req.body;
     
     // --- FIX: Define divisibility early for logging ---
-    const OVT_DIVISIBILITY = metadata?.divisibility ?? 2; // Fetch or define divisibility
+    const OVT_DIVISIBILITY = 2; // Hardcode known divisibility for OVT
     // --- END FIX ---
 
     if (!fromAddress || !amount || amount <= 0) {
