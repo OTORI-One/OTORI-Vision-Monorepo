@@ -208,6 +208,9 @@ export function useRuneIntegration() {
       );
       
       const amount = ovtBalance?.amount || 0;
+      // --- DEBUGGING LOG --- 
+      console.log(`[useRuneIntegration] Fetched raw balance via HTTP for ${walletAddress}: ${amount}`);
+      // --- END DEBUGGING LOG ---
       setBalance(amount);
       return amount;
     } catch (err) {
@@ -739,6 +742,9 @@ export function useRuneIntegration() {
        // Ensure the update is for the current user's address and rune
       if (address && newBalanceData.address === address && newBalanceData.runeId === OVT_RUNE_ID) {
          console.log(`useRuneIntegration: Received OVT_BALANCE_UPDATED via WebSocket for ${address}:`, newBalanceData.amount);
+         // --- DEBUGGING LOG --- 
+         console.log(`[useRuneIntegration] Setting balance via WebSocket for ${address} to raw amount: ${newBalanceData.amount}`);
+         // --- END DEBUGGING LOG ---
          setBalance(newBalanceData.amount);
        } else if (address && newBalanceData.address === address) {
           console.log(`useRuneIntegration: Received balance update for ${address}, but wrong rune (${newBalanceData.runeId}). Ignoring.`);
