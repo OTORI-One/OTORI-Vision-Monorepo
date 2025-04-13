@@ -1060,7 +1060,7 @@ runesRouter.get('/ovt/balances', async (req, res) => {
         runeId: OVT_RUNE_ID,
         amount: ovtBalanceAmount, // Send the raw OVT amount
         sats: satBalanceAmount,   // Optionally send sats balance too
-        formattedAmount: (ovtBalanceAmount / Math.pow(10, 2)).toFixed(2) // Hardcoding divisibility 2
+        formattedAmount: ovtBalanceAmount // Remove divisibility transformation, send raw amount
     });
     // --- WebSocket END ---
 
