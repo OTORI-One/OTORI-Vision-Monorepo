@@ -9,7 +9,7 @@ import { isAdminWallet } from '../src/utils/adminUtils';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
-import useRuneIntegration from '../src/hooks/useRuneIntegration'; // Import directly
+import useRuneIntegration, { FinalTransactionResult } from '../src/hooks/useRuneIntegration'; // Import directly and add FinalTransactionResult
 import axios from 'axios';
 import { base64ToHex } from '../src/utils/hexUtils';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
@@ -141,6 +141,8 @@ export default function TradePage() {
     setIsTradingActionLoading(true);
     setCurrentStepMessage("Step 1/3: Preparing buy transaction...");
 
+    let confirmResult: FinalTransactionResult | null = null; // Declare confirmResult here
+
     try {
       const amount = parseFloat(buyAmount);
       const prepResult = await prepareBuyOVT(amount);
@@ -166,7 +168,8 @@ export default function TradePage() {
         const btcTxId = txid;
         setCurrentStepMessage(`Step 3/3: Payment sent (${btcTxId.substring(0, 10)}...). Confirming OVT transfer...`);
         
-        const confirmResult = await confirmBuyOVT(orderId, btcTxId);
+        // Assign to the outer scope variable
+        confirmResult = await confirmBuyOVT(orderId, btcTxId);
 
         if (!confirmResult.success) {
           throw new Error(confirmResult.error || 'Failed to confirm purchase after payment.');
@@ -176,6 +179,13 @@ export default function TradePage() {
         throw new Error(`BTC payment process failed: ${paymentError instanceof Error ? paymentError.message : String(paymentError)}`);
       }
 
+      // Check if confirmResult is valid before using it
+      if (!confirmResult || !confirmResult.success) {
+          // Error was already thrown or handled, maybe add a generic fallback error
+          throw new Error('Buy confirmation step failed.'); 
+      }
+      
+      // Now confirmResult is accessible here and known to be successful
       const displayAmount = formatTokenAmount(amount * Math.pow(10, metadata.divisibility), metadata.divisibility);
       const ovtTxId = confirmResult.ovtTxId || confirmResult.txid;
       const ovtTxLink = ovtTxId ? `https://mempool.space/signet/tx/${ovtTxId}` : null;
