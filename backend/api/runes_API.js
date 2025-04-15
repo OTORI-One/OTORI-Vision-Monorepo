@@ -1921,9 +1921,12 @@ runesRouter.post('/ovt/transfer', async (req, res) => {
       // Get fee rate from environment or use a default
       const feeRate = process.env.BITCOIN_FEE_RATE || 1; // Default to 1 sat/vB
       
-      // Construct the specific 'wallet send' command
-      // Format: <ADDRESS> <AMOUNT>:<RUNE_ID>
-      const sendCommand = `wallet send --fee-rate ${feeRate} ${toAddress} ${amount}:${actualRuneId}`;
+      // Ensure amount is a string for the command
+      const amountStr = String(amount);
+
+      // Construct the specific 'wallet send' command using Rune Symbol (Name)
+      // Format: <ADDRESS> <AMOUNT>:<RUNE_SYMBOL>
+      const sendCommand = `wallet send --fee-rate ${feeRate} ${toAddress} ${amountStr}:${OVT_RUNE_SYMBOL}`;
       
       // Execute the command using the refactored helper
       const result = await execOrdCommand(sendCommand);
