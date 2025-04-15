@@ -100,11 +100,6 @@ export function TradingInterface(props: TradingInterfaceProps) {
   const [showHistory, setShowHistory] = useState<boolean>(false);
   const toggleHistory = () => setShowHistory(!showHistory); // Simple toggle
 
-  // Placeholder/Default for formatting if metadata is null initially
-  const effectiveDivisibility = metadata?.divisibility ?? 2; 
-  const placeholderAmount = 100 * Math.pow(10, effectiveDivisibility);
-  const formattedPlaceholder = formatValue(placeholderAmount, effectiveDivisibility);
-
   // Return component JSX, using props for state and handlers
   return (
     <div className="flex flex-col space-y-4">
@@ -160,13 +155,13 @@ export function TradingInterface(props: TradingInterfaceProps) {
                 </label>
                 <input
                   id="buyAmount"
-                  type="number" // Change to number for direct atomic input
-                  value={buyAmount} // Use prop
-                  onChange={(e) => setBuyAmount(e.target.value)} // Simplified handler
+                  type="number"
+                  value={buyAmount}
+                  onChange={(e) => setBuyAmount(e.target.value)}
                   className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-green-500"
-                  placeholder={`e.g., 100`} // Placeholder for atomic units
+                  placeholder="e.g., 10000"
                   aria-label="Buy Amount"
-                  disabled={isActionLoading} // Use prop
+                  disabled={isActionLoading}
                 />
                  {/* Simple validation message (optional) */}
                  {buyAmount && parseFloat(buyAmount) <= 0 && (
@@ -201,13 +196,13 @@ export function TradingInterface(props: TradingInterfaceProps) {
                 </label>
                 <input
                   id="sellAmount"
-                  type="number" // Change to number for direct atomic input
-                  value={sellAmount} // Use prop
-                  onChange={(e) => setSellAmount(e.target.value)} // Simplified handler
+                  type="number"
+                  value={sellAmount}
+                  onChange={(e) => setSellAmount(e.target.value)}
                   className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-red-500"
-                  placeholder={`e.g., 50`} // Placeholder for atomic units
+                  placeholder="e.g., 5000"
                   aria-label="Sell Amount"
-                  disabled={isActionLoading} // Use prop
+                  disabled={isActionLoading}
                 />
                  {/* Simple validation message (optional) */}
                  {sellAmount && parseFloat(sellAmount) <= 0 && (

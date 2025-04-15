@@ -230,13 +230,10 @@ export default function TradePage() {
     setCurrentStepMessage("Step 1/4: Preparing sell transaction...");
 
     try {
-      // Parse the amount (human-readable)
-      const amount = parseFloat(sellAmount);
+      // The input should already be in atomic units as per standardization
+      const atomicAmount = parseFloat(sellAmount);
       
-      // Step 1: Call prepareSellOVT with the amount converted to atomic units
-      const divisibility = metadata.divisibility || 2;
-      const atomicAmount = Math.floor(amount * Math.pow(10, divisibility));
-      
+      // Pass the atomic amount directly to prepareSellOVT
       const prepResult = await prepareSellOVT(atomicAmount);
 
       if (!prepResult.success || !prepResult.orderId || !prepResult.recipientAddress) {
@@ -245,7 +242,7 @@ export default function TradePage() {
       
       const { orderId, recipientAddress, amountOvtRaw } = prepResult;
       
-      setCurrentStepMessage(`Step 2/4: Please approve sending ${amount} OVT to the LP in your wallet...`);
+      setCurrentStepMessage(`Step 2/4: Please approve sending ${amountOvtRaw} OVT to the LP in your wallet...`);
 
       // Step 2: Use LaserEyes to send the OVT tokens to the LP address
       let ovtTxId;
@@ -293,7 +290,7 @@ export default function TradePage() {
         setCurrentStepMessage(null);
         setSuccessMessage(
           <span>
-            Successfully sold {amount} OVT units (⊙)! 
+            Successfully sold {amountOvtRaw} OVT units (⊙)! 
             {btcTxLink ? <a href={btcTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800 ml-1">View BTC Payment Tx ({btcTxId?.substring(0, 10)}...)</a> : `(BTC Tx: ${btcTxId?.substring(0, 10)}...)`}
           </span>
         );

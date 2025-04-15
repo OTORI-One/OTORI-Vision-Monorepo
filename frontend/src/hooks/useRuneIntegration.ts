@@ -450,7 +450,7 @@ export function useRuneIntegration() {
   /**
    * Step 1: Prepare Sell Transaction
    * Calls the backend to get an order ID and a PSBT for the user to sign.
-   * @param amount The number of OVT tokens to sell (human-readable, e.g., 500.00).
+   * @param amount The number of OVT tokens to sell (in atomic units).
    * @param minPrice Optional minimum price per token in sats.
    */
   const prepareSellOVT = useCallback(async (
@@ -464,20 +464,20 @@ export function useRuneIntegration() {
       throw new Error('Amount must be greater than zero');
     }
 
-    // Convert human-readable amount to raw amount
-    const divisibility = metadata?.divisibility ?? 2;
-    const rawAmount = Math.floor(amount * Math.pow(10, divisibility));
+    // No need to convert - amount should already be in atomic units
+    // per standardization in the dev journal
+    const rawAmount = amount;
 
     // Frontend balance check (optional but good UX)
     if (balance < rawAmount) {
-        throw new Error(`Insufficient balance: required ${amount} (${rawAmount} raw), available ${formatTokenAmount(balance, divisibility)} (${balance} raw)`);
+        throw new Error(`Insufficient balance: required ${rawAmount} raw, available ${balance} raw`);
     }
 
     setIsLoading(true);
     setError(null);
 
     try {
-       // Backend expects raw amount
+       // Backend expects raw amount (which is what we're providing directly)
        const requestData = {
          fromAddress: address,
          toAddress: OVT_LP_ADDRESS, // Sell goes to the LP address
@@ -509,7 +509,7 @@ export function useRuneIntegration() {
     } finally {
       setIsLoading(false);
     }
-  }, [address, connected, balance, API_BASE_URL, metadata?.divisibility, formatTokenAmount]);
+  }, [address, connected, balance, API_BASE_URL]);
 
    /**
    * Step 2: Confirm Sell Transaction
@@ -661,8 +661,7 @@ export function useRuneIntegration() {
     }
     // Check balance from state first
     if (balance < amount) {
-        const divisibility = metadata?.divisibility ?? 2;
-        throw new Error(`Insufficient balance: required ${formatTokenAmount(amount, divisibility)}, available ${formatTokenAmount(balance, divisibility)}`);
+        throw new Error(`Insufficient balance: required ${amount} raw, available ${balance} raw`);
     }
 
     setIsLoading(true);
