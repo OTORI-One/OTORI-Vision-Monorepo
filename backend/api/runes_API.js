@@ -136,7 +136,7 @@ const LP_ADDRESS_2 = process.env.NEXT_PUBLIC_LP_ADDRESS_2 || '';
 
 // WHEN DONE TESTING REMOTELY: Change the OrdPi endpoint to the local IP (and add ssh key authentication for comms.)
 // Remote OrdPi API endpoint - using the public IP for direct connection
-const REMOTE_RUNES_API = process.env.REMOTE_RUNES_API || 'http://192.168.178.54:9191';
+const REMOTE_RUNES_API = process.env.REMOTE_RUNES_API || 'http://localhost:9192'; // Changed to localhost as services run on same OrdPi
 
 // Add a DEBUG_MODE flag to force using mock data
 const DEBUG_MODE = process.env.DEBUG_MODE || false; // Set this to true to force using fallback data
@@ -1525,13 +1525,57 @@ runesRouter.post('/ovt/sell', async (req, res) => {
       });
     }
     
-    // 2. Check for sufficient OVT balance
-    const balancesResult = await getRemoteWalletBalances();
-    const userBalances = balancesResult.success ? 
-      balancesResult.result.balances.filter(b => b.address === fromAddress) : 
-      [];
-    
-    const ovtBalance = userBalances.length > 0 ? userBalances[0].amount : 0;
+    // 2. Check for sufficient OVT balance using direct scraping
+    let ovtBalance = 0;
+    try {
+        const ordServerHost = 'http://localhost:9191'; // Local Ordinal Explorer
+        const ordServerUrl = `${ordServerHost}/address/${fromAddress}`;
+        console.log(`[Sell Prep - Balance Check] Querying local ord server: ${ordServerUrl}`);
+
+        const response = await axios.get(ordServerUrl, { timeout: 5000 });
+        const $ = cheerio.load(response.data);
+
+        // Extract Rune Balance for OVT
+        $('dt').each((index, element) => {
+            const dtText = $(element).text().trim();
+            if (dtText === 'rune balances') {
+                const ddElement = $(element).next('dd');
+                const ddHtml = ddElement.html();
+                if (ddHtml && ddHtml.includes(OVT_RUNE_SYMBOL)) {
+                    const fullText = ddElement.text().trim();
+                    const balancePattern = new RegExp(`${OVT_RUNE_SYMBOL}\\s*:\\s*([\\d,]+)\\s*⊙`);
+                    const balanceMatch = fullText.match(balancePattern);
+                    if (balanceMatch && balanceMatch[1]) {
+                        const matchedAmount = balanceMatch[1].replace(/,/g, '');
+                        ovtBalance = parseInt(matchedAmount, 10) || 0;
+                    } else {
+                         // Backup approach
+                         const genericMatch = fullText.match(/(\\d+[\\d,]*)\\s*⊙/);
+                         if (genericMatch && genericMatch[1]) {
+                             const matchedAmount = genericMatch[1].replace(/,/g, '');
+                             ovtBalance = parseInt(matchedAmount, 10) || 0;
+                         }
+                    }
+                }
+            }
+        });
+        console.log(`[Sell Prep - Balance Check] Scraped OVT balance for ${fromAddress}: ${ovtBalance}`);
+
+    } catch (error) {
+        const errorMessage = error.response ? `Status ${error.response.status}` : error.message;
+        console.error(`[Sell Prep - Balance Check] Error scraping balance: ${errorMessage}`);
+        // Return 503 Service Unavailable if scraping fails
+        return res.status(503).json({
+            success: false,
+            error: 'Service unavailable: Could not verify seller OVT balance.'
+        });
+    }
+    // Removed call to getRemoteWalletBalances()
+    // const balancesResult = await getRemoteWalletBalances();
+    // const userBalances = balancesResult.success ? 
+    //   balancesResult.result.balances.filter(b => b.address === fromAddress) : 
+    //   [];
+    // const ovtBalance = userBalances.length > 0 ? userBalances[0].amount : 0; // Now fetched via scraping above
     
     if (ovtBalance < amount) {
       return res.status(400).json({
