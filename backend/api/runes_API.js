@@ -2000,6 +2000,56 @@ runesRouter.get('/ovt/transactions', async (req, res) => {
   }
 });
 
+// Add endpoint for confirming OVT sell transfer and processing BTC payout
+runesRouter.post('/confirm-sell-transfer', async (req, res) => {
+  try {
+    const { orderId, ovtTxId } = req.body;
+    
+    if (!orderId || !ovtTxId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Missing required parameters. Both orderId and ovtTxId are required.'
+      });
+    }
+    
+    console.log(`Processing sell confirmation: orderId=${orderId}, ovtTxId=${ovtTxId}`);
+    
+    const confirmResult = await tradingService.confirmSellOVT(orderId, ovtTxId);
+    
+    // Check if result indicates pending status (needs more confirmations)
+    if (confirmResult.success && confirmResult.status === 'pending_ovt_confirmation') {
+      // Return 202 Accepted status to indicate the request is valid but processing is not complete
+      return res.status(202).json({
+        success: true,
+        status: 'pending_confirmation',
+        message: confirmResult.message || 'OVT transfer needs more confirmations. Please wait.'
+      });
+    }
+    
+    // Return appropriate status based on the result
+    if (confirmResult.success) {
+      return res.json({
+        success: true,
+        status: confirmResult.status,
+        message: confirmResult.message || 'Sell confirmation processed successfully',
+        btcTxId: confirmResult.btcTxId
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        status: confirmResult.status,
+        error: confirmResult.error || confirmResult.message || 'Failed to confirm sell transaction'
+      });
+    }
+  } catch (error) {
+    console.error('Error confirming sell transaction:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.toString() 
+    });
+  }
+});
+
 // Mount the router at /api/runes
 app.use('/api/runes', runesRouter);
 

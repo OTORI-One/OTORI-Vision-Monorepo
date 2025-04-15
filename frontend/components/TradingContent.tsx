@@ -121,7 +121,7 @@ const TradingContent: React.FC<TradingContentProps> = ({
           </div>
         </div>
          <div className="bg-card border border-border shadow-sm p-4 rounded">
-          <h3 className="text-sm font-medium text-muted-foreground pb-2">OVT Price</h3>
+          <h3 className="text-sm font-medium text-muted-foreground pb-2">OVT Price (Per Unit)</h3>
           <div className="text-2xl font-bold">
              {displayedMarketPrice}
              {priceLoading && <span className="text-xs text-muted-foreground ml-2">(Updating...)</span>}

@@ -9,7 +9,7 @@ import { isAdminWallet } from '../src/utils/adminUtils';
 import { useCurrencyToggle } from '../src/hooks/useCurrencyToggle';
 import { useNAV } from '../src/hooks/useNAV';
 import dynamic from 'next/dynamic';
-import useRuneIntegration, { FinalTransactionResult } from '../src/hooks/useRuneIntegration'; // Import directly and add FinalTransactionResult
+import useRuneIntegration, { FinalTransactionResult, OVT_RUNE_SYMBOL } from '../src/hooks/useRuneIntegration'; // Import directly and add FinalTransactionResult
 import axios from 'axios';
 import { base64ToHex } from '../src/utils/hexUtils';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
@@ -78,7 +78,8 @@ export default function TradePage() {
     isLoading: runesHookLoading,
     error: runesHookError,
     metadata,
-    balance: ovtBalance // Get balance from hook
+    balance: ovtBalance, // Get balance from hook
+    sendRune
   } = useRuneIntegration();
   
   // Get OVT price for market display
@@ -208,7 +209,7 @@ export default function TradePage() {
   };
   
   const handleSell = async (/* Removed e: React.FormEvent */) => {
-    // e.preventDefault(); // Not needed
+    // e.preventDefault(); // Not needed if called directly onClick
 
     if (!connectedAddress || typeof signPsbt !== 'function') {
         setNetworkError("Wallet not connected or signing function unavailable.");
@@ -229,45 +230,75 @@ export default function TradePage() {
     setCurrentStepMessage("Step 1/4: Preparing sell transaction...");
 
     try {
+      // Parse the amount (human-readable)
       const amount = parseFloat(sellAmount);
-      const prepResult = await prepareSellOVT(amount);
+      
+      // Step 1: Call prepareSellOVT with the amount converted to atomic units
+      const divisibility = metadata.divisibility || 2;
+      const atomicAmount = Math.floor(amount * Math.pow(10, divisibility));
+      
+      const prepResult = await prepareSellOVT(atomicAmount);
 
-      if (!prepResult.success || !prepResult.orderId || !prepResult.psbtBase64) {
+      if (!prepResult.success || !prepResult.orderId || !prepResult.recipientAddress) {
           throw new Error(prepResult.error || "Failed to prepare sell transaction.");
       }
       
-      const { orderId, psbtBase64 } = prepResult;
-      const displayAmount = amount.toLocaleString();
+      const { orderId, recipientAddress, amountOvtRaw } = prepResult;
       
-      setCurrentStepMessage(`Step 2/4: Please sign the transaction to transfer ${displayAmount} OVT units (⊙).`);
+      setCurrentStepMessage(`Step 2/4: Please approve sending ${amount} OVT to the LP in your wallet...`);
 
-      const signedPsbtResult = await signPsbt(psbtBase64);
-
-      if (!signedPsbtResult || !signedPsbtResult.signedPsbtBase64) {
-          throw new Error("PSBT signing failed or was cancelled.");
+      // Step 2: Use LaserEyes to send the OVT tokens to the LP address
+      let ovtTxId;
+      try {
+        // Use the LaserEyes API from the hook properly
+        if (!sendRune) {
+          throw new Error("LaserEyes sendRune function not available");
+        }
+        ovtTxId = await sendRune(recipientAddress, OVT_RUNE_SYMBOL, amountOvtRaw);
+        
+        if (!ovtTxId) {
+            throw new Error("OVT transfer failed or was cancelled.");
+        }
+        
+        console.log(`LaserEyes OVT transfer initiated, txid: ${ovtTxId}`);
+      } catch (transferError) {
+        console.error('OVT transfer step error:', transferError);
+        throw new Error(`OVT transfer process failed: ${transferError instanceof Error ? transferError.message : String(transferError)}`);
       }
-      const signedPsbtBase64 = signedPsbtResult.signedPsbtBase64;
-      setCurrentStepMessage(`Step 3/4: Broadcasting OVT transfer...`);
+      
+      setCurrentStepMessage(`Step 3/4: OVT transfer initiated (${ovtTxId.substring(0, 10)}...). Confirming transfer...`);
 
-      const broadcastResponse = await broadcastTransaction(signedPsbtBase64);
-      const ovtTxId = broadcastResponse.txid;
-      setCurrentStepMessage(`Step 4/4: OVT transfer broadcasted (${ovtTxId.substring(0,10)}...). Confirming sale...`);
-
+      // Step 3: Call confirmSellOVT with orderId and ovtTxId
       const confirmResult = await confirmSellOVT(orderId, ovtTxId);
 
       if (!confirmResult.success) {
-        throw new Error(confirmResult.error || 'Failed to confirm sale after OVT transfer.');
+        throw new Error(confirmResult.error || 'Failed to confirm sell transaction after OVT transfer.');
       }
 
-      const btcTxId = confirmResult.btcTxId || confirmResult.txid;
-      const btcTxLink = btcTxId ? `https://mempool.space/signet/tx/${btcTxId}` : null;
+      // Step 4: Handle the confirmation result
+      if (confirmResult.status === 'pending_confirmation') {
+        setCurrentStepMessage(`Step 4/4: OVT transfer needs confirmations. Your sell order will complete automatically once confirmed.`);
+        setSuccessMessage(
+          <span>
+            Your sell order is being processed. The OVT transfer is awaiting confirmations. 
+            You will receive the BTC payment automatically once the transfer is confirmed.
+            Order ID: {orderId}
+          </span>
+        );
+      } else {
+        // Immediate success - BTC payment already sent
+        const btcTxId = confirmResult.btcTxId;
+        const btcTxLink = btcTxId ? `https://mempool.space/signet/tx/${btcTxId}` : null;
+        
+        setCurrentStepMessage(null);
+        setSuccessMessage(
+          <span>
+            Successfully sold {amount} OVT units (⊙)! 
+            {btcTxLink ? <a href={btcTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800 ml-1">View BTC Payment Tx ({btcTxId?.substring(0, 10)}...)</a> : `(BTC Tx: ${btcTxId?.substring(0, 10)}...)`}
+          </span>
+        );
+      }
       
-      setSuccessMessage(
-        <span>
-          Successfully initiated sale of {displayAmount} OVT units (⊙)! 
-          {btcTxLink ? <a href={btcTxLink} target="_blank" rel="noopener noreferrer" className="underline hover:text-green-800">View Payment Tx ({btcTxId?.substring(0, 10)}...)</a> : `(Payment Tx: ${btcTxId?.substring(0, 10)}...)`}
-        </span>
-      );
       setSellAmount('');
 
     } catch (error) {
@@ -276,7 +307,9 @@ export default function TradePage() {
       setNetworkError(`${message}${stepInfo}`);
     } finally {
       setIsTradingActionLoading(false);
-      setCurrentStepMessage(null);
+      if (!currentStepMessage?.includes('awaiting confirmations')) {
+        setCurrentStepMessage(null);
+      }
     }
   };
   // --- End Buy/Sell Handlers ---

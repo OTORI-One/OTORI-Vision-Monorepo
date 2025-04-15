@@ -156,7 +156,7 @@ export function TradingInterface(props: TradingInterfaceProps) {
             <div className="space-y-4">
               <div>
                 <label htmlFor="buyAmount" className="block text-sm font-medium text-gray-700 mb-1">
-                  Buy Amount (Atomic Units)
+                  Buy Amount
                 </label>
                 <input
                   id="buyAmount"
@@ -197,7 +197,7 @@ export function TradingInterface(props: TradingInterfaceProps) {
             <div className="space-y-4">
               <div>
                 <label htmlFor="sellAmount" className="block text-sm font-medium text-gray-700 mb-1">
-                  Sell Amount (Atomic Units)
+                  Sell Amount
                 </label>
                 <input
                   id="sellAmount"

@@ -1467,43 +1467,66 @@ async function broadcastInternalUpdate(type, payload) {
 // --- Background Polling --- START
 
 /**
- * Polls pending orders awaiting BTC confirmation and retries verification.
+ * Polls pending orders awaiting BTC or OVT confirmation and retries verification.
  */
 async function pollPendingConfirmations() {
-    console.log('[Polling] Checking for orders pending BTC confirmation...');
+    console.log('[Polling] Checking for orders pending confirmation...');
     const orders = readPendingOrdersFile();
-    const pendingConfirmationOrders = Object.entries(orders).filter(([orderId, details]) => details.status === 'pending_confirmation');
-
-    if (pendingConfirmationOrders.length === 0) {
-        console.log('[Polling] No orders currently pending BTC confirmation.');
+    
+    // Get all orders pending BTC confirmation (for buys)
+    const pendingBtcConfirmationOrders = Object.entries(orders)
+        .filter(([orderId, details]) => details.status === 'pending_confirmation');
+    
+    // Get all orders pending OVT confirmation (for sells)
+    const pendingOvtConfirmationOrders = Object.entries(orders)
+        .filter(([orderId, details]) => details.status === 'pending_ovt_confirmation');
+    
+    const totalPendingOrders = pendingBtcConfirmationOrders.length + pendingOvtConfirmationOrders.length;
+    
+    if (totalPendingOrders === 0) {
+        console.log('[Polling] No orders currently pending confirmation.');
         return;
     }
 
-    console.log(`[Polling] Found ${pendingConfirmationOrders.length} orders pending confirmation. Processing...`);
+    console.log(`[Polling] Found ${totalPendingOrders} orders pending confirmation (${pendingBtcConfirmationOrders.length} BTC, ${pendingOvtConfirmationOrders.length} OVT). Processing...`);
 
-    for (const [orderId, orderDetails] of pendingConfirmationOrders) {
-        // Basic check for necessary details
+    // Process orders pending BTC confirmation (buys)
+    for (const [orderId, orderDetails] of pendingBtcConfirmationOrders) {
+        // Skip if missing btcTxId
         if (!orderDetails.btcTxId) {
-            console.warn(`[Polling] Skipping order ${orderId}: Missing btcTxId.`);
+            console.warn(`[Polling] Skipping buy order ${orderId}: Missing btcTxId.`);
             continue; 
         }
 
-        console.log(`[Polling] Retrying confirmation for order ${orderId} (BTC Tx: ${orderDetails.btcTxId})...`);
+        console.log(`[Polling] Retrying BTC confirmation for buy order ${orderId} (BTC Tx: ${orderDetails.btcTxId})...`);
         try {
             // Re-run the confirmation logic for this specific order
             const result = await confirmBuyPayment(orderId, orderDetails.btcTxId);
-            console.log(`[Polling] Confirmation result for ${orderId}: Status - ${result.status}, Success - ${result.success}`);
-            // Logging is handled within confirmBuyPayment, just log the outcome here.
+            console.log(`[Polling] BTC confirmation result for ${orderId}: Status - ${result.status}, Success - ${result.success}`);
         } catch (pollError) {
-            // Catch errors specifically from the poll attempt
-            console.error(`[Polling] Error during confirmation retry for order ${orderId}:`, pollError);
-            // Optionally update status to a specific polling error state if needed
-            // updatePendingOrderStatus(orderId, 'polling_error', { error: pollError.message });
+            console.error(`[Polling] Error during BTC confirmation retry for order ${orderId}:`, pollError);
         }
-        // Add a small delay between processing orders if needed, e.g.:
-        // await new Promise(resolve => setTimeout(resolve, 100)); 
     }
-     console.log('[Polling] Finished processing pending confirmation orders.');
+    
+    // Process orders pending OVT confirmation (sells)
+    for (const [orderId, orderDetails] of pendingOvtConfirmationOrders) {
+        // Skip if missing ovtTxId
+        if (!orderDetails.ovtTxId) {
+            console.warn(`[Polling] Skipping sell order ${orderId}: Missing ovtTxId.`);
+            continue; 
+        }
+
+        console.log(`[Polling] Retrying OVT confirmation for sell order ${orderId} (OVT Tx: ${orderDetails.ovtTxId})...`);
+        try {
+            // Re-run the confirmation logic for this specific order
+            const result = await confirmSellOVT(orderId, orderDetails.ovtTxId);
+            console.log(`[Polling] OVT confirmation result for ${orderId}: Status - ${result.status}, Success - ${result.success}`);
+        } catch (pollError) {
+            console.error(`[Polling] Error during OVT confirmation retry for order ${orderId}:`, pollError);
+        }
+    }
+    
+    console.log('[Polling] Finished processing pending confirmation orders.');
 }
 
 // Function to start the polling interval
@@ -1537,6 +1560,336 @@ process.on('SIGTERM', stopPolling);
 
 // --- Background Polling --- END
 
+/**
+ * Prepares a sell transaction for OVT tokens.
+ * @param {string} fromAddress - The user's wallet address selling OVT.
+ * @param {number} amount - The amount of OVT to sell (in atomic units).
+ * @param {number} minPrice - Optional minimum price per token in sats.
+ * @returns {Promise<Object>} - Result object { success: boolean, orderId: string, btcPayoutHex?: string, error?: string }
+ */
+async function prepareSellOVT(fromAddress, amount, minPrice = null) {
+  console.log(`[Trading Service] Preparing sell transaction for ${amount} OVT from ${fromAddress}`);
+  
+  if (!fromAddress) {
+    console.error('[Trading Service] Invalid sender address');
+    return { success: false, error: 'Valid sender address required' };
+  }
+
+  if (!amount || amount <= 0) {
+    console.error('[Trading Service] Invalid amount:', amount);
+    return { success: false, error: 'Amount must be positive' };
+  }
+
+  try {
+    // 1. Fetch current OVT price from the price-api
+    let currentPrice;
+    try {
+      const priceApiUrl = `${process.env.OTORI_PRICE_API_ENDPOINT || 'http://localhost:3033'}/api/price/ovt`;
+      console.log(`[Trading Service] Fetching price from: ${priceApiUrl}`);
+      const priceResponse = await axios.get(priceApiUrl, {
+        headers: { 'X-Internal-Secret': process.env.INTERNAL_API_SECRET },
+        timeout: 3000
+      });
+      currentPrice = priceResponse.data.btcPriceSats;
+      if (currentPrice === undefined || currentPrice === null) {
+        throw new Error('Invalid price data received');
+      }
+      console.log(`[Trading Service] Current OVT price: ${currentPrice} sats`);
+    } catch (priceError) {
+      console.error(`[Trading Service] Failed to fetch OVT price: ${priceError.message}`);
+      return { success: false, error: 'Failed to get current market price' };
+    }
+
+    // 2. Check against minPrice if provided
+    if (minPrice && currentPrice < minPrice) {
+      console.log(`[Trading Service] Current price ${currentPrice} below minimum ${minPrice}`);
+      return { 
+        success: false, 
+        error: `Current price (${currentPrice}) is below minimum price (${minPrice})`
+      };
+    }
+
+    // 3. Calculate BTC payout amount in sats based on current price and amount
+    // Convert atomic units to human-readable for price calculation
+    const OVT_DIVISIBILITY = 2; // Known divisibility for OVT
+    const humanReadableAmount = amount / Math.pow(10, OVT_DIVISIBILITY);
+    const btcPayoutSats = Math.floor(humanReadableAmount * currentPrice);
+    
+    console.log(`[Trading Service] Calculated payout: ${btcPayoutSats} sats for ${humanReadableAmount} OVT (${amount} raw)`);
+
+    // 4. Create an unsigned BTC transaction that will pay the user
+    // Format outputs object for Bitcoin-CLI (recipient address -> amount in BTC)
+    let unsignedBtcPayoutHex;
+    try {
+      // We need to create a raw transaction that will pay the user
+      // First prepare a new output object
+      const outputsObj = {};
+      // Amount must be in BTC, not sats
+      outputsObj[fromAddress] = (btcPayoutSats / 100000000).toFixed(8);
+      const outputsJson = JSON.stringify(outputsObj);
+
+      // Since we're not providing inputs at this stage, create a zero-input transaction
+      // that will later be completed with proper inputs when confirmed
+      const emptyInputs = "[]";
+      
+      // Create the raw transaction
+      console.log(`[Trading Service] Creating unsigned raw transaction to pay ${btcPayoutSats} sats to ${fromAddress}`);
+      unsignedBtcPayoutHex = await commandService.executeBitcoinCommand(
+        `createrawtransaction ${emptyInputs} '${outputsJson}'`
+      );
+      
+      if (!unsignedBtcPayoutHex || typeof unsignedBtcPayoutHex !== 'string') {
+        throw new Error('Failed to create raw transaction');
+      }
+      
+      console.log(`[Trading Service] Created unsigned transaction: ${unsignedBtcPayoutHex.substring(0, 32)}...`);
+    } catch (txError) {
+      console.error(`[Trading Service] Failed to create raw transaction: ${txError.message}`);
+      return { success: false, error: 'Failed to prepare BTC payout transaction' };
+    }
+
+    // 5. Generate orderId and store order details
+    const orderId = `ovt-sell-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+    
+    // Store order details including the unsigned transaction
+    const orderStored = storePendingOrder(orderId, {
+      fromAddress,
+      amount,               // Raw OVT amount
+      price: currentPrice,  // Current price per OVT token
+      btcPayoutSats,        // Total BTC to pay
+      unsignedBtcPayoutHex, // Unsigned transaction hex
+      timestamp: Date.now(),
+      status: 'awaiting_ovt_transfer'
+    });
+    
+    if (!orderStored) {
+      console.error(`[Trading Service] Failed to store pending order: ${orderId}`);
+      return { success: false, error: 'Internal server error: Could not store order.' };
+    }
+    
+    console.log(`[Trading Service] Sell order prepared and stored: ${orderId}`);
+
+    // 6. Return orderId and other necessary information for the frontend
+    return {
+      success: true,
+      orderId,
+      amountOvtRaw: amount,          // Return the exact amount user needs to send
+      recipientAddress: LP_ADDRESS,  // LP address where user should send OVT
+      message: 'Sell order prepared. Please transfer the OVT tokens to LP.'
+    };
+  } catch (error) {
+    console.error(`[Trading Service] Error preparing sell transaction: ${error.message}`);
+    return { 
+      success: false, 
+      error: `Internal server error: ${error.message}` 
+    };
+  }
+}
+
+/**
+ * Confirms a user's OVT transfer and pays out BTC.
+ * @param {string} orderId - The ID of the pending sell order.
+ * @param {string} ovtTxId - The transaction ID of the user's OVT transfer.
+ * @returns {Promise<Object>} - Result object { success: boolean, btcTxId?: string, error?: string }
+ */
+async function confirmSellOVT(orderId, ovtTxId) {
+  console.log(`[Trading Service] Confirming OVT transfer for sell order ${orderId}, OVT TxID: ${ovtTxId}`);
+  
+  // 1. Retrieve pending order
+  const pendingOrder = getPendingOrder(orderId);
+
+  if (!pendingOrder) {
+    console.error(`[Trading Service] Order ${orderId} not found for confirmation.`);
+    return { success: false, status: 'order_not_found', message: `Order ${orderId} not found.` };
+  }
+
+  // 2. Check if already processed
+  if (['completed', 'ovt_verification_failed', 'btc_payout_failed'].includes(pendingOrder.status)) {
+    console.log(`[Trading Service] Order ${orderId} already in final state: ${pendingOrder.status}. Skipping confirmation.`);
+    return { 
+      success: true, 
+      status: pendingOrder.status, 
+      message: `Order already processed with status: ${pendingOrder.status}`,
+      btcTxId: pendingOrder.btcTxId
+    };
+  }
+
+  // 3. Verify the OVT transaction exists and is valid
+  try {
+    console.log(`[Trading Service] Verifying OVT Tx ${ovtTxId} using getrawtransaction...`);
+    
+    // Get transaction data
+    const txData = await commandService.executeBitcoinCommand(
+      `getrawtransaction ${ovtTxId} true` // Add 'true' for verbose JSON output
+    );
+
+    // Check confirmations
+    const currentConfirmations = txData?.confirmations ?? 0;
+    console.log(`[Trading Service] OVT Transaction ${ovtTxId} has ${currentConfirmations} confirmations.`);
+
+    const requiredConfirmations = parseInt(process.env.MIN_CONFIRMATIONS || '1', 10);
+
+    // Find the output sent to the LP OVT receiving address
+    const expectedAddress = LP_ADDRESS;
+    const expectedAmount = pendingOrder.amount;
+    let ovtTransferOutput = null;
+
+    if (txData && txData.vout && Array.isArray(txData.vout)) {
+      // For OVT transactions, we need to check if any output contains the OVT transfer
+      // This is a simplified check - in production you'd need to verify the Rune transfer
+      for (const output of txData.vout) {
+        if (output.scriptPubKey?.address === expectedAddress) {
+          // Found output to the correct address
+          ovtTransferOutput = output;
+          break;
+        }
+      }
+    }
+
+    // 4. Verify the transfer details (check recipient and amount)
+    if (!ovtTransferOutput) {
+      console.error(`[Trading Service] OVT transfer to LP address (${expectedAddress}) not found in transaction ${ovtTxId}.`);
+      updatePendingOrderStatus(orderId, 'ovt_output_not_found', { ovtTxId, expectedAddress });
+      return { 
+        success: false, 
+        status: 'ovt_output_not_found', 
+        message: `OVT transfer output not found for the LP address ${expectedAddress}.`
+      };
+    }
+
+    // 5. Check for enough confirmations
+    if (currentConfirmations < requiredConfirmations) {
+      console.log(`[Trading Service] OVT transfer found for order ${orderId} (Tx: ${ovtTxId}) but has ${currentConfirmations} confirmations. Status set to pending_ovt_confirmation.`);
+      
+      // Update status to pending_ovt_confirmation
+      updatePendingOrderStatus(orderId, 'pending_ovt_confirmation', { ovtTxId });
+      
+      // Broadcast update via WebSockets
+      broadcastInternalUpdate('ORDER_UPDATE', { 
+        orderId, 
+        status: 'pending_ovt_confirmation', 
+        message: `Awaiting OVT transfer confirmation (${currentConfirmations}/${requiredConfirmations}).` 
+      });
+      
+      return { 
+        success: true, 
+        status: 'pending_ovt_confirmation',
+        message: `OVT transfer needs more confirmations (${currentConfirmations}/${requiredConfirmations}).`
+      };
+    }
+
+    // 6. OVT transfer is confirmed - process BTC payout
+    console.log(`[Trading Service] OVT transfer confirmed (${currentConfirmations} confs) for order ${orderId}. Proceeding with BTC payout.`);
+    
+    // 7. Sign and broadcast the BTC payout transaction
+    let btcTxId = null;
+    try {
+      // First, update the transaction with suitable inputs from the wallet
+      // This requires knowing what UTXOs are available in the wallet
+      // For now, we sign the transaction directly
+      
+      console.log(`[Trading Service] Signing raw transaction for BTC payout`);
+      const signResult = await commandService.executeBitcoinCommand(
+        `signrawtransactionwithwallet ${pendingOrder.unsignedBtcPayoutHex}`
+      );
+      
+      if (!signResult || !signResult.hex || !signResult.complete) {
+        throw new Error(`Failed to sign transaction: ${JSON.stringify(signResult)}`);
+      }
+      
+      console.log(`[Trading Service] Successfully signed transaction. Broadcasting...`);
+      btcTxId = await commandService.executeBitcoinCommand(
+        `sendrawtransaction ${signResult.hex}`
+      );
+      
+      if (!btcTxId || typeof btcTxId !== 'string') {
+        throw new Error('Failed to broadcast transaction');
+      }
+      
+      console.log(`[Trading Service] BTC payout transaction broadcast successfully. TXID: ${btcTxId}`);
+      
+      // 8. Update order status to completed
+      updatePendingOrderStatus(orderId, 'completed', { 
+        btcTxId,
+        ovtTxId,
+        completedAt: Date.now()
+      });
+      
+      // 9. Broadcast success status via WebSockets
+      const successResult = { 
+        success: true, 
+        status: 'completed', 
+        message: 'Sell order completed successfully.',
+        ovtTxId,
+        btcTxId
+      };
+      
+      broadcastInternalUpdate('ORDER_UPDATE', { orderId, ...successResult });
+      
+      // Clear caches after successful payout
+      clearCache('distribution');
+      clearCache('transactions');
+      clearCache('balance', pendingOrder.fromAddress);
+      clearCache('balance', LP_ADDRESS);
+      if (LP_ADDRESS_2) {
+        clearCache('balance', LP_ADDRESS_2);
+      }
+      
+      return successResult;
+    } catch (error) {
+      // BTC payout failed - critical state!
+      const errorMsg = `OVT transfer confirmed, but BTC payout failed: ${error.message}`;
+      console.error(`[Trading Service] BTC payout FAILED for order ${orderId} after OVT confirmed. Error: ${error.message}. Order status set to btc_payout_failed.`);
+      
+      const errorDetails = { ovtTxId, error: error.message };
+      updatePendingOrderStatus(orderId, 'btc_payout_failed', errorDetails);
+      
+      // Manual intervention required!
+      // Log this state clearly. Admin needs to manually send BTC to the user.
+      const failureResult = { 
+        success: false, 
+        status: 'btc_payout_failed',
+        message: errorMsg,
+        ovtTxId,
+        ...errorDetails
+      };
+      
+      // Broadcast failure status
+      broadcastInternalUpdate('ORDER_UPDATE', { orderId, ...failureResult });
+      return failureResult;
+    }
+  } catch (error) {
+    console.error(`[Trading Service] Error verifying OVT Tx ${ovtTxId} for order ${orderId}:`, error.message || error);
+    
+    // Check if it's just that the transaction wasn't found yet
+    const isTxNotFoundError = error.message?.includes('No such mempool or blockchain transaction') || 
+                            (error.stderr && error.stderr.includes('No such mempool or blockchain transaction'));
+    
+    if (isTxNotFoundError) {
+      console.log(`[Trading Service] OVT Tx ${ovtTxId} not found yet for order ${orderId}. Status remains awaiting_ovt_transfer.`);
+      return { 
+        success: true, 
+        status: 'awaiting_ovt_transfer',
+        message: 'Transaction not found yet. Please wait for it to appear in the mempool.'
+      };
+    } else {
+      // Real verification error
+      console.error(`[Trading Service] OVT verification failed for order ${orderId}. Error: ${error.message}`);
+      updatePendingOrderStatus(orderId, 'ovt_verification_failed', { ovtTxId, error: error.message });
+      broadcastInternalUpdate('ORDER_UPDATE', { 
+        orderId, 
+        status: 'ovt_verification_failed', 
+        message: `OVT transfer verification failed: ${error.message}` 
+      });
+      return { 
+        success: false, 
+        status: 'ovt_verification_failed', 
+        error: 'OVT transfer verification failed.'
+      };
+    }
+  }
+}
+
 module.exports = {
   matchOrders,
   processMatches,
@@ -1561,6 +1914,8 @@ module.exports = {
 
   // Export confirmation logic
   confirmBuyPayment,
+  prepareSellOVT,    // Add new sell preparation function
+  confirmSellOVT,    // Add new sell confirmation function
   
   // Export Rune-related functions
   transferRunes,
