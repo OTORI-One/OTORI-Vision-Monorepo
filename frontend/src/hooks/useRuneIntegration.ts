@@ -139,7 +139,7 @@ export interface FinalTransactionResult {
  */
 export function useRuneIntegration() {
   // Correct hook usage from the react package
-  const { address, connected, signMessage, getUtxos } = useLaserEyes();
+  const { address, connected, signMessage, getUtxos, sendBTC } = useLaserEyes();
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [balance, setBalance] = useState<number>(0);
@@ -716,7 +716,6 @@ export function useRuneIntegration() {
 
   /**
    * Send OVT tokens using the LaserEyes wallet.
-   * This is a simplified wrapper around LaserEyes send for Runes.
    * @param recipient The recipient address
    * @param runeName The rune name (defaults to OVT_RUNE_SYMBOL)
    * @param amount The amount in atomic units
@@ -739,20 +738,26 @@ export function useRuneIntegration() {
     setError(null);
 
     try {
-      // We need to check what method LaserEyes provides for sending runes
-      // The actual implementation may vary based on LaserEyes API
-      if (!signMessage) {
-        throw new Error('LaserEyes signMessage function not available');
-      }
-
       console.log(`Initiating Rune transfer: ${amount} units of ${runeName} to ${recipient}`);
       
-      // This is a placeholder implementation. The actual implementation should use 
-      // whatever method LaserEyes provides for sending Runes.
-      // We're implementing it as a mock temporarily until we can check the actual LaserEyes API
+      // Since LaserEyes doesn't offer a direct "sendRune" method, we need to:
+      // 1. Use the API gateway to prepare a transfer transaction
+      // 2. Send it directly through the API
       
-      // Construct a mock transaction
-      const txid = `mock-rune-tx-${Date.now()}`;
+      // Step 1: Call ovt/transfer endpoint to create the transfer
+      const response = await axios.post(`${API_BASE_URL}/ovt/transfer`, {
+        fromAddress: address,
+        toAddress: recipient,
+        runeId: OVT_RUNE_ID,
+        amount // Send raw amount
+      });
+      
+      if (!response.data.success || !response.data.transaction) {
+        throw new Error(response.data.error || 'Failed to prepare transfer transaction');
+      }
+      
+      // Get the transaction ID
+      const txid = response.data.transaction.txid;
       
       console.log(`Rune transfer initiated with txid: ${txid}`);
       
@@ -771,7 +776,7 @@ export function useRuneIntegration() {
     } finally {
       setIsLoading(false);
     }
-  }, [connected, address, signMessage, getBalance, getTransactionHistory]);
+  }, [connected, address, getBalance, getTransactionHistory, API_BASE_URL]);
 
   /**
    * Fetch token info and subscribe to updates
