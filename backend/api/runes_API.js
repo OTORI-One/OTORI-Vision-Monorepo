@@ -1856,13 +1856,55 @@ runesRouter.post('/ovt/transfer', async (req, res) => {
     
     console.log(`Processing transfer request: ${amount} OVT from ${fromAddress} to ${toAddress}`);
     
-    // 1. Check for sufficient OVT balance
-    const balancesResult = await getRemoteWalletBalances();
-    const userBalances = balancesResult.success ? 
-      balancesResult.result.balances.filter(b => b.address === fromAddress) : 
-      [];
-    
-    const ovtBalance = userBalances.length > 0 ? userBalances[0].amount : 0;
+    // 1. Check for sufficient OVT balance using direct scraping
+    let ovtBalance = 0;
+    try {
+        const ordServerHost = 'http://localhost:9191'; // Local Ordinal Explorer
+        const ordServerUrl = `${ordServerHost}/address/${fromAddress}`;
+        console.log(`[Transfer Prep - Balance Check] Querying local ord server: ${ordServerUrl}`);
+
+        const response = await axios.get(ordServerUrl, { timeout: 5000 });
+        const $ = cheerio.load(response.data);
+
+        // Extract Rune Balance for OVT (copied from /ovt/sell)
+        $('dt').each((index, element) => {
+            const dtText = $(element).text().trim();
+            if (dtText === 'rune balances') {
+                const ddElement = $(element).next('dd');
+                const ddHtml = ddElement.html();
+                if (ddHtml && ddHtml.includes(OVT_RUNE_SYMBOL)) {
+                    const fullText = ddElement.text().trim();
+                    const balancePattern = new RegExp(`${OVT_RUNE_SYMBOL}\\s*:\\s*([\\d,]+)\\s*⊙`);
+                    const balanceMatch = fullText.match(balancePattern);
+                    if (balanceMatch && balanceMatch[1]) {
+                        const matchedAmount = balanceMatch[1].replace(/,/g, '');
+                        ovtBalance = parseInt(matchedAmount, 10) || 0;
+                    } else {
+                        const genericMatch = fullText.match(/(\\d+[\\d,]*)\\s*⊙/);
+                        if (genericMatch && genericMatch[1]) {
+                            const matchedAmount = genericMatch[1].replace(/,/g, '');
+                            ovtBalance = parseInt(matchedAmount, 10) || 0;
+                        }
+                    }
+                }
+            }
+        });
+        console.log(`[Transfer Prep - Balance Check] Scraped OVT balance for ${fromAddress}: ${ovtBalance}`);
+
+    } catch (error) {
+        const errorMessage = error.response ? `Status ${error.response.status}` : error.message;
+        console.error(`[Transfer Prep - Balance Check] Error scraping balance: ${errorMessage}`);
+        return res.status(503).json({
+            success: false,
+            error: 'Service unavailable: Could not verify sender OVT balance.'
+        });
+    }
+    // Removed old balance check using getRemoteWalletBalances()
+    // const balancesResult = await getRemoteWalletBalances();
+    // const userBalances = balancesResult.success ? 
+    //   balancesResult.result.balances.filter(b => b.address === fromAddress) : 
+    //   [];
+    // const ovtBalance = userBalances.length > 0 ? userBalances[0].amount : 0;
     
     if (ovtBalance < amount) {
       return res.status(400).json({

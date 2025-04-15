@@ -10,9 +10,12 @@ const fs = require('fs');
 const path = require('path');
 const config = require('./configService');
 const commandService = require('./commandExecutionService');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 // Get LP address from environment variables
 const LP_ADDRESS = process.env.NEXT_PUBLIC_LP_ADDRESS || 'tb1p3vn6wc0dlud3tvckv95datu3stq4qycz7vj9mzpclfkrv9rh8jqsjrw38f';
+const OVT_RUNE_SYMBOL = process.env.OVT_RUNE_SYMBOL || 'OVT';
 
 // Track statistics for reporting
 let utxoStats = {
@@ -138,40 +141,135 @@ async function getAddressUtxos(address) {
       throw new Error(`Invalid address format: ${address}`);
     }
     
-    // Get UTXOs from our wallet and filter by address
-    const utxoData = await getWalletUtxos();
-    const addressUtxos = utxoData.utxos.filter(utxo => utxo.address === address);
+    console.log(`Fetching UTXOs for address: ${address} from Ordinal Explorer`);
     
-    if (addressUtxos.length > 0) {
-      console.log(`Found ${addressUtxos.length} UTXOs for address ${address} in our wallet`);
-      return addressUtxos;
-    }
-    
-    // If no UTXOs found in our wallet and we're in development mode, use external wallet support
-    if (process.env.NODE_ENV === 'development' || process.env.ENABLE_EXTERNAL_WALLETS === 'true') {
-      console.log(`No UTXOs found in our wallet for ${address}, checking external wallet...`);
-      return getExternalAddressUtxos(address);
-    }
-    
-    console.log(`Found 0 UTXOs for address ${address}`);
-    return [];
-  } catch (error) {
-    console.error(`Error getting UTXOs: ${error.message}`);
-    
-    // If this is the LP address and we're in development mode or real transactions are enabled, use fallback UTXOs
-    if (address === LP_ADDRESS && (process.env.NODE_ENV === 'development' || process.env.ENABLE_REAL_TRANSACTIONS === 'true')) {
-      console.log('Using fallback UTXOs for LP address');
-      return [
-        {
-          txid: "known_txid_from_lp_wallet",
-          vout: 0,
-          address: LP_ADDRESS,
-          value: 50000, // 50k sats
-          spendable: true
+    // Fetch address page from local Ordinal Explorer
+    try {
+      const addressResponse = await axios.get(`http://localhost:9191/address/${address}`, {
+        timeout: 5000
+      });
+      
+      // Parse the HTML response with cheerio
+      const $ = cheerio.load(addressResponse.data);
+      
+      // Find all output links in the address page
+      const outputPaths = [];
+      $('dt:contains("outputs") + dd ul li a').each((i, el) => {
+        const outputPath = $(el).attr('href');
+        if (outputPath && outputPath.includes('/output/')) {
+          outputPaths.push(outputPath);
         }
-      ];
+      });
+      
+      console.log(`Found ${outputPaths.length} outputs for address ${address}`);
+      
+      // Fetch and parse each output page
+      const addressUtxos = [];
+      
+      for (const outputPath of outputPaths) {
+        try {
+          const outputUrl = `http://localhost:9191${outputPath}`;
+          const outputResponse = await axios.get(outputUrl, {
+            timeout: 5000
+          });
+          
+          const $outputPage = cheerio.load(outputResponse.data);
+          
+          // Extract UTXO details
+          // Parse txid and vout from the output path
+          // Format: /output/txid:vout
+          const pathParts = outputPath.split('/').pop().split(':');
+          const txid = pathParts[0];
+          const vout = parseInt(pathParts[1]);
+          
+          // Parse value (in sats)
+          let value = 0;
+          const valueText = $outputPage('dt:contains("value") + dd').text().trim();
+          if (valueText) {
+            // Remove commas and convert to integer
+            value = parseInt(valueText.replace(/,/g, ''));
+          }
+          
+          // Parse script pubkey
+          const scriptPubKey = $outputPage('dt:contains("script pubkey") + dd').text().trim();
+          
+          // Parse spent status
+          const spentText = $outputPage('dt:contains("spent") + dd').text().trim();
+          const spendable = spentText.toLowerCase() === 'false';
+          
+          // Create UTXO object
+          const utxo = {
+            txid,
+            vout,
+            address,
+            value,
+            spendable,
+            scriptPubKey,
+            confirmations: 6, // Default value, could be improved by parsing blockchain data
+          };
+          
+          // Parse Runes
+          if ($outputPage('dt:contains("runes")').length > 0) {
+            // Find the table containing rune information
+            const $runeTable = $outputPage('dt:contains("runes") + dd table');
+            
+            // Look for OVT in the table
+            $runeTable.find('tr').each((i, row) => {
+              const $cells = $(row).find('td');
+              const runeSymbol = $cells.eq(0).find('a').text().trim();
+              
+              if (runeSymbol === OVT_RUNE_SYMBOL) {
+                // Parse the OVT amount from the next cell
+                const amountText = $cells.eq(1).text().trim();
+                // Remove commas and the "⊙" symbol
+                const ovtAmount = parseInt(amountText.replace(/[,⊙]/g, ''));
+                
+                // Add runes property to the UTXO
+                utxo.runes = { [OVT_RUNE_SYMBOL]: ovtAmount };
+                console.log(`Found ${ovtAmount} ${OVT_RUNE_SYMBOL} on UTXO ${txid}:${vout}`);
+              }
+            });
+          }
+          
+          addressUtxos.push(utxo);
+        } catch (outputError) {
+          console.warn(`Error fetching output details for ${outputPath}: ${outputError.message}`);
+          // Continue to the next output
+        }
+      }
+      
+      // Update statistics
+      utxoStats.totalQueriesCount++;
+      utxoStats.successfulQueriesCount++;
+      
+      console.log(`Found ${addressUtxos.length} UTXOs for address ${address} via Ordinal Explorer`);
+      return addressUtxos;
+      
+    } catch (fetchError) {
+      console.error(`Error fetching address data from Ordinal Explorer: ${fetchError.message}`);
+      
+      // Update statistics
+      utxoStats.totalQueriesCount++;
+      utxoStats.failedQueriesCount++;
+      
+      // If this is the LP address and we're in development mode or real transactions are enabled, use fallback UTXOs
+      if (address === LP_ADDRESS && (process.env.NODE_ENV === 'development' || process.env.ENABLE_REAL_TRANSACTIONS === 'true')) {
+        console.log('Using fallback UTXOs for LP address');
+        return [
+          {
+            txid: "known_txid_from_lp_wallet",
+            vout: 0,
+            address: LP_ADDRESS,
+            value: 50000, // 50k sats
+            spendable: true
+          }
+        ];
+      }
+      
+      return [];
     }
-    
+  } catch (error) {
+    console.error(`Error in getAddressUtxos: ${error.message}`);
     throw error;
   }
 }
