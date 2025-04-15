@@ -1932,6 +1932,9 @@ runesRouter.post('/ovt/transfer', async (req, res) => {
       const result = await execOrdCommand(sendCommand);
       
       if (!result.success || !result.result) {
+        // Log the stderr if available from the result object (assuming execOrdCommand provides it)
+        const commandErrorDetails = result.stderr || result.error || 'Unknown command execution error';
+        console.error(`[Transfer Error] ord wallet send failed. Command: ${sendCommand}. Details: ${commandErrorDetails}`);
         throw new Error(result.error || 'Command execution failed or returned empty result');
       }
       
