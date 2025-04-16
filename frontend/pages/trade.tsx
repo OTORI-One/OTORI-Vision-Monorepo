@@ -251,6 +251,7 @@ export default function TradePage() {
         if (!sendRune) {
           throw new Error("LaserEyes sendRune function not available");
         }
+        // Pass amountOvtRaw directly as a number as required by sendRune function
         ovtTxId = await sendRune(recipientAddress, OVT_RUNE_SYMBOL, amountOvtRaw);
         
         if (!ovtTxId) {
