@@ -25,8 +25,7 @@ export default function WalletPage() {
   const { 
     balance: ovtBalance, 
     metadata, 
-    transferRune,
-    getDistributionStats,
+    sendRune,
     isLoading: isTransferLoading,
     error: transferHookError,
     OVT_RUNE_ID,
@@ -48,19 +47,25 @@ export default function WalletPage() {
     }
   }, [walletAddress, network]);
   
-  // Fetch distribution stats on load
+  // Fetch distribution stats on load (temporarily disabled)
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const stats = await getDistributionStats();
-        setDistributionStats(stats);
+        // Since getDistributionStats is no longer available in the hook,
+        // we'll use mock data or implement an alternative solution later
+        setDistributionStats({
+          totalSupply: 2100000,
+          distributed: ovtBalance || 0,
+          treasuryHeld: 0,
+          lpHeld: 2100000 - (ovtBalance || 0)
+        });
       } catch (error) {
         console.error('Error fetching distribution stats:', error);
       }
     };
     
     fetchStats();
-  }, [getDistributionStats]);
+  }, [ovtBalance]);
   
   // Handle wallet connection
   const handleConnectWallet = (address: string) => {
@@ -103,8 +108,8 @@ export default function WalletPage() {
     
     try {
       setTransferStatus('Initiating transfer...');
-      const result = await transferRune(connectedAddress, recipient, OVT_RUNE_ID, rawAmount);
-      setTransferStatus(`Transfer successful! Transaction ID: ${result?.txid || 'Processing'}`);
+      const result = await sendRune(recipient, OVT_RUNE_ID, rawAmount);
+      setTransferStatus(`Transfer successful! Transaction ID: ${result || 'Processing'}`);
       setTransferAmount('');
       setRecipient('');
     } catch (error) {
