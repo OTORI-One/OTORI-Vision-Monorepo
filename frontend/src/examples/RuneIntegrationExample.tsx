@@ -25,10 +25,11 @@ const RuneIntegrationExample: React.FC = () => {
     metadata,
     transactions,
     getBalance,
-    transferRune,
+    sendRune,
     formatTokenAmount,
-    getDistributionStats,
-    OVT_RUNE_TICKER
+    OVT_RUNE_TICKER,
+    OVT_RUNE_ID,
+    OVT_RUNE_SYMBOL
   } = useRuneIntegration();
   
   // Handle wallet connection
@@ -66,21 +67,29 @@ const RuneIntegrationExample: React.FC = () => {
     try {
       setTransferStatus('Preparing transfer...');
       
-      // Convert amount to token units (respecting divisibility)
-      const divisibility = metadata?.divisibility || 2;
-      const tokenAmount = parseInt(amount) * Math.pow(10, divisibility);
+      // Amount is expected to be in raw atomic units by sendRune
+      const rawAmount = parseInt(amount); 
+      if (isNaN(rawAmount) || rawAmount <= 0) {
+        setTransferStatus('Invalid amount. Please enter a positive whole number for atomic units.');
+        return;
+      }
       
-      // Execute the transfer
-      const result = await transferRune(address, recipient, metadata?.id, tokenAmount);
+      // Execute the transfer using sendRune
+      // sendRune expects (recipient: string, runeName: string, amount: number)
+      // We should use OVT_RUNE_SYMBOL or OVT_RUNE_ID as runeName, depending on what LaserEyes expects.
+      // Based on useRuneIntegration, it seems to use OVT_RUNE_SYMBOL for the LaserEyes call.
+      const txId = await sendRune(recipient, OVT_RUNE_SYMBOL, rawAmount);
       
-      setTransferStatus(`Transfer successful! Transaction ID: ${result.txid}`);
+      setTransferStatus(`Transfer successful! Transaction ID: ${txId}`);
       
       // Reset form
       setAmount('');
       setRecipient('');
       
       // Refresh balance
-      await getBalance(address);
+      if (address) { // Ensure address is still valid
+        await getBalance(address);
+      }
     } catch (error) {
       console.error('Transfer error:', error);
       setTransferStatus(`Transfer failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -94,10 +103,19 @@ const RuneIntegrationExample: React.FC = () => {
   const handleShowStats = async () => {
     if (!showStats) {
       try {
-        const distributionStats = await getDistributionStats();
-        setStats(distributionStats);
+        // getDistributionStats is removed, using mock/placeholder data
+        console.log('getDistributionStats is no longer available. Displaying placeholder stats.');
+        setStats({
+          totalSupply: metadata?.supply?.total || 2100000,
+          distributed: metadata?.supply?.circulating || balance || 0,
+          lpHeld: 'N/A', // Placeholder
+          treasuryHeld: 'N/A', // Placeholder
+          percentDistributed: metadata?.supply?.total ? ((metadata?.supply?.circulating || balance || 0) / metadata.supply.total * 100).toFixed(2) : 'N/A',
+          percentInLP: 'N/A' // Placeholder
+        });
       } catch (error) {
-        console.error('Error fetching stats:', error);
+        console.error('Error fetching stats (using placeholder):', error);
+        setStats({ error: 'Could not load stats.' });
       }
     }
     setShowStats(!showStats);
@@ -217,7 +235,7 @@ const RuneIntegrationExample: React.FC = () => {
                 min="0.01"
                 step="0.01"
                 className="w-full p-2 border border-gray-300 rounded"
-                placeholder="Amount to send"
+                placeholder="Amount in atomic units"
                 required
               />
             </div>
